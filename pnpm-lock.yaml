@@ -23,7 +23,7 @@ importers:
       '@circle-fin/x402-batching':
         specifier: ^3.1.2
         version: 3.1.2(@x402/core@2.15.0)(@x402/evm@2.15.0(typescript@5.9.3))(viem@2.52.2(typescript@5.9.3)(zod@3.25.76))
-      '@rubicon/core':
+      '@rubicon-caliga/core':
         specifier: workspace:*
         version: link:../../packages/core
       '@x402/core':
@@ -38,10 +38,13 @@ importers:
 
   examples/agent-client:
     dependencies:
-      '@rubicon/agent-sdk':
+      '@circle-fin/x402-batching':
+        specifier: ^3.1.2
+        version: 3.1.2(@x402/core@2.15.0)(@x402/evm@2.15.0(typescript@5.9.3))(viem@2.52.2(typescript@5.9.3)(zod@3.25.76))
+      '@rubicon-caliga/agent-sdk':
         specifier: workspace:*
         version: link:../../packages/agent-sdk
-      '@rubicon/core':
+      '@rubicon-caliga/core':
         specifier: workspace:*
         version: link:../../packages/core
     devDependencies:
@@ -51,10 +54,10 @@ importers:
 
   examples/mock-provider:
     dependencies:
-      '@rubicon/core':
+      '@rubicon-caliga/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@rubicon/provider-sdk':
+      '@rubicon-caliga/provider-sdk':
         specifier: workspace:*
         version: link:../../packages/provider-sdk
     devDependencies:
@@ -67,7 +70,7 @@ importers:
       '@circle-fin/x402-batching':
         specifier: ^3.1.2
         version: 3.1.2(@x402/core@2.15.0)(@x402/evm@2.15.0(typescript@5.9.3))(viem@2.52.2(typescript@5.9.3)(zod@3.25.76))
-      '@rubicon/core':
+      '@rubicon-caliga/core':
         specifier: workspace:*
         version: link:../core
       '@x402/core':
@@ -76,6 +79,9 @@ importers:
       '@x402/evm':
         specifier: ^2.15.0
         version: 2.15.0(typescript@5.9.3)
+      eventsource:
+        specifier: ^4.0.0
+        version: 4.1.0
       viem:
         specifier: ^2.52.2
         version: 2.52.2(typescript@5.9.3)(zod@3.25.76)
@@ -84,7 +90,7 @@ importers:
 
   packages/provider-sdk:
     dependencies:
-      '@rubicon/core':
+      '@rubicon-caliga/core':
         specifier: workspace:*
         version: link:../core
       fastify:
@@ -361,6 +367,14 @@ packages:
 
   eventemitter3@5.0.1:
     resolution: {integrity: sha512-GWkBvjiSZK87ELrYOSESUYeVIc9mvLLf/nXalMOS5dYrgZq9o5OVkbZAVM06CVxYsCwH9BDZFPlQTlPA1j4ahA==}
+
+  eventsource-parser@3.1.0:
+    resolution: {integrity: sha512-kJezFj9YFAMLeORyi7aCLxLbD5/qWMQnoMVlVPyHIll7lgRJCc3JVln9Vgl9nwQi0YkMnhdGTMNn7CkRRAptMg==}
+    engines: {node: '>=18.0.0'}
+
+  eventsource@4.1.0:
+    resolution: {integrity: sha512-2GuF51iuHX6A9xdTccMTsNb7VO0lHZihApxhvQzJB5A03DvHDd2FQepodbMaztPBmBcE/ox7o2gqaxGhYB9LhQ==}
+    engines: {node: '>=20.0.0'}
 
   fast-decode-uri-component@1.0.1:
     resolution: {integrity: sha512-WKgKWg5eUxvRZGwW8FvfbaH7AXSh2cL+3j5fMGzUMCxWBJ3dV3a7Wz8y2f/uQ0e3B6WmodD3oS54jTQ9HVTIIg==}
@@ -745,6 +759,12 @@ snapshots:
       '@esbuild/win32-x64': 0.28.1
 
   eventemitter3@5.0.1: {}
+
+  eventsource-parser@3.1.0: {}
+
+  eventsource@4.1.0:
+    dependencies:
+      eventsource-parser: 3.1.0
 
   fast-decode-uri-component@1.0.1: {}
 

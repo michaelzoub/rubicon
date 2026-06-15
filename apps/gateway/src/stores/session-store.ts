@@ -1,4 +1,4 @@
-import type { SessionRecord } from "@rubicon/core";
+import type { SessionRecord } from "@rubicon-caliga/core";
 
 export class InMemorySessionStore {
   private readonly sessions = new Map<string, SessionRecord>();

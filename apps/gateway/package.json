@@ -1,18 +1,19 @@
 {
-  "name": "@rubicon/gateway",
+  "name": "@rubicon-caliga/gateway",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx src/index.ts",
+    "dev": "tsx --env-file-if-exists=../../.env src/index.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@rubicon/core": "workspace:*",
+    "@rubicon-caliga/core": "workspace:*",
     "@circle-fin/x402-batching": "^3.1.2",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",

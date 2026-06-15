@@ -1,9 +1,10 @@
+import { EventSource } from "eventsource";
 import type {
   GatewayEvent,
   PaymentHeartbeatRequest,
   StartSessionRequest,
   StartSessionResponse,
-} from "@rubicon/core";
+} from "@rubicon-caliga/core";
 import type { AgentPaymentEngine } from "./payment-engine.js";
 
 export interface AgentClientOptions {

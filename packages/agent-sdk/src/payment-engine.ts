@@ -1,4 +1,4 @@
-import type { PaymentHeartbeatRequest, StartSessionResponse } from "@rubicon/core";
+import type { PaymentHeartbeatRequest, StartSessionResponse } from "@rubicon-caliga/core";
 import { x402Client } from "@x402/core/client";
 import { registerBatchScheme, type GatewayClientConfig } from "@circle-fin/x402-batching/client";
 import { privateKeyToAccount } from "viem/accounts";
@@ -8,7 +8,7 @@ export interface AgentPaymentEngine {
 }
 
 export class StaticPaymentEngine implements AgentPaymentEngine {
-  constructor(private readonly network = "eip155:arc-testnet") {}
+  constructor(private readonly network = "eip155:5042002") {}
 
   async createHeartbeat(session: StartSessionResponse): Promise<PaymentHeartbeatRequest> {
     return {

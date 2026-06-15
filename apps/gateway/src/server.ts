@@ -11,7 +11,7 @@ import {
   type SessionRecord,
   type StartSessionRequest,
   type StartSessionResponse,
-} from "@rubicon/core";
+} from "@rubicon-caliga/core";
 import { InMemoryEventBus } from "./stores/event-bus.js";
 import { InMemorySessionStore } from "./stores/session-store.js";
 

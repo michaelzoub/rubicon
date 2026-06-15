@@ -1,4 +1,4 @@
-import { ProviderServer } from "@rubicon/provider-sdk";
+import { ProviderServer } from "@rubicon-caliga/provider-sdk";
 
 const server = new ProviderServer({
   providerId: "mock-compute",

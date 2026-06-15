@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import type { GatewayEvent, ProviderJobRequest, UsageReport } from "@rubicon/core";
+import type { GatewayEvent, ProviderJobRequest, UsageReport } from "@rubicon-caliga/core";
 
 export interface ProviderContext {
   emitOutput(chunk: unknown): Promise<void>;

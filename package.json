@@ -7,9 +7,9 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "build": "pnpm -r build",
-    "dev:gateway": "pnpm --filter @rubicon/gateway dev",
-    "dev:provider": "pnpm --filter @rubicon/mock-provider dev",
-    "dev:agent": "pnpm --filter @rubicon/agent-example dev",
+    "dev:gateway": "pnpm --filter @rubicon-caliga/gateway dev",
+    "dev:provider": "pnpm --filter @rubicon-caliga/mock-provider dev",
+    "dev:agent": "pnpm --filter @rubicon-caliga/agent-example dev",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test"

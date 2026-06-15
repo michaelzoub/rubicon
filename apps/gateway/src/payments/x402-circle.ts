@@ -1,7 +1,7 @@
 import { BatchFacilitatorClient, GatewayEvmScheme } from "@circle-fin/x402-batching/server";
 import { x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, SchemeNetworkServer } from "@x402/core/types";
-import type { PaymentHeartbeatRequest, PaymentVerification, SessionRecord } from "@rubicon/core";
+import type { PaymentHeartbeatRequest, PaymentVerification, SessionRecord } from "@rubicon-caliga/core";
 import type { PaymentVerifier, ProviderConfig } from "../server.js";
 
 export interface CircleX402PaymentVerifierOptions {
@@ -93,7 +93,11 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
         scheme: "exact",
         network,
         payTo: this.options.sellerAddress,
-        price: { amount: input.amountAtomic, asset: "USDC" },
+        // Circle's GatewayEvmScheme registers a USDC money parser that turns a dollar
+        // amount into the correct on-chain USDC asset for the network. Passing a bare
+        // `{ asset: "USDC" }` bypasses it and the facilitator rejects it as
+        // `unsupported_asset`, so price must be USDC dollars (6 decimals).
+        price: usdcDollarsFromAtomic(input.amountAtomic),
         maxTimeoutSeconds: this.maxTimeoutSeconds,
         extra: {
           sessionId: input.session.id,
@@ -127,6 +131,18 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       },
     });
   }
+}
+
+const USDC_DECIMALS = 6n;
+
+// Convert an atomic USDC amount (e.g. "1") to a decimal dollar string (e.g. "0.000001")
+// for the x402 money parser, which resolves it to the network's USDC asset.
+function usdcDollarsFromAtomic(amountAtomic: string): string {
+  const atomic = BigInt(amountAtomic);
+  const divisor = 10n ** USDC_DECIMALS;
+  const whole = atomic / divisor;
+  const fraction = (atomic % divisor).toString().padStart(Number(USDC_DECIMALS), "0");
+  return `${whole}.${fraction}`;
 }
 
 function isProviderSnapshot(value: unknown): value is {

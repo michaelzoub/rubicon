@@ -1,4 +1,4 @@
-import { AgentClient, CircleGatewayPaymentEngine, StaticPaymentEngine } from "@rubicon/agent-sdk";
+import { AgentClient, CircleGatewayPaymentEngine, StaticPaymentEngine } from "@rubicon-caliga/agent-sdk";
 
 const privateKey = process.env.CIRCLE_PRIVATE_KEY as `0x${string}` | undefined;
 
@@ -8,6 +8,7 @@ const client = new AgentClient({
     ? new CircleGatewayPaymentEngine({
         chain: (process.env.CIRCLE_CHAIN ?? "arcTestnet") as never,
         privateKey,
+        rpcUrl: process.env.CIRCLE_RPC_URL,
       })
     : new StaticPaymentEngine(),
 });

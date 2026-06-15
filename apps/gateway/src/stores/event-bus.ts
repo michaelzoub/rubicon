@@ -1,4 +1,4 @@
-import type { GatewayEvent } from "@rubicon/core";
+import type { GatewayEvent } from "@rubicon-caliga/core";
 
 type Listener = (event: GatewayEvent) => void;
 
