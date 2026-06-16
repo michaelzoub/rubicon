@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx --env-file-if-exists=../../.env src/index.ts",
-    "consume": "tsx --env-file-if-exists=../../.env src/consume-compute.ts",
+    "consume": "tsx --env-file-if-exists=../../.env src/read-article.ts",
     "fund": "tsx --env-file-if-exists=../../.env src/fund.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",

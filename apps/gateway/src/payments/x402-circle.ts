@@ -1,14 +1,14 @@
 import { BatchFacilitatorClient, GatewayEvmScheme } from "@circle-fin/x402-batching/server";
 import { x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, SchemeNetworkServer } from "@x402/core/types";
-import type { PaymentHeartbeatRequest, PaymentVerification, SessionRecord } from "@rubicon-caliga/core";
-import type { PaymentVerifier, ProviderConfig } from "../server.js";
+import type { SessionRecord, StreamPaymentRequest, PaymentVerification } from "@rubicon-caliga/core";
+import type { ArticleRecord, AuthorRecord, PaymentVerifier } from "../server.js";
 
 export interface CircleX402PaymentVerifierOptions {
-  sellerAddress: `0x${string}`;
   facilitatorUrl?: string;
   networks?: string[];
   maxTimeoutSeconds?: number;
+  arcPrivateMainnet?: boolean;
 }
 
 export class CircleX402PaymentVerifier implements PaymentVerifier {
@@ -19,7 +19,9 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
 
   constructor(private readonly options: CircleX402PaymentVerifierOptions) {
     const facilitator = new BatchFacilitatorClient(
-      options.facilitatorUrl ? { url: options.facilitatorUrl } : undefined,
+      options.facilitatorUrl || options.arcPrivateMainnet
+        ? { url: options.facilitatorUrl, arcPrivateMainnet: options.arcPrivateMainnet }
+        : undefined,
     );
     this.resourceServer = new x402ResourceServer([facilitator as unknown as FacilitatorClient]);
     this.resourceServer.register("eip155:*", new GatewayEvmScheme() as unknown as SchemeNetworkServer);
@@ -30,23 +32,24 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
 
   async createPaymentRequired(input: {
     session: SessionRecord;
-    provider: ProviderConfig;
+    article: ArticleRecord;
+    author: AuthorRecord;
     amountAtomic: `${bigint}`;
     gatewayBaseUrl: string;
   }): Promise<PaymentRequired> {
     await this.ready;
     const requirements = await this.requirements(input);
     return this.resourceServer.createPaymentRequiredResponse(requirements, {
-      url: `${input.gatewayBaseUrl}/v1/sessions/${input.session.id}/heartbeats`,
-      description: `Streaming heartbeat for session ${input.session.id}`,
-      serviceName: input.provider.id,
+      url: `${input.gatewayBaseUrl}/v1/sessions/${input.session.id}/payments`,
+      description: `Rubicon word stream payment for ${input.article.title}`,
+      serviceName: "rubicon-article-stream",
       mimeType: "application/json",
     });
   }
 
-  async verify(session: SessionRecord, heartbeat: PaymentHeartbeatRequest): Promise<PaymentVerification> {
+  async verify(session: SessionRecord, payment: StreamPaymentRequest): Promise<PaymentVerification> {
     await this.ready;
-    const paymentPayload = heartbeat.paymentPayload as PaymentPayload | undefined;
+    const paymentPayload = payment.paymentPayload as PaymentPayload | undefined;
     if (!paymentPayload) {
       return { accepted: false, reason: "missing_x402_payment_payload" };
     }
@@ -84,7 +87,8 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
 
   private async requirements(input: {
     session: SessionRecord;
-    provider: ProviderConfig;
+    article: ArticleRecord;
+    author: AuthorRecord;
     amountAtomic: `${bigint}`;
     gatewayBaseUrl: string;
   }): Promise<PaymentRequirements[]> {
@@ -92,7 +96,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       this.networks.map((network) => ({
         scheme: "exact",
         network,
-        payTo: this.options.sellerAddress,
+        payTo: input.author.walletAddress,
         // Circle's GatewayEvmScheme registers a USDC money parser that turns a dollar
         // amount into the correct on-chain USDC asset for the network. Passing a bare
         // `{ asset: "USDC" }` bypasses it and the facilitator rejects it as
@@ -101,19 +105,20 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
         maxTimeoutSeconds: this.maxTimeoutSeconds,
         extra: {
           sessionId: input.session.id,
-          providerId: input.provider.id,
-          meteringUnit: input.provider.meteringUnit,
+          articleId: input.article.articleId,
+          authorUsername: input.article.authorUsername,
+          meteringUnit: "word",
         },
       })),
-      { sessionId: input.session.id, url: `${input.gatewayBaseUrl}/v1/sessions/${input.session.id}/heartbeats` },
+      { sessionId: input.session.id, url: `${input.gatewayBaseUrl}/v1/sessions/${input.session.id}/payments` },
     );
   }
 
   private async requirementsForSession(session: SessionRecord): Promise<PaymentRequirements[]> {
-    const amountAtomic = session.metadata.heartbeatChargeAtomic;
-    const providerSnapshot = session.metadata.providerSnapshot;
+    const amountAtomic = session.metadata.paymentChunkAtomic;
+    const articleSnapshot = session.metadata.articleSnapshot;
     const gatewayBaseUrl = session.metadata.gatewayBaseUrl;
-    if (typeof amountAtomic !== "string" || typeof gatewayBaseUrl !== "string" || !isProviderSnapshot(providerSnapshot)) {
+    if (typeof amountAtomic !== "string" || typeof gatewayBaseUrl !== "string" || !isArticleSnapshot(articleSnapshot)) {
       throw new Error("session_missing_x402_pricing_metadata");
     }
 
@@ -121,13 +126,16 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       session,
       amountAtomic: amountAtomic as `${bigint}`,
       gatewayBaseUrl,
-      provider: {
-        id: providerSnapshot.id,
-        baseUrl: providerSnapshot.baseUrl,
-        sharedSecret: providerSnapshot.sharedSecret,
-        unitPriceAtomic: BigInt(providerSnapshot.unitPriceAtomic),
-        unitsPerInterval: providerSnapshot.unitsPerInterval,
-        meteringUnit: providerSnapshot.meteringUnit,
+      article: {
+        articleId: articleSnapshot.articleId,
+        authorUsername: articleSnapshot.authorUsername,
+        title: articleSnapshot.articleId,
+        content: "",
+        pricePerWordAtomic: BigInt(articleSnapshot.pricePerWordAtomic),
+      },
+      author: {
+        authorUsername: articleSnapshot.authorUsername,
+        walletAddress: articleSnapshot.sellerAddress,
       },
     });
   }
@@ -145,24 +153,22 @@ function usdcDollarsFromAtomic(amountAtomic: string): string {
   return `${whole}.${fraction}`;
 }
 
-function isProviderSnapshot(value: unknown): value is {
-  id: string;
-  baseUrl: string;
-  sharedSecret: string;
-  unitPriceAtomic: string;
-  unitsPerInterval: number;
-  meteringUnit: ProviderConfig["meteringUnit"];
+function isArticleSnapshot(value: unknown): value is {
+  articleId: string;
+  authorUsername: string;
+  sellerAddress: `0x${string}`;
+  pricePerWordAtomic: string;
+  paymentChunkWords: number;
 } {
   if (!value || typeof value !== "object") {
     return false;
   }
   const record = value as Record<string, unknown>;
   return (
-    typeof record.id === "string" &&
-    typeof record.baseUrl === "string" &&
-    typeof record.sharedSecret === "string" &&
-    typeof record.unitPriceAtomic === "string" &&
-    typeof record.unitsPerInterval === "number" &&
-    typeof record.meteringUnit === "string"
+    typeof record.articleId === "string" &&
+    typeof record.authorUsername === "string" &&
+    typeof record.sellerAddress === "string" &&
+    typeof record.pricePerWordAtomic === "string" &&
+    typeof record.paymentChunkWords === "number"
   );
 }

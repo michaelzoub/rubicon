@@ -14,29 +14,42 @@ const client = new AgentClient({
 });
 
 const session = await client.startSession({
-  providerId: "mock-compute",
-  input: { prompt: "stream a small metered job" },
+  articleId: process.env.DEMO_ARTICLE_ID ?? "rubicon-streaming-001",
   budget: { currency: "USDC", maxAmountAtomic: "50000" },
   metadata: { agent: "example-agent" },
 });
 
 console.log("started", session);
 
+let paymentInFlight = false;
+let streamClosed = false;
+
+async function payForNextChunk(): Promise<void> {
+  if (paymentInFlight || streamClosed) {
+    return;
+  }
+  paymentInFlight = true;
+  try {
+    await client.sendPayment(session);
+  } catch (error) {
+    console.error(error);
+    stop();
+    process.exit(1);
+  } finally {
+    paymentInFlight = false;
+  }
+}
+
 const stop = client.stream(session.sessionId, (event) => {
   console.log(event);
+  if (event.type === "article.usage") {
+    void payForNextChunk();
+  }
   if (event.type === "session.closed" || event.type === "session.aborted") {
+    streamClosed = true;
     stop();
     process.exit(0);
   }
 });
 
-const heartbeat = setInterval(() => {
-  void client.sendHeartbeat(session).catch((error) => {
-    console.error(error);
-    clearInterval(heartbeat);
-    stop();
-    process.exit(1);
-  });
-}, session.heartbeatIntervalMs);
-
-await client.sendHeartbeat(session);
+await payForNextChunk();

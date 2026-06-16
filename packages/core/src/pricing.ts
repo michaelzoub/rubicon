@@ -1,39 +1,55 @@
 import { addBasisPoints } from "./money.js";
 
-export type MeteringUnit = "second" | "token" | "image" | "request" | "custom";
+export type MeteringUnit = "word";
 
 export interface PriceQuote {
   currency: "USDC";
-  intervalMs: number;
+  chunkWords: number;
   meteringUnit: MeteringUnit;
   unitPriceAtomic: `${bigint}`;
   gatewayFeeBps: number;
-  chargePerIntervalAtomic: `${bigint}`;
+  chargePerWordAtomic: `${bigint}`;
+  chargePerChunkAtomic: `${bigint}`;
 }
 
 export interface UsageReport {
   unit: MeteringUnit;
   quantity: number;
-  providerCostAtomic: `${bigint}`;
+  authorCostAtomic: `${bigint}`;
   gatewayFeeAtomic: `${bigint}`;
   totalCostAtomic: `${bigint}`;
 }
 
-export function quotePerInterval(input: {
+export function quotePerWords(input: {
   unitPriceAtomic: bigint;
-  unitsPerInterval: number;
-  intervalMs: number;
-  meteringUnit: MeteringUnit;
+  chunkWords: number;
   gatewayFeeBps: number;
 }): PriceQuote {
-  const providerCost = input.unitPriceAtomic * BigInt(input.unitsPerInterval);
-  const total = addBasisPoints(providerCost, input.gatewayFeeBps);
+  const chargePerWord = addBasisPoints(input.unitPriceAtomic, input.gatewayFeeBps);
+  const chargePerChunk = chargePerWord * BigInt(input.chunkWords);
   return {
     currency: "USDC",
-    intervalMs: input.intervalMs,
-    meteringUnit: input.meteringUnit,
+    chunkWords: input.chunkWords,
+    meteringUnit: "word",
     unitPriceAtomic: `${input.unitPriceAtomic}`,
     gatewayFeeBps: input.gatewayFeeBps,
-    chargePerIntervalAtomic: `${total}`,
+    chargePerWordAtomic: `${chargePerWord}`,
+    chargePerChunkAtomic: `${chargePerChunk}`,
+  };
+}
+
+export function usageForWords(input: {
+  wordCount: number;
+  unitPriceAtomic: bigint;
+  gatewayFeeBps: number;
+}): UsageReport {
+  const authorCost = input.unitPriceAtomic * BigInt(input.wordCount);
+  const total = addBasisPoints(authorCost, input.gatewayFeeBps);
+  return {
+    unit: "word",
+    quantity: input.wordCount,
+    authorCostAtomic: `${authorCost}`,
+    gatewayFeeAtomic: `${total - authorCost}`,
+    totalCostAtomic: `${total}`,
   };
 }

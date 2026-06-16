@@ -1,7 +1,7 @@
 {
   "name": "@rubicon-caliga/agent-sdk",
   "version": "0.1.0",
-  "description": "Client SDK for autonomous agents consuming metered compute via the Rubicon x402 streaming gateway.",
+  "description": "Client SDK for autonomous agents consuming per-word article streams via Rubicon x402.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",

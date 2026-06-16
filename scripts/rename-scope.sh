@@ -37,4 +37,4 @@ echo
 echo "Done. @rubicon/* -> @${NEW_SCOPE}/*"
 echo "Next:"
 echo "  pnpm install"
-echo "  pnpm --filter @${NEW_SCOPE}/core --filter @${NEW_SCOPE}/agent-sdk --filter @${NEW_SCOPE}/provider-sdk build"
+echo "  pnpm --filter @${NEW_SCOPE}/core --filter @${NEW_SCOPE}/agent-sdk build"

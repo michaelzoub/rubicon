@@ -1,34 +1,36 @@
 # Architecture
 
-Rubicon has three actors:
+Rubicon has two runtime surfaces:
 
-- **Agent SDK**: creates sessions, signs/sends x402 payment heartbeats, receives output and status.
-- **Gateway**: verifies payments, enforces budgets, routes work to providers, emits session updates, records usage and receipts.
-- **Provider SDK**: accepts gateway-started jobs, emits output/usage/completion events, listens for abort or timeout.
+- **Agent SDK**: opens article streams, signs/sends x402 micropayments, receives word chunks and status.
+- **Streaming Endpoint**: seller-side Fastify server that resolves articles, prices words, accepts micropayments, streams paid words, and records usage.
 
 ```mermaid
 sequenceDiagram
   participant A as Agent SDK
-  participant G as x402 Gateway
-  participant P as Provider SDK
+  participant G as x402 Streaming Endpoint
+  participant D as Article DB
+  participant W as Author Wallet
   participant C as Circle Gateway
 
-  A->>G: Start session(input, budget)
-  G-->>A: Terms, quote, sessionId
-  A->>G: Payment heartbeat(signed x402 auth)
+  A->>G: Start stream(articleId/query, budget)
+  G->>D: Read article, price_per_word, author wallet
+  G-->>A: Quote, article summary, paymentRequired
+  A->>G: Payment(signed x402 auth)
   G->>C: Verify/settle authorization
-  G->>P: Start job(sessionId, input, metadata)
-  P-->>G: Output, progress, usage
-  G-->>A: SSE stream updates
-  A->>G: More heartbeats or abort
-  G->>P: Abort on cancel, timeout, or exhausted budget
+  C-->>W: Forward micropayment
+  G-->>A: SSE article.chunk words
+  G-->>A: SSE article.usage
+  A->>G: More payments or abort
+  G-->>A: article.completed or session.aborted
 ```
 
-The gateway is the control plane for session state, but it should not custody funds. Payment authorizations pass through to Circle Gateway settlement.
+The endpoint is the control plane for stream state, but it should not custody funds. Payment authorizations pass through to Circle Gateway settlement for the author wallet.
 
 ## Runtime Boundaries
 
 - Agent-facing API: public HTTPS, x402-protected, session scoped.
-- Provider-facing API: authenticated gateway-to-provider control and event callbacks.
+- Article registry: stores article content, `price_per_word`, caps, and author ownership.
+- Author registry: maps author usernames to seller wallet addresses.
 - Payment adapter: owns Circle/x402 implementation details and can be swapped for test doubles.
-- Ledger: records usage, payment authorizations, fee calculations, and settlement references.
+- Ledger: records words streamed, payment authorizations, fee calculations, and settlement references.

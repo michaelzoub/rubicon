@@ -52,19 +52,6 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
 
-  examples/mock-provider:
-    dependencies:
-      '@rubicon-caliga/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@rubicon-caliga/provider-sdk':
-        specifier: workspace:*
-        version: link:../../packages/provider-sdk
-    devDependencies:
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
-
   packages/agent-sdk:
     dependencies:
       '@circle-fin/x402-batching':
@@ -87,15 +74,6 @@ importers:
         version: 2.52.2(typescript@5.9.3)(zod@3.25.76)
 
   packages/core: {}
-
-  packages/provider-sdk:
-    dependencies:
-      '@rubicon-caliga/core':
-        specifier: workspace:*
-        version: link:../core
-      fastify:
-        specifier: ^5.1.0
-        version: 5.8.5
 
 packages:
 
