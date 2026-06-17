@@ -14,6 +14,7 @@ import type {
   WordDeliveryRecord,
 } from "@rubicon-caliga/core";
 import { PUBLIC_ARTICLE_STATE } from "@rubicon-caliga/core";
+import { toCaip2Network } from "../chain.js";
 import { tokenizeWords } from "../words.js";
 import { summarizeArticle } from "./in-memory.js";
 import type {
@@ -184,7 +185,9 @@ export class PostgresPublishedArticleRepository implements PublishedArticleRepos
     return {
       creatorId: row.creator_id,
       address: row.address as `0x${string}`,
-      network: row.network,
+      // rubicon-marketing persists the human slug ("arc-testnet"); the x402
+      // settlement path needs canonical CAIP-2 ("eip155:5042002").
+      network: toCaip2Network(row.network),
       verified: row.verified,
     };
   }

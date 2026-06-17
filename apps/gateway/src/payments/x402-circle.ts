@@ -3,6 +3,7 @@ import { x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, SchemeNetworkServer } from "@x402/core/types";
 import type { PaymentVerification, SessionRecord } from "@rubicon-caliga/core";
 import type { PaymentRequiredInput, PaymentVerifier, PaymentVerifyInput } from "./types.js";
+import { USDC_DECIMALS as ARC_USDC_DECIMALS } from "../chain.js";
 
 export interface CircleX402PaymentVerifierOptions {
   facilitatorUrl?: string;
@@ -34,7 +35,11 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     this.resourceServer.register("eip155:*", new GatewayEvmScheme() as unknown as SchemeNetworkServer);
     this.ready = this.resourceServer.initialize();
     this.networks = (options.networks?.length ? options.networks : ["eip155:*"]) as Network[];
-    this.maxTimeoutSeconds = options.maxTimeoutSeconds ?? 60;
+    // Circle Gateway requires the buyer's EIP-3009 `validBefore` to be at least 7
+    // days in the future (it derives this from `maxTimeoutSeconds`). A shorter
+    // window — e.g. the 60s that suits a plain x402 facilitator — is rejected
+    // outright by the Arc Testnet Gateway. Default to 7 days + a small buffer.
+    this.maxTimeoutSeconds = options.maxTimeoutSeconds ?? 604_900;
     this.gatewayBaseUrl = options.gatewayBaseUrl ?? "http://localhost:8787";
   }
 
@@ -70,22 +75,23 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
         wordPaymentAtomic: input.wordPaymentAtomic,
         gatewayBaseUrl: this.gatewayBaseUrl,
         articleId: input.session.articleId,
+        // `author` only feeds the `extra` metadata; keep it consistent with the
+        // value used when the requirement was first issued.
         author: input.session.articleId,
       }),
+      // NOTE: author is the articleId here (we don't reload the article in the
+      // verify path); requirement matching keys off scheme/network/payTo/amount.
       paymentPayload,
     );
     if (!requirements) {
       return { accepted: false, reason: "payment_does_not_match_session_terms" };
     }
 
-    const verification = await this.resourceServer.verifyPayment(paymentPayload, requirements);
-    if (!verification.isValid) {
-      return {
-        accepted: false,
-        reason: verification.invalidReason ?? verification.invalidMessage ?? "payment_invalid",
-      };
-    }
-
+    // Recommended seller flow (Circle x402 seller how-to): call settle() directly
+    // rather than verify()+settle(). Gateway's settle() is optimized for low
+    // latency and guarantees settlement, so a separate verify() is a redundant
+    // round-trip on every word. findMatchingRequirements above already enforces
+    // that the payment matches this session's seller, network, and amount.
     const settlement = await this.resourceServer.settlePayment(paymentPayload, requirements);
     if (!settlement.success) {
       return {
@@ -135,7 +141,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
   }
 }
 
-const USDC_DECIMALS = 6n;
+const USDC_DECIMALS = BigInt(ARC_USDC_DECIMALS);
 
 // Convert an atomic USDC amount (e.g. "1") to a decimal dollar string
 // (e.g. "0.000001") for the x402 money parser.

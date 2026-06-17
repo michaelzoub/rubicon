@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createGateway } from "./server.js";
+import { ACTIVE_X402_NETWORK, GATEWAY_API_URL, toCaip2Network } from "./chain.js";
 import { CircleX402PaymentVerifier } from "./payments/x402-circle.js";
 import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
 import {
@@ -55,7 +56,7 @@ if (databaseUrl) {
       {
         creatorId,
         address: walletAddress,
-        network: process.env.CIRCLE_X402_NETWORKS?.split(",")[0]?.trim() ?? "eip155:5042002",
+        network: toCaip2Network(process.env.CIRCLE_X402_NETWORKS?.split(",")[0]?.trim() ?? ACTIVE_X402_NETWORK),
         verified: true,
       },
     ],
@@ -68,9 +69,14 @@ if (databaseUrl) {
 const paymentVerifier: PaymentVerifier =
   process.env.RUBICON_PAYMENTS === "circle"
     ? new CircleX402PaymentVerifier({
-        facilitatorUrl: process.env.CIRCLE_FACILITATOR_URL,
-        networks: process.env.CIRCLE_X402_NETWORKS?.split(",").map((n) => n.trim()).filter(Boolean),
+        facilitatorUrl: process.env.CIRCLE_FACILITATOR_URL ?? GATEWAY_API_URL,
+        networks: process.env.CIRCLE_X402_NETWORKS?.split(",").map((n) => toCaip2Network(n.trim())).filter(Boolean) ?? [
+          ACTIVE_X402_NETWORK,
+        ],
         arcPrivateMainnet: process.env.CIRCLE_ARC_PRIVATE_MAINNET === "true",
+        maxTimeoutSeconds: process.env.CIRCLE_X402_MAX_TIMEOUT_SECONDS
+          ? Number(process.env.CIRCLE_X402_MAX_TIMEOUT_SECONDS)
+          : undefined,
         gatewayBaseUrl,
       })
     : new DevelopmentPaymentVerifier();

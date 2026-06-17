@@ -1,6 +1,7 @@
 import type { StartSessionResponse, StreamPaymentRequest } from "@rubicon-caliga/core";
 import { x402Client } from "@x402/core/client";
 import { registerBatchScheme, type GatewayClientConfig } from "@circle-fin/x402-batching/client";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { privateKeyToAccount } from "viem/accounts";
 
 /**
@@ -44,7 +45,15 @@ export class CircleGatewayPaymentEngine implements AgentPaymentEngine {
 
   constructor(private readonly options: CircleGatewayPaymentEngineOptions) {
     this.account = privateKeyToAccount(this.options.privateKey);
-    registerBatchScheme(this.client, { signer: this.account });
+    // Recommended buyer integration (Circle x402 buyer how-to): register the
+    // gasless batched scheme with an `exact` fallback. `registerBatchScheme`
+    // wires a CompositeEvmScheme that uses Gateway batching when the seller
+    // supports it and falls back to a standard EIP-3009 `exact` payment
+    // otherwise — no per-request routing logic needed.
+    registerBatchScheme(this.client, {
+      signer: this.account,
+      fallbackScheme: new ExactEvmScheme(this.account),
+    });
   }
 
   async createWordPayment(session: StartSessionResponse): Promise<StreamPaymentRequest> {
