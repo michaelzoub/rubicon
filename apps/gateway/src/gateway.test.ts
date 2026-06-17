@@ -100,12 +100,16 @@ test("1: one accepted word payment releases exactly one word", async () => {
 
 test("payment responses include Circle transaction hashes when settlement returns them", async () => {
   const transactionHash = "0xabc123";
+  const network = "eip155:5042002";
+  const payTo = "0x1111111111111111111111111111111111111111";
   const { app } = setup({
     paymentVerifier: {
       async verify() {
         return {
           accepted: true,
           amountAtomic: `${PRICE}`,
+          network,
+          payTo,
           transactionHash,
           transactionHashes: [transactionHash],
           transferId: transactionHash,
@@ -114,10 +118,20 @@ test("payment responses include Circle transaction hashes when settlement return
     },
   });
   const session = await startSession(app);
-  const body = (await pay(app, session.sessionId)).json() as StreamPaymentResponse;
+  const res = await pay(app, session.sessionId);
+  const body = res.json() as StreamPaymentResponse;
   assert.equal(body.transactionHash, transactionHash);
   assert.deepEqual(body.transactionHashes, [transactionHash]);
   assert.equal(body.transferId, transactionHash);
+  assert.equal(body.payment?.meteringUnit, "word");
+  assert.equal(body.payment?.sequence, 0);
+  assert.equal(body.payment?.amountAtomic, `${PRICE}`);
+  assert.equal(body.payment?.currency, "USDC");
+  assert.equal(body.payment?.network, network);
+  assert.equal(body.payment?.payTo, payTo);
+  assert.equal(body.payment?.transactionHash, transactionHash);
+  assert.deepEqual(body.payment?.transactionHashes, [transactionHash]);
+  assert.deepEqual(JSON.parse(String(res.headers["payment-response"])), body.payment);
   await app.close();
 });
 
@@ -198,6 +212,8 @@ test("5: a duplicate request does not release or charge for the word twice", asy
   assert.equal(first.word, second.word);
   assert.equal(second.wordsDelivered, 1);
   assert.equal(second.paidAtomic, `${PRICE}`);
+  assert.equal(first.payment?.paymentId, second.payment?.paymentId);
+  assert.deepEqual(first.payment?.transactionHashes, second.payment?.transactionHashes);
   assert.equal((await ledger.listDeliveries(session.sessionId)).length, 1);
   await app.close();
 });

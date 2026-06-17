@@ -36,6 +36,9 @@ shared by both apps.
 - **Article states**: `draft | live | paused | archived | deleted`. Only `live`
   articles are consumable by buyer agents or visible in the public repository.
 - **Pricing units**: atomic USDC, `1 USDC = 1_000_000`, stored as exact strings.
+- **Payment granularity**: one accepted word payment releases one word. Each
+  delivered word has a durable `PaymentActivity` / `settlement_receipts` record
+  with network, destination, transaction hash(es), and amount.
 - **Word counting**: a word is a maximal run of non-whitespace characters
   (`content.trim().split(/\s+/)`). `articles.total_words` uses this rule.
 - **Wallet format**: `0x`-prefixed address plus a CAIP-2 `network` string. Only
@@ -76,3 +79,8 @@ tables (`word_payments`, `word_deliveries`, `settlement_receipts`,
 `stream_sessions`) — for example via `LedgerRepository.earningsForCreator` /
 `earningsForArticle`, which sum the exact words delivered. Creators earn the full
 per-word subtotal; the Rubicon fee is always zero.
+
+For granular audit views, `word_payments` and `settlement_receipts` include
+`network`, `pay_to`, `transaction_hash`, `transaction_hashes`, and legacy
+`transfer_id`. Prefer `transaction_hash` / `transaction_hashes` for new UI and
+API work.

@@ -241,6 +241,10 @@ export class InMemoryLedgerRepository implements LedgerRepository {
       amountAtomic: `${input.priceAtomic}`,
       creatorAmountAtomic: `${input.creatorAmountAtomic}`,
       rubiconFeeAtomic: `${input.rubiconFeeAtomic}`,
+      network: input.network,
+      payTo: input.payTo,
+      transactionHash: input.transactionHash ?? input.transferId,
+      transactionHashes: input.transactionHashes ?? (input.transactionHash || input.transferId ? [input.transactionHash ?? input.transferId!] : undefined),
       transferId: input.transferId,
       createdAt,
     };

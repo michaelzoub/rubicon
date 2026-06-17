@@ -68,8 +68,8 @@ console.log("\nreceipt:", receipt);
 ```
 
 Expected result: words stream to stdout, followed by a receipt containing
-`sessionId`, `articleId`, `wordsRead`, `amountPaidAtomic`, `text`, `completed`,
-and `stopReason`.
+`sessionId`, `articleId`, `wordsRead`, `amountPaidAtomic`, `payments`,
+`transactionHashes`, `text`, `completed`, and `stopReason`.
 
 ## Quick Start: Published SDK
 
@@ -133,6 +133,9 @@ rubicon.payForWord(sessionId, payment)
 rubicon.abort(sessionId, reason)
 rubicon.streamEvents(sessionId, onEvent)
 ```
+
+`payForWord` returns one released word plus a per-word `payment` receipt. The
+same receipt is mirrored in the gateway's `PAYMENT-RESPONSE` header.
 
 ## Payment Modes
 

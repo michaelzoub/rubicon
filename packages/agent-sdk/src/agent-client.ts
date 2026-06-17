@@ -9,6 +9,7 @@ import type {
   StartSessionResponse,
   StreamPaymentRequest,
   StreamPaymentResponse,
+  WordPaymentReceipt,
 } from "@rubicon-caliga/core";
 import { StaticPaymentEngine, type AgentPaymentEngine } from "./payment-engine.js";
 
@@ -36,6 +37,7 @@ export interface ReadReceipt {
   conversationId: string;
   wordsRead: number;
   amountPaidAtomic: `${bigint}`;
+  payments: WordPaymentReceipt[];
   transactionHashes: string[];
   text: string;
   completed: boolean;
@@ -54,6 +56,7 @@ export type RubiconReadEvent =
       amountPaidAtomic: `${bigint}`;
       transactionHash?: string;
       transactionHashes?: string[];
+      payment?: WordPaymentReceipt;
       text: string;
     }
   | { type: "article.usage"; wordsPaid: number; wordsDelivered: number; paidAtomic: `${bigint}` }
@@ -265,6 +268,7 @@ export class RubiconClient {
     let wordsRead = 0;
     let amountPaid = 0n;
     const transactionHashes: string[] = [];
+    const payments: WordPaymentReceipt[] = [];
     let stopReason: ReadReceipt["stopReason"] = "article_completed";
     let completed = false;
 
@@ -274,6 +278,7 @@ export class RubiconClient {
       conversationId: session.conversationId,
       wordsRead,
       amountPaidAtomic: `${amountPaid}`,
+      payments: [...payments],
       transactionHashes: [...transactionHashes],
       text,
       completed,
@@ -317,6 +322,9 @@ export class RubiconClient {
 
       wordsRead = result.wordsDelivered;
       amountPaid = BigInt(result.paidAtomic);
+      if (result.payment) {
+        payments.push(result.payment);
+      }
       transactionHashes.push(...(result.transactionHashes ?? (result.transactionHash ? [result.transactionHash] : [])));
       text = text ? `${text} ${result.word}` : result.word;
 
@@ -329,6 +337,7 @@ export class RubiconClient {
         amountPaidAtomic: `${amountPaid}`,
         transactionHash: result.transactionHash,
         transactionHashes: result.transactionHashes,
+        payment: result.payment,
         text,
       };
       yield {

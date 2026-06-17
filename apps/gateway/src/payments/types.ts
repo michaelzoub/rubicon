@@ -42,6 +42,8 @@ export class DevelopmentPaymentVerifier implements PaymentVerifier {
     return {
       accepted: true,
       amountAtomic,
+      network: "development",
+      payTo: input.session.sellerWallet,
       transferId: `dev_${input.session.id}_${input.session.wordsDelivered}`,
     };
   }

@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import {
   canAffordNextWord,
   createSession,
@@ -22,6 +22,7 @@ import {
   type StreamPaymentRequest,
   type StreamPaymentResponse,
   type StreamStopCondition,
+  type WordPaymentReceipt,
 } from "@rubicon-caliga/core";
 import { InMemoryEventBus } from "./stores/event-bus.js";
 import { summarizeArticle } from "./repositories/in-memory.js";
@@ -305,15 +306,20 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       // Checked before state guards so retries of the final word stay idempotent.
       const cached = await ledger.getDeliveryByIdempotencyKey(idempotencyKey);
       if (cached) {
-        return reply.send(
+        return sendPaymentResponse(
+          reply,
           buildPaymentResponse(
             session,
             cached.delivery.word,
             cached.delivery.sequence,
             BigInt(cached.delivery.priceAtomic),
             session.state === "completed",
-            cached.payment.transferId,
-            cached.payment.transferId ? [cached.payment.transferId] : undefined,
+            cached.payment.transactionHash ?? cached.payment.transferId,
+            cached.payment.transactionHashes,
+            cached.payment.paymentId,
+            cached.payment.network,
+            cached.payment.payTo,
+            cached.payment.createdAt,
           ),
         );
       }
@@ -383,21 +389,30 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         creatorAmountAtomic: BigInt(usage.creatorAmountAtomic),
         rubiconFeeAtomic: BigInt(usage.rubiconFeeAtomic),
         paymentId: crypto.randomUUID(),
+        network: verification.network,
+        payTo: verification.payTo ?? session.sellerWallet,
+        transactionHash: verification.transactionHash ?? verification.transferId,
+        transactionHashes: paymentTransactionHashes(verification.transactionHash, verification.transactionHashes, verification.transferId),
         transferId: verification.transferId,
         idempotencyKey,
       });
       if (record.duplicate) {
         // Lost an idempotency race; return the canonical word without re-charging.
         // The winning request emits completion + closes the session over SSE.
-        return reply.send(
+        return sendPaymentResponse(
+          reply,
           buildPaymentResponse(
             session,
             record.delivery.word,
             record.delivery.sequence,
             wordPaymentAtomic,
             false,
-            record.payment.transferId,
-            record.payment.transferId ? [record.payment.transferId] : undefined,
+            record.payment.transactionHash ?? record.payment.transferId,
+            record.payment.transactionHashes,
+            record.payment.paymentId,
+            record.payment.network,
+            record.payment.payTo,
+            record.payment.createdAt,
           ),
         );
       }
@@ -412,6 +427,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         sequence,
         paymentId: record.payment.paymentId,
         amountAtomic: `${wordPaymentAtomic}`,
+        network: record.payment.network,
+        payTo: record.payment.payTo,
         transactionHash: verification.transactionHash ?? verification.transferId,
         transactionHashes: paymentTransactionHashes(verification.transactionHash, verification.transactionHashes, verification.transferId),
         transferId: verification.transferId,
@@ -444,7 +461,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         await complete(session, session.articleId);
       }
 
-      return reply.send(
+      return sendPaymentResponse(
+        reply,
         buildPaymentResponse(
           session,
           next.word,
@@ -453,6 +471,10 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           completed,
           verification.transactionHash ?? verification.transferId,
           paymentTransactionHashes(verification.transactionHash, verification.transactionHashes, verification.transferId),
+          record.payment.paymentId,
+          record.payment.network,
+          record.payment.payTo,
+          record.payment.createdAt,
         ),
       );
     },
@@ -597,8 +619,29 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     completed: boolean,
     transactionHash?: string,
     transactionHashes?: string[],
+    paymentId = "",
+    network?: string,
+    payTo?: `0x${string}`,
+    settledAt = new Date().toISOString(),
   ): StreamPaymentResponse {
     const hashes = transactionHashes ?? (transactionHash ? [transactionHash] : undefined);
+    const payment: WordPaymentReceipt | undefined = paymentId
+      ? {
+          paymentId,
+          sessionId: session.id,
+          articleId: session.articleId,
+          sequence,
+          meteringUnit: "word",
+          amountAtomic: `${priceAtomic}`,
+          currency: "USDC",
+          network,
+          payTo,
+          transactionHash,
+          transactionHashes: hashes,
+          transferId: transactionHash,
+          settledAt,
+        }
+      : undefined;
     return {
       accepted: true,
       sequence,
@@ -608,6 +651,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       wordsDelivered: session.wordsDelivered,
       paidAtomic: `${session.paidAtomic}`,
       completed,
+      payment,
       transactionHash,
       transactionHashes: hashes,
       transferId: transactionHash,
@@ -620,6 +664,13 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     transferId?: string,
   ): string[] | undefined {
     return transactionHashes ?? (transactionHash || transferId ? [transactionHash ?? transferId!] : undefined);
+  }
+
+  function sendPaymentResponse(reply: FastifyReply, response: StreamPaymentResponse) {
+    if (response.payment) {
+      reply.header("PAYMENT-RESPONSE", JSON.stringify(response.payment));
+    }
+    return reply.send(response);
   }
 
   return app;

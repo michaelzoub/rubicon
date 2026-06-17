@@ -3,6 +3,10 @@
 Rubicon meters and charges **every word individually**. The atomic content unit
 is one word. Circle/x402 may batch settlement internally, but creators earn
 according to the exact number of words delivered. There are no payment chunks.
+This means a buyer agent may make a nanopayment for every word when the marginal
+value of each next word matters. The gateway keeps the application contract
+word-granular even if the payment facilitator optimizes settlement behind the
+scenes.
 
 Amounts are atomic USDC where `1 USDC = 1_000_000`.
 
@@ -87,12 +91,50 @@ Each accepted payment releases **exactly one** word:
 2. The gateway verifies the word-level payment.
 3. The gateway releases exactly one additional word.
 4. The ledger records that exact word and payment.
-5. The gateway emits updated word count and cost information.
+5. The gateway returns a per-word payment receipt in the response body and
+   mirrors it in the `PAYMENT-RESPONSE` header.
+6. The gateway emits updated word count and cost information.
 
 The response contains the released `word`, its `sequence`, `priceAtomic`,
-`wordsPaid`, `wordsDelivered`, `paidAtomic`, and `completed`. A failed payment
-releases no word. A retried payment with the same `idempotencyKey` returns the
-same word and never charges twice.
+`wordsPaid`, `wordsDelivered`, `paidAtomic`, `completed`, and a `payment`
+receipt with the word-level `paymentId`, `sequence`, `amountAtomic`, `currency`,
+`network`, destination `payTo`, `transactionHash`, `transactionHashes`, and
+`settledAt`. A failed payment releases no word. A retried payment with the same
+`idempotencyKey` returns the same word and same payment receipt, and never
+charges twice.
+
+Example successful word response:
+
+```json
+{
+  "accepted": true,
+  "sequence": 0,
+  "word": "Rubicon",
+  "priceAtomic": "1",
+  "wordsPaid": 1,
+  "wordsDelivered": 1,
+  "paidAtomic": "1",
+  "completed": false,
+  "payment": {
+    "paymentId": "8ed8f6c4-...",
+    "sessionId": "session_...",
+    "articleId": "rubicon-streaming-001",
+    "sequence": 0,
+    "meteringUnit": "word",
+    "amountAtomic": "1",
+    "currency": "USDC",
+    "network": "eip155:5042002",
+    "payTo": "0x...",
+    "transactionHash": "0xabc123",
+    "transactionHashes": ["0xabc123"],
+    "transferId": "0xabc123",
+    "settledAt": "2026-06-17T12:00:00.000Z"
+  },
+  "transactionHash": "0xabc123",
+  "transactionHashes": ["0xabc123"],
+  "transferId": "0xabc123"
+}
+```
 
 ## Stream Events
 

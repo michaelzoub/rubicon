@@ -367,12 +367,17 @@ export class PostgresLedgerRepository implements LedgerRepository {
       price_atomic: string;
       creator_amount_atomic: string;
       rubicon_fee_atomic: string;
+      network: string | null;
+      pay_to: `0x${string}` | null;
+      transaction_hash: string | null;
+      transaction_hashes: string[] | null;
       payment_id: string;
       transfer_id: string | null;
       created_at: string;
     }>(
       `SELECT d.session_id, d.article_id, d.sequence, d.word, d.price_atomic, d.payment_id, d.created_at,
-              p.creator_id, p.creator_amount_atomic, p.rubicon_fee_atomic, p.transfer_id
+              p.creator_id, p.creator_amount_atomic, p.rubicon_fee_atomic, p.network, p.pay_to,
+              p.transaction_hash, p.transaction_hashes, p.transfer_id
        FROM word_deliveries d JOIN word_payments p ON p.payment_id = d.payment_id
        WHERE d.idempotency_key = $1`,
       [key],
@@ -400,6 +405,10 @@ export class PostgresLedgerRepository implements LedgerRepository {
         amountAtomic: row.price_atomic as `${bigint}`,
         creatorAmountAtomic: row.creator_amount_atomic as `${bigint}`,
         rubiconFeeAtomic: row.rubicon_fee_atomic as `${bigint}`,
+        network: row.network ?? undefined,
+        payTo: row.pay_to ?? undefined,
+        transactionHash: row.transaction_hash ?? row.transfer_id ?? undefined,
+        transactionHashes: row.transaction_hashes ?? (row.transaction_hash || row.transfer_id ? [row.transaction_hash ?? row.transfer_id!] : undefined),
         transferId: row.transfer_id ?? undefined,
         createdAt: row.created_at,
       },
@@ -413,8 +422,9 @@ export class PostgresLedgerRepository implements LedgerRepository {
       const inserted = await client.query(
         `INSERT INTO word_payments
            (id, payment_id, session_id, article_id, creator_id, sequence, amount_atomic,
-            creator_amount_atomic, rubicon_fee_atomic, transfer_id, idempotency_key)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            creator_amount_atomic, rubicon_fee_atomic, network, pay_to, transaction_hash,
+            transaction_hashes, transfer_id, idempotency_key)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          ON CONFLICT (idempotency_key) DO NOTHING
          RETURNING payment_id`,
         [
@@ -427,6 +437,10 @@ export class PostgresLedgerRepository implements LedgerRepository {
           `${input.priceAtomic}`,
           `${input.creatorAmountAtomic}`,
           `${input.rubiconFeeAtomic}`,
+          input.network ?? null,
+          input.payTo ?? null,
+          input.transactionHash ?? input.transferId ?? null,
+          input.transactionHashes ? JSON.stringify(input.transactionHashes) : null,
           input.transferId ?? null,
           input.idempotencyKey,
         ],
@@ -454,11 +468,17 @@ export class PostgresLedgerRepository implements LedgerRepository {
         ],
       );
       await client.query(
-        `INSERT INTO settlement_receipts (id, payment_id, transfer_id, amount_atomic, creator_amount_atomic, rubicon_fee_atomic)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
+        `INSERT INTO settlement_receipts
+           (id, payment_id, network, pay_to, transaction_hash, transaction_hashes, transfer_id,
+            amount_atomic, creator_amount_atomic, rubicon_fee_atomic)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [
           crypto.randomUUID(),
           input.paymentId,
+          input.network ?? null,
+          input.payTo ?? null,
+          input.transactionHash ?? input.transferId ?? null,
+          input.transactionHashes ? JSON.stringify(input.transactionHashes) : null,
           input.transferId ?? null,
           `${input.priceAtomic}`,
           `${input.creatorAmountAtomic}`,
@@ -493,6 +513,10 @@ export class PostgresLedgerRepository implements LedgerRepository {
         amountAtomic: `${input.priceAtomic}`,
         creatorAmountAtomic: `${input.creatorAmountAtomic}`,
         rubiconFeeAtomic: `${input.rubiconFeeAtomic}`,
+        network: input.network,
+        payTo: input.payTo,
+        transactionHash: input.transactionHash ?? input.transferId,
+        transactionHashes: input.transactionHashes ?? (input.transactionHash || input.transferId ? [input.transactionHash ?? input.transferId!] : undefined),
         transferId: input.transferId,
         createdAt,
       },
@@ -529,6 +553,10 @@ export class PostgresLedgerRepository implements LedgerRepository {
       amount_atomic: string;
       creator_amount_atomic: string;
       rubicon_fee_atomic: string;
+      network: string | null;
+      pay_to: `0x${string}` | null;
+      transaction_hash: string | null;
+      transaction_hashes: string[] | null;
       transfer_id: string | null;
       created_at: string;
     }>("SELECT * FROM word_payments WHERE session_id = $1 ORDER BY sequence", [sessionId]);
@@ -540,6 +568,10 @@ export class PostgresLedgerRepository implements LedgerRepository {
       amountAtomic: row.amount_atomic as `${bigint}`,
       creatorAmountAtomic: row.creator_amount_atomic as `${bigint}`,
       rubiconFeeAtomic: row.rubicon_fee_atomic as `${bigint}`,
+      network: row.network ?? undefined,
+      payTo: row.pay_to ?? undefined,
+      transactionHash: row.transaction_hash ?? row.transfer_id ?? undefined,
+      transactionHashes: row.transaction_hashes ?? (row.transaction_hash || row.transfer_id ? [row.transaction_hash ?? row.transfer_id!] : undefined),
       transferId: row.transfer_id ?? undefined,
       createdAt: row.created_at,
     }));

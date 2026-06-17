@@ -137,6 +137,10 @@ CREATE TABLE IF NOT EXISTS word_payments (
   amount_atomic        TEXT NOT NULL,
   creator_amount_atomic TEXT NOT NULL,
   rubicon_fee_atomic   TEXT NOT NULL,
+  network              TEXT,
+  pay_to               TEXT,
+  transaction_hash     TEXT,
+  transaction_hashes   JSONB,
   transfer_id          TEXT,
   idempotency_key      TEXT NOT NULL UNIQUE,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -147,6 +151,10 @@ CREATE INDEX IF NOT EXISTS word_payments_creator_idx ON word_payments(creator_id
 CREATE TABLE IF NOT EXISTS settlement_receipts (
   id                    TEXT PRIMARY KEY,
   payment_id            TEXT NOT NULL REFERENCES word_payments(payment_id),
+  network               TEXT,
+  pay_to                TEXT,
+  transaction_hash      TEXT,
+  transaction_hashes    JSONB,
   transfer_id           TEXT,
   amount_atomic         TEXT NOT NULL,
   creator_amount_atomic TEXT NOT NULL,

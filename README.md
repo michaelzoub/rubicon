@@ -9,7 +9,8 @@ it has enough information and pays for exactly the words it received.
 
 Rubicon meters and charges every word individually. Circle may batch settlement
 internally, but creators earn according to the exact number of words delivered.
-There are no payment chunks.
+There are no payment chunks. Each released word returns a word-level receipt
+with amount, network, destination, and transaction hash details.
 
 ## Packages
 
@@ -108,7 +109,8 @@ Only articles with `state = live` are consumable by buyer agents.
 4. Set `CIRCLE_FACILITATOR_URL` for the target network.
 
 Each word is verified and settled to the creator's wallet before the next word is
-emitted.
+emitted. The gateway returns the per-word receipt in the JSON response and in
+the `PAYMENT-RESPONSE` header.
 
 ## Docs
 

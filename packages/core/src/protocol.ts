@@ -148,6 +148,8 @@ export interface StreamPaymentResponse {
   wordsDelivered: number;
   paidAtomic: AtomicAmount;
   completed: boolean;
+  /** Canonical, per-word settlement receipt. Present whenever a word is released. */
+  payment?: WordPaymentReceipt;
   /** On-chain settlement transaction hash returned by the payment facilitator. */
   transactionHash?: string;
   /** All on-chain settlement transaction hashes for this payment, when available. */
@@ -156,11 +158,30 @@ export interface StreamPaymentResponse {
   transferId?: string;
 }
 
+export interface WordPaymentReceipt {
+  paymentId: string;
+  sessionId: string;
+  articleId: string;
+  sequence: number;
+  meteringUnit: "word";
+  amountAtomic: AtomicAmount;
+  currency: "USDC";
+  network?: string;
+  payTo?: `0x${string}`;
+  transactionHash?: string;
+  transactionHashes?: string[];
+  /** Backwards-compatible alias for transactionHash. */
+  transferId?: string;
+  settledAt: string;
+}
+
 export interface PaymentVerification {
   accepted: boolean;
   transactionHash?: string;
   transactionHashes?: string[];
   transferId?: string;
+  network?: string;
+  payTo?: `0x${string}`;
   amountAtomic?: AtomicAmount;
   reason?: string;
 }
@@ -193,6 +214,8 @@ export type GatewayEvent =
       sequence: number;
       paymentId: string;
       amountAtomic: AtomicAmount;
+      network?: string;
+      payTo?: `0x${string}`;
       transactionHash?: string;
       transactionHashes?: string[];
       transferId?: string;

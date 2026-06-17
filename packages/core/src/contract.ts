@@ -99,6 +99,10 @@ export interface PaymentActivity {
   amountAtomic: AtomicAmount;
   creatorAmountAtomic: AtomicAmount;
   rubiconFeeAtomic: AtomicAmount;
+  network?: string;
+  payTo?: `0x${string}`;
+  transactionHash?: string;
+  transactionHashes?: string[];
   transferId?: string;
   createdAt: string;
 }

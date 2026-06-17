@@ -60,6 +60,10 @@ export interface RecordWordDeliveryInput {
   creatorAmountAtomic: bigint;
   rubiconFeeAtomic: bigint;
   paymentId: string;
+  network?: string;
+  payTo?: `0x${string}`;
+  transactionHash?: string;
+  transactionHashes?: string[];
   transferId?: string;
   /** Ties this payment+delivery to one specific next word; retries are no-ops. */
   idempotencyKey: string;
