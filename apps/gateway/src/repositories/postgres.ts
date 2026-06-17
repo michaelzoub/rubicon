@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
@@ -431,7 +432,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
          ON CONFLICT (idempotency_key) DO NOTHING
          RETURNING payment_id`,
         [
-          crypto.randomUUID(),
+          randomUUID(),
           input.paymentId,
           input.sessionId,
           input.articleId,
@@ -460,7 +461,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
         `INSERT INTO word_deliveries (id, session_id, article_id, sequence, word, price_atomic, payment_id, idempotency_key)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [
-          crypto.randomUUID(),
+          randomUUID(),
           input.sessionId,
           input.articleId,
           input.sequence,
@@ -476,7 +477,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
             amount_atomic, creator_amount_atomic, rubicon_fee_atomic)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [
-          crypto.randomUUID(),
+          randomUUID(),
           input.paymentId,
           input.network ?? null,
           input.payTo ?? null,

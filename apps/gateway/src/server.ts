@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import {
   canAffordNextWord,
@@ -143,7 +144,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     if (!article) {
       return reply.code(404).send({ error: "article_not_available" });
     }
-    const conversationId = crypto.randomUUID();
+    const conversationId = randomUUID();
     await ledger.createConversation({
       id: conversationId,
       articleId: article.id,
@@ -228,7 +229,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         return reply.code(404).send({ error: "conversation_not_found" });
       }
     } else {
-      conversationId = crypto.randomUUID();
+      conversationId = randomUUID();
       await ledger.createConversation({
         id: conversationId,
         articleId: article.id,
@@ -388,7 +389,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         priceAtomic: wordPaymentAtomic,
         creatorAmountAtomic: BigInt(usage.creatorAmountAtomic),
         rubiconFeeAtomic: BigInt(usage.rubiconFeeAtomic),
-        paymentId: crypto.randomUUID(),
+        paymentId: randomUUID(),
         network: verification.network,
         payTo: verification.payTo ?? session.sellerWallet,
         transactionHash: verification.transactionHash ?? verification.transferId,
@@ -516,7 +517,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   ): Promise<ConversationMessage[]> {
     const now = new Date().toISOString();
     const buyerMessage: SellerAgentMessageRecord = {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       conversationId,
       articleId: article.id,
       role: "buyer",
@@ -537,7 +538,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       message,
     });
     const sellerMessage: SellerAgentMessageRecord = {
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       conversationId,
       articleId: article.id,
       role: "seller",

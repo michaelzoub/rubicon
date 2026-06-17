@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { AtomicAmount } from "./money.js";
 import type { Budget } from "./protocol.js";
 
@@ -50,7 +52,7 @@ export function createSession(input: {
 }): SessionRecord {
   const now = new Date();
   return {
-    id: input.id ?? crypto.randomUUID(),
+    id: input.id ?? randomUUID(),
     articleId: input.articleId,
     creatorId: input.creatorId,
     conversationId: input.conversationId,
