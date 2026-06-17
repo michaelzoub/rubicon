@@ -115,15 +115,25 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
 
   app.get("/v1/endpoints", async () => ({ endpoints: ENDPOINTS }));
 
-  app.get("/v1/repository", async () => ({
-    repository: "articles",
-    articles: await articles.listPublishedArticles(),
-  }));
+  function requestLogStorageFailure(reply: FastifyReply, error: unknown): void {
+    reply.log.error({ err: error }, "failed to load article repository from Supabase");
+  }
 
-  app.get("/v1/articles", async () => ({
-    repository: "articles",
-    articles: await articles.listPublishedArticles(),
-  }));
+  async function listRepository(reply: FastifyReply): Promise<{ repository: "articles"; articles: ArticleSummary[] } | FastifyReply> {
+    try {
+      return {
+        repository: "articles",
+        articles: await articles.listPublishedArticles(),
+      };
+    } catch (error) {
+      requestLogStorageFailure(reply, error);
+      return reply.code(500).send({ error: "repository_unavailable", message: "Unable to load the article repository." });
+    }
+  }
+
+  app.get("/v1/repository", async (_request, reply) => listRepository(reply));
+
+  app.get("/v1/articles", async (_request, reply) => listRepository(reply));
 
   app.get<{ Params: { articleId: string }; Querystring: { goal?: string } }>(
     "/v1/articles/:articleId/navigation",

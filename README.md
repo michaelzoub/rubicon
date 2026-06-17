@@ -23,9 +23,9 @@ with amount, network, destination, and transaction hash details.
 
 Creator authentication, article CRUD, wallet settings, and the dashboard live in
 the separate Next.js app
-[rubicon-marketing](https://github.com/michaelzoub/rubicon-marketing). The two
-repositories integrate through a shared Postgres data model — Rubicon does not
-implement a creator dashboard API.
+[rubicon-marketing](https://github.com/michaelzoub/rubicon-marketing). The
+gateway reads public article metadata from Supabase with the anon role and RLS;
+Rubicon does not implement a creator dashboard API.
 
 ## Gateway fee
 
@@ -34,11 +34,13 @@ excluding only unavoidable external network/payment-provider costs.
 
 ## Quick Start (development)
 
-Development mode uses in-memory fixtures and a no-money payment shim:
+Development mode requires Supabase credentials for article reads. The payment
+path can still use the no-money payment shim:
 
 ```bash
 pnpm install
 cp .env.example .env
+# Fill SUPABASE_URL and SUPABASE_ANON_KEY in .env.
 pnpm dev:gateway
 ```
 
@@ -52,10 +54,10 @@ Manual flow:
 
 ```bash
 curl -s http://localhost:8787/v1/repository
-curl -s "http://localhost:8787/v1/articles/rubicon-streaming-001/navigation?goal=how%20billing%20works"
+curl -s "http://localhost:8787/v1/articles/<live-article-id>/navigation?goal=how%20billing%20works"
 curl -s -X POST http://localhost:8787/v1/seller-agent/conversations \
   -H "content-type: application/json" \
-  -d '{"articleId":"rubicon-streaming-001","goal":"how billing works","message":"where do you explain pricing?"}'
+  -d '{"articleId":"<live-article-id>","goal":"how billing works","message":"where do you explain pricing?"}'
 ```
 
 Open a session with `POST /v1/sessions`, then send one `POST
@@ -72,7 +74,7 @@ const rubicon = new RubiconClient({
 });
 
 const receipt = await rubicon.run({
-  articleId: "rubicon-streaming-001",
+  articleId: "live-article-id-from-repository",
   goal: "Find the resale-fee clause",
   maxSpendAtomic: "20000",
   stopWhen: ({ text, wordsRead }) => wordsRead > 50 || /resale fee/i.test(text),
@@ -91,9 +93,10 @@ payment per word by hand.
 
 ## Production storage
 
-Set `DATABASE_URL` to a shared Postgres instance authored by rubicon-marketing.
-The gateway then reads `live` articles, creators, and verified wallets from
-Postgres and writes word/payment/earnings activity. Apply migrations:
+Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` so the gateway can read `live`
+articles, creators, sections, and verified wallets through Supabase RLS. Set
+`DATABASE_URL` when you also want runtime sessions, word deliveries, payments,
+and earnings persisted in Postgres. Apply migrations:
 
 ```bash
 DATABASE_URL=postgres://... pnpm --filter @rubicon-caliga/gateway migrate

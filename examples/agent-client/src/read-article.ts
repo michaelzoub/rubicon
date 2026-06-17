@@ -10,10 +10,14 @@ import { CircleGatewayPaymentEngine, RubiconClient, StaticPaymentEngine } from "
 
 const privateKey = process.env.CIRCLE_PRIVATE_KEY as `0x${string}` | undefined;
 const baseUrl = process.env.GATEWAY_BASE_URL ?? "http://localhost:8787";
-const articleId = process.env.DEMO_ARTICLE_ID ?? "rubicon-streaming-001";
+const articleId = process.env.CONSUME_ARTICLE_ID;
 const goal = process.env.CONSUME_GOAL ?? "Understand how Rubicon meters and charges per word";
 const maxSpendAtomic = (process.env.CONSUME_BUDGET_ATOMIC ?? "50000") as `${bigint}`;
 const stopAfterWords = Number(process.env.CONSUME_STOP_AFTER_WORDS ?? "75");
+
+if (!articleId) {
+  throw new Error("CONSUME_ARTICLE_ID must be set to a live article id from /v1/repository");
+}
 
 const rubicon = new RubiconClient({
   baseUrl,

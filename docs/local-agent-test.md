@@ -6,7 +6,7 @@ gateway through the local SDK package, without publishing
 
 ## What This Tests
 
-- A local Rubicon gateway running with in-memory development fixtures.
+- A local Rubicon gateway reading live article metadata from Supabase.
 - The local, unpublished `packages/agent-sdk` package.
 - A real agent/script importing `@rubicon-caliga/agent-sdk` and calling
   `rubicon.run(...)`.
@@ -20,6 +20,7 @@ From this repo:
 ```bash
 pnpm install
 pnpm --filter @rubicon-caliga/agent-sdk build
+# Ensure .env has SUPABASE_URL and SUPABASE_ANON_KEY.
 GATEWAY_PORT=8788 pnpm dev:gateway
 ```
 
@@ -59,7 +60,7 @@ const rubicon = new Rubicon({
 });
 
 const receipt = await rubicon.run({
-  articleId: "rubicon-streaming-001",
+  articleId: "live-article-id-from-repository",
   goal: "Find the resale-fee clause",
   maxSpendAtomic: "20000",
   onWord: (word) => {
@@ -105,7 +106,7 @@ Steps:
    });
 
    const receipt = await rubicon.run({
-     articleId: "rubicon-streaming-001",
+     articleId: "live-article-id-from-repository",
      goal: "Find the resale-fee clause",
      maxSpendAtomic: "20000",
      onWord: (word) => {

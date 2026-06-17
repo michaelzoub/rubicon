@@ -7,6 +7,7 @@ import {
   InMemoryPublishedArticleRepository,
   type ArticleFixture,
 } from "./repositories/in-memory.js";
+import { SupabasePublishedArticleRepository, type SupabaseReader } from "./repositories/supabase.js";
 import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
 import type { PaymentVerifier } from "./payments/types.js";
 
@@ -83,6 +84,160 @@ async function pay(
     url: `/v1/sessions/${sessionId}/payments`,
     payload: { paymentPayload: opts?.payload ?? {}, idempotencyKey: opts?.key },
   });
+}
+
+interface FakeCreatorRow {
+  id: string;
+  username: string;
+}
+
+interface FakeSectionRow {
+  id: string;
+  article_id: string;
+  section_id: string;
+  heading: string;
+  level: number;
+  word_start: number;
+  word_count: number;
+  ordinal: number;
+}
+
+interface FakeArticleRow {
+  id: string;
+  creator_id: string;
+  title: string;
+  author: string;
+  state: string;
+  price_per_word_atomic: string;
+  max_article_price_atomic: string | null;
+  total_words: number;
+  revision: number;
+  seller_agent_config: null;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface FakeWalletRow {
+  creator_id: string;
+  address: string;
+  network: string;
+  verified: boolean;
+}
+
+class FakeSupabase implements SupabaseReader {
+  creators: FakeCreatorRow[] = [{ id: "creator-db", username: "dbalice" }];
+  articles: FakeArticleRow[] = [
+    {
+      id: "art-db",
+      creator_id: "creator-db",
+      title: "Database Article",
+      author: "DB Alice",
+      state: "live",
+      price_per_word_atomic: "7",
+      max_article_price_atomic: null,
+      total_words: 6,
+      revision: 1,
+      seller_agent_config: null,
+      body: "one two three four five six",
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+    },
+  ];
+  sections: FakeSectionRow[] = [
+    { id: "sec-late", article_id: "art-db", section_id: "later", heading: "Later", level: 2, word_start: 3, word_count: 3, ordinal: 2 },
+    { id: "sec-start", article_id: "art-db", section_id: "start", heading: "Start", level: 1, word_start: 0, word_count: 3, ordinal: 1 },
+  ];
+  wallets: FakeWalletRow[] = [
+    { creator_id: "creator-db", address: "0x0000000000000000000000000000000000000db0", network: "eip155:5042002", verified: true },
+  ];
+  error: { message: string; details?: string } | null = null;
+
+  from<T = unknown>(table: string) {
+    return new FakeSupabaseQuery<T>(this, table);
+  }
+
+  rowsFor(table: string): unknown[] {
+    if (this.error) {
+      return [];
+    }
+    if (table === "articles") {
+      return this.articles.map((article) => ({
+        ...article,
+        creator: this.creators.find((creator) => creator.id === article.creator_id) ?? null,
+        sections: this.sections.filter((section) => section.article_id === article.id),
+      }));
+    }
+    if (table === "article_sections") {
+      return this.sections;
+    }
+    if (table === "creator_wallets") {
+      return this.wallets;
+    }
+    return [];
+  }
+}
+
+class FakeSupabaseQuery<T> implements PromiseLike<{ data: T[] | null; error: { message: string; details?: string } | null }> {
+  private readonly filters: Array<{ column: string; value: unknown }> = [];
+  private readonly orders: Array<{ column: string; ascending: boolean }> = [];
+  private limitCount: number | undefined;
+
+  constructor(
+    private readonly db: FakeSupabase,
+    private readonly table: string,
+  ) {}
+
+  select(): this {
+    return this;
+  }
+
+  eq(column: string, value: unknown): this {
+    this.filters.push({ column, value });
+    return this;
+  }
+
+  order(column: string, options?: { ascending?: boolean }): this {
+    this.orders.push({ column, ascending: options?.ascending ?? true });
+    return this;
+  }
+
+  limit(count: number): this {
+    this.limitCount = count;
+    return this;
+  }
+
+  then<TResult1 = { data: T[] | null; error: { message: string; details?: string } | null }, TResult2 = never>(
+    onfulfilled?: ((value: { data: T[] | null; error: { message: string; details?: string } | null }) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): PromiseLike<TResult1 | TResult2> {
+    return Promise.resolve(this.execute()).then(onfulfilled, onrejected);
+  }
+
+  private execute(): { data: T[] | null; error: { message: string; details?: string } | null } {
+    if (this.db.error) {
+      return { data: null, error: this.db.error };
+    }
+    let rows = this.db.rowsFor(this.table);
+    for (const filter of this.filters) {
+      rows = rows.filter((row) => valueFor(row, filter.column) === filter.value);
+    }
+    for (const order of this.orders) {
+      rows = [...rows].sort((a, b) => {
+        const left = valueFor(a, order.column);
+        const right = valueFor(b, order.column);
+        return (Number(left) - Number(right)) * (order.ascending ? 1 : -1);
+      });
+    }
+    if (this.limitCount !== undefined) {
+      rows = rows.slice(0, this.limitCount);
+    }
+    return { data: rows as T[], error: null };
+  }
+}
+
+function valueFor(row: unknown, column: string): unknown {
+  return (row as Record<string, unknown>)[column];
 }
 
 test("1: one accepted word payment releases exactly one word", async () => {
@@ -163,6 +318,94 @@ test("agent API key protects v1 routes when configured", async () => {
     }
     await app.close();
   }
+});
+
+test("repository endpoint returns live article records from Supabase", async () => {
+  const supabase = new FakeSupabase();
+  supabase.articles.push({
+    ...supabase.articles[0]!,
+    id: "art-draft-db",
+    state: "draft",
+    title: "Draft Database Article",
+  });
+  const app = createGateway({
+    articleRepository: new SupabasePublishedArticleRepository(supabase),
+    ledger: new InMemoryLedgerRepository(),
+    sessionTtlMs: 60_000,
+    gatewayBaseUrl: "http://test",
+    logger: false,
+  });
+
+  const response = await app.inject({ method: "GET", url: "/v1/repository" });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    repository: "articles",
+    articles: [
+      {
+        articleId: "art-db",
+        creatorId: "creator-db",
+        creatorUsername: "dbalice",
+        title: "Database Article",
+        author: "DB Alice",
+        state: "live",
+        totalWords: 6,
+        pricePerWordAtomic: "7",
+        maxArticlePriceAtomic: "42",
+        sections: [
+          { sectionId: "start", heading: "Start", level: 1, wordStart: 0, wordCount: 3 },
+          { sectionId: "later", heading: "Later", level: 2, wordStart: 3, wordCount: 3 },
+        ],
+      },
+    ],
+  });
+  await app.close();
+});
+
+test("repository endpoint reflects Supabase record changes without recreating the app", async () => {
+  const supabase = new FakeSupabase();
+  const app = createGateway({
+    articleRepository: new SupabasePublishedArticleRepository(supabase),
+    ledger: new InMemoryLedgerRepository(),
+    sessionTtlMs: 60_000,
+    gatewayBaseUrl: "http://test",
+    logger: false,
+  });
+
+  const first = await app.inject({ method: "GET", url: "/v1/repository" });
+  assert.equal(first.statusCode, 200);
+  assert.equal((first.json() as { articles: Array<{ title: string }> }).articles[0]?.title, "Database Article");
+
+  supabase.articles[0]!.title = "Database Article Updated In Supabase";
+  supabase.sections.reverse();
+
+  const second = await app.inject({ method: "GET", url: "/v1/repository" });
+  assert.equal(second.statusCode, 200);
+  const article = (second.json() as { articles: Array<{ title: string; sections: Array<{ sectionId: string }> }> }).articles[0];
+  assert.equal(article?.title, "Database Article Updated In Supabase");
+  assert.deepEqual(article?.sections.map((section) => section.sectionId), ["start", "later"]);
+  await app.close();
+});
+
+test("repository endpoint returns a safe 500 when Supabase fails", async () => {
+  const supabase = new FakeSupabase();
+  supabase.error = { message: "permission denied for table articles", details: "internal schema detail" };
+  const app = createGateway({
+    articleRepository: new SupabasePublishedArticleRepository(supabase),
+    ledger: new InMemoryLedgerRepository(),
+    sessionTtlMs: 60_000,
+    gatewayBaseUrl: "http://test",
+    logger: false,
+  });
+
+  const response = await app.inject({ method: "GET", url: "/v1/repository" });
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(response.json(), {
+    error: "repository_unavailable",
+    message: "Unable to load the article repository.",
+  });
+  assert.ok(!response.body.includes("permission denied"));
+  assert.ok(!response.body.includes("internal schema detail"));
+  await app.close();
 });
 
 test("2: ten payments release exactly ten words", async () => {

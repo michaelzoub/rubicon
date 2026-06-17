@@ -21,7 +21,7 @@ const rubicon = new Rubicon({
 });
 
 const receipt = await rubicon.run({
-  articleId: "rubicon-streaming-001",
+  articleId: "live-article-id-from-repository",
   goal: "Find the resale-fee clause",
   maxSpendAtomic: "20000",
   stopWhen: ({ text, wordsRead, amountPaid }) => wordsRead > 50 || /resale fee/i.test(text),

@@ -35,7 +35,7 @@ never returns body text, quotes, conclusions, summaries, or unpaid facts.
 `POST /v1/seller-agent/conversations`
 
 ```json
-{ "articleId": "rubicon-streaming-001", "goal": "Find the resale-fee clause", "message": "where is the resale fee discussed?" }
+{ "articleId": "live-article-id-from-repository", "goal": "Find the resale-fee clause", "message": "where is the resale fee discussed?" }
 ```
 
 Opens a conversation with the article's seller agent. Returns a
@@ -58,7 +58,7 @@ Continues the conversation; returns the buyer/seller messages and an optional
 
 ```json
 {
-  "articleId": "rubicon-streaming-001",
+  "articleId": "live-article-id-from-repository",
   "goal": "Find the resale-fee clause",
   "conversationId": "<optional, from a seller conversation>",
   "sectionId": "<optional starting section>",
@@ -118,7 +118,7 @@ Example successful word response:
   "payment": {
     "paymentId": "8ed8f6c4-...",
     "sessionId": "session_...",
-    "articleId": "rubicon-streaming-001",
+    "articleId": "live-article-id-from-repository",
     "sequence": 0,
     "meteringUnit": "word",
     "amountAtomic": "1",

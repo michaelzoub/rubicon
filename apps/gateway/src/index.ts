@@ -1,12 +1,9 @@
-import { readFile } from "node:fs/promises";
 import { createGateway } from "./server.js";
 import { ACTIVE_X402_NETWORK, GATEWAY_API_URL, toCaip2Network } from "./chain.js";
 import { CircleX402PaymentVerifier } from "./payments/x402-circle.js";
 import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
-import {
-  InMemoryLedgerRepository,
-  InMemoryPublishedArticleRepository,
-} from "./repositories/in-memory.js";
+import { InMemoryLedgerRepository } from "./repositories/in-memory.js";
+import { createSupabaseClientFromEnv, SupabasePublishedArticleRepository } from "./repositories/supabase.js";
 import type { LedgerRepository, PublishedArticleRepository } from "./repositories/types.js";
 import { DefaultSellerAgent } from "./seller-agent/seller-agent.js";
 import { TextCompletionSellerModelProvider } from "./seller-agent/model-provider.js";
@@ -19,51 +16,22 @@ const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 15 * 60_000);
 let articleRepository: PublishedArticleRepository;
 let ledger: LedgerRepository;
 
+articleRepository = new SupabasePublishedArticleRepository(createSupabaseClientFromEnv());
+console.log("[gateway] using Supabase for published articles");
+
 const databaseUrl = process.env.DATABASE_URL;
 if (databaseUrl) {
-  // Production: shared Postgres storage authored through rubicon-marketing.
-  const { createPgPool, runMigrations, PostgresPublishedArticleRepository, PostgresLedgerRepository } =
-    await import("./repositories/postgres.js");
+  // Runtime sessions, conversations, payments, and receipts remain in Postgres.
+  const { createPgPool, runMigrations, PostgresLedgerRepository } = await import("./repositories/postgres.js");
   const pool = createPgPool(databaseUrl);
   if (process.env.RUN_MIGRATIONS === "true") {
     await runMigrations(pool);
   }
-  articleRepository = new PostgresPublishedArticleRepository(pool);
   ledger = new PostgresLedgerRepository(pool);
-  console.log("[gateway] using Postgres persistence");
+  console.log("[gateway] using Postgres runtime persistence");
 } else {
-  // Development fixtures — local testing only, not production data.
-  const body = process.env.DEMO_ARTICLE_CONTENT?.trim()
-    ? process.env.DEMO_ARTICLE_CONTENT
-    : await readFile(new URL("./demo-article.md", import.meta.url), "utf8");
-  const creatorId = process.env.DEMO_CREATOR_ID ?? "rubicon-demo";
-  const walletAddress = (process.env.DEMO_CREATOR_WALLET ??
-    "0x000000000000000000000000000000000000dEaD") as `0x${string}`;
-  const published = new InMemoryPublishedArticleRepository({
-    articles: [
-      {
-        id: process.env.DEMO_ARTICLE_ID ?? "rubicon-streaming-001",
-        creatorId,
-        creatorUsername: process.env.DEMO_CREATOR_USERNAME ?? "rubicon-demo",
-        title: process.env.DEMO_ARTICLE_TITLE ?? "Rubicon streams articles by the word",
-        author: process.env.DEMO_AUTHOR ?? "Rubicon Demo",
-        state: "live",
-        pricePerWordAtomic: BigInt(process.env.PRICE_PER_WORD_ATOMIC ?? "1"),
-        body,
-      },
-    ],
-    wallets: [
-      {
-        creatorId,
-        address: walletAddress,
-        network: toCaip2Network(process.env.CIRCLE_X402_NETWORKS?.split(",")[0]?.trim() ?? ACTIVE_X402_NETWORK),
-        verified: true,
-      },
-    ],
-  });
-  articleRepository = published;
   ledger = new InMemoryLedgerRepository();
-  console.log("[gateway] using in-memory development fixtures");
+  console.log("[gateway] using in-memory runtime ledger");
 }
 
 const paymentVerifier: PaymentVerifier =
