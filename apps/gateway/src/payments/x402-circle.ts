@@ -97,6 +97,8 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     return {
       accepted: true,
       amountAtomic: (settlement.amount ?? requirements.amount) as `${bigint}`,
+      transactionHash: settlement.transaction,
+      transactionHashes: [settlement.transaction],
       transferId: settlement.transaction,
     };
   }

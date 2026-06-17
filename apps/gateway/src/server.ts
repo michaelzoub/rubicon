@@ -78,8 +78,20 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   const ledger = options.ledger;
   const articles = options.articleRepository;
   const gatewayFeeBps = options.gatewayFeeBps ?? 0;
-  const gatewayBaseUrl = options.gatewayBaseUrl ?? `http://localhost:${process.env.GATEWAY_PORT ?? 8787}`;
+  const gatewayBaseUrl = options.gatewayBaseUrl ?? `http://localhost:${process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787}`;
+  const agentApiKey = process.env.RUBICON_AGENT_API_KEY;
   const streamStates = new Map<string, StreamState>();
+
+  app.addHook("onRequest", async (request, reply) => {
+    if (!agentApiKey || request.url === "/health") {
+      return;
+    }
+    const authorization = request.headers.authorization;
+    const expected = `Bearer ${agentApiKey}`;
+    if (authorization !== expected) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+  });
 
   async function buildNavigation(article: ArticleRecord, goal?: string): Promise<ArticleNavigation> {
     const navigation = await sellerAgent.navigate({ article, goal });
@@ -301,6 +313,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
             BigInt(cached.delivery.priceAtomic),
             session.state === "completed",
             cached.payment.transferId,
+            cached.payment.transferId ? [cached.payment.transferId] : undefined,
           ),
         );
       }
@@ -377,7 +390,15 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         // Lost an idempotency race; return the canonical word without re-charging.
         // The winning request emits completion + closes the session over SSE.
         return reply.send(
-          buildPaymentResponse(session, record.delivery.word, record.delivery.sequence, wordPaymentAtomic, false, record.payment.transferId),
+          buildPaymentResponse(
+            session,
+            record.delivery.word,
+            record.delivery.sequence,
+            wordPaymentAtomic,
+            false,
+            record.payment.transferId,
+            record.payment.transferId ? [record.payment.transferId] : undefined,
+          ),
         );
       }
 
@@ -391,6 +412,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         sequence,
         paymentId: record.payment.paymentId,
         amountAtomic: `${wordPaymentAtomic}`,
+        transactionHash: verification.transactionHash ?? verification.transferId,
+        transactionHashes: paymentTransactionHashes(verification.transactionHash, verification.transactionHashes, verification.transferId),
         transferId: verification.transferId,
       });
       events.publish({
@@ -422,7 +445,15 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       }
 
       return reply.send(
-        buildPaymentResponse(session, next.word, sequence, wordPaymentAtomic, completed, verification.transferId),
+        buildPaymentResponse(
+          session,
+          next.word,
+          sequence,
+          wordPaymentAtomic,
+          completed,
+          verification.transactionHash ?? verification.transferId,
+          paymentTransactionHashes(verification.transactionHash, verification.transactionHashes, verification.transferId),
+        ),
       );
     },
   );
@@ -564,8 +595,10 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     sequence: number,
     priceAtomic: bigint,
     completed: boolean,
-    transferId?: string,
+    transactionHash?: string,
+    transactionHashes?: string[],
   ): StreamPaymentResponse {
+    const hashes = transactionHashes ?? (transactionHash ? [transactionHash] : undefined);
     return {
       accepted: true,
       sequence,
@@ -575,8 +608,18 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       wordsDelivered: session.wordsDelivered,
       paidAtomic: `${session.paidAtomic}`,
       completed,
-      transferId,
+      transactionHash,
+      transactionHashes: hashes,
+      transferId: transactionHash,
     };
+  }
+
+  function paymentTransactionHashes(
+    transactionHash?: string,
+    transactionHashes?: string[],
+    transferId?: string,
+  ): string[] | undefined {
+    return transactionHashes ?? (transactionHash || transferId ? [transactionHash ?? transferId!] : undefined);
   }
 
   return app;

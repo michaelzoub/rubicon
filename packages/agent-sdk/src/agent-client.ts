@@ -36,6 +36,7 @@ export interface ReadReceipt {
   conversationId: string;
   wordsRead: number;
   amountPaidAtomic: `${bigint}`;
+  transactionHashes: string[];
   text: string;
   completed: boolean;
   stopReason: "article_completed" | "stop_condition" | "budget_reached" | "max_words" | "aborted";
@@ -51,6 +52,8 @@ export type RubiconReadEvent =
       priceAtomic: `${bigint}`;
       wordsRead: number;
       amountPaidAtomic: `${bigint}`;
+      transactionHash?: string;
+      transactionHashes?: string[];
       text: string;
     }
   | { type: "article.usage"; wordsPaid: number; wordsDelivered: number; paidAtomic: `${bigint}` }
@@ -170,7 +173,17 @@ export class RubiconClient {
 
   /** Subscribe to raw word-level server-sent events for observation/logging. */
   streamEvents(sessionId: string, onEvent: (event: GatewayEvent) => void): () => void {
-    const source = new EventSource(`${this.baseUrl}/v1/sessions/${sessionId}/events`);
+    const headers = this.headers();
+    const source = new EventSource(`${this.baseUrl}/v1/sessions/${sessionId}/events`, {
+      fetch: (input, init) =>
+        this.fetcher(input, {
+          ...init,
+          headers: {
+            ...Object.fromEntries(new Headers(init?.headers).entries()),
+            ...headers,
+          },
+        }),
+    });
     source.onmessage = (message) => onEvent(JSON.parse(message.data) as GatewayEvent);
     source.onerror = () => source.close();
     return () => source.close();
@@ -251,6 +264,7 @@ export class RubiconClient {
     let text = "";
     let wordsRead = 0;
     let amountPaid = 0n;
+    const transactionHashes: string[] = [];
     let stopReason: ReadReceipt["stopReason"] = "article_completed";
     let completed = false;
 
@@ -260,6 +274,7 @@ export class RubiconClient {
       conversationId: session.conversationId,
       wordsRead,
       amountPaidAtomic: `${amountPaid}`,
+      transactionHashes: [...transactionHashes],
       text,
       completed,
       stopReason,
@@ -302,6 +317,7 @@ export class RubiconClient {
 
       wordsRead = result.wordsDelivered;
       amountPaid = BigInt(result.paidAtomic);
+      transactionHashes.push(...(result.transactionHashes ?? (result.transactionHash ? [result.transactionHash] : [])));
       text = text ? `${text} ${result.word}` : result.word;
 
       yield {
@@ -311,6 +327,8 @@ export class RubiconClient {
         priceAtomic: result.priceAtomic,
         wordsRead,
         amountPaidAtomic: `${amountPaid}`,
+        transactionHash: result.transactionHash,
+        transactionHashes: result.transactionHashes,
         text,
       };
       yield {

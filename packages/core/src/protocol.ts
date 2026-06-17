@@ -148,11 +148,18 @@ export interface StreamPaymentResponse {
   wordsDelivered: number;
   paidAtomic: AtomicAmount;
   completed: boolean;
+  /** On-chain settlement transaction hash returned by the payment facilitator. */
+  transactionHash?: string;
+  /** All on-chain settlement transaction hashes for this payment, when available. */
+  transactionHashes?: string[];
+  /** Backwards-compatible alias for transactionHash. */
   transferId?: string;
 }
 
 export interface PaymentVerification {
   accepted: boolean;
+  transactionHash?: string;
+  transactionHashes?: string[];
   transferId?: string;
   amountAtomic?: AtomicAmount;
   reason?: string;
@@ -186,6 +193,8 @@ export type GatewayEvent =
       sequence: number;
       paymentId: string;
       amountAtomic: AtomicAmount;
+      transactionHash?: string;
+      transactionHashes?: string[];
       transferId?: string;
     }
   | {

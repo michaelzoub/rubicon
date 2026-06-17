@@ -113,4 +113,7 @@ emitted.
 ## Docs
 
 See [docs/architecture.md](./docs/architecture.md) and
-[docs/protocol.md](./docs/protocol.md).
+[docs/protocol.md](./docs/protocol.md). To test an unpublished SDK from another
+local agent project, use
+[docs/local-agent-test.md](./docs/local-agent-test.md). For a public agent setup
+file, use [skill.md](./skill.md).

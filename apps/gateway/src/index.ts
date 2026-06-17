@@ -7,8 +7,10 @@ import {
   InMemoryPublishedArticleRepository,
 } from "./repositories/in-memory.js";
 import type { LedgerRepository, PublishedArticleRepository } from "./repositories/types.js";
+import { DefaultSellerAgent } from "./seller-agent/seller-agent.js";
+import { TextCompletionSellerModelProvider } from "./seller-agent/model-provider.js";
 
-const port = Number(process.env.GATEWAY_PORT ?? 8787);
+const port = Number(process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787);
 const gatewayBaseUrl = process.env.GATEWAY_BASE_URL ?? `http://localhost:${port}`;
 const gatewayFeeBps = Number(process.env.GATEWAY_FEE_BPS ?? 0);
 const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 15 * 60_000);
@@ -76,6 +78,7 @@ const paymentVerifier: PaymentVerifier =
 const gateway = createGateway({
   articleRepository,
   ledger,
+  sellerAgent: createSellerAgent(),
   paymentVerifier,
   sessionTtlMs,
   gatewayFeeBps,
@@ -83,3 +86,44 @@ const gateway = createGateway({
 });
 
 await gateway.listen({ port, host: "0.0.0.0" });
+
+function createSellerAgent(): DefaultSellerAgent {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return new DefaultSellerAgent();
+  }
+  const model = process.env.OPENAI_MODEL ?? "gpt-5.4-mini";
+  return new DefaultSellerAgent(
+    new TextCompletionSellerModelProvider(`openai:${model}`, async ({ system, prompt }) => {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          instructions: system,
+          input: prompt,
+          max_output_tokens: 600,
+          store: false,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`OpenAI seller model failed: ${response.status} ${await response.text()}`);
+      }
+      const body = (await response.json()) as {
+        output_text?: string;
+        output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+      };
+      return (
+        body.output_text ??
+        body.output
+          ?.flatMap((item) => item.content ?? [])
+          .find((content) => content.type === "output_text" && typeof content.text === "string")
+          ?.text ??
+        ""
+      );
+    }),
+  );
+}

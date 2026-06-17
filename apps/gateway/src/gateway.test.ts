@@ -8,6 +8,7 @@ import {
   type ArticleFixture,
 } from "./repositories/in-memory.js";
 import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
+import type { PaymentVerifier } from "./payments/types.js";
 
 const PRICE = 5n; // atomic USDC per word
 const PLAIN_BODY = Array.from({ length: 200 }, (_, index) => `w${index + 1}`).join(" ");
@@ -31,6 +32,7 @@ function setup(input?: {
   articles?: ArticleFixture[];
   wallets?: { creatorId: string; address: `0x${string}`; network?: string; verified?: boolean }[];
   gatewayFeeBps?: number;
+  paymentVerifier?: PaymentVerifier;
 }): {
   app: FastifyInstance;
   published: InMemoryPublishedArticleRepository;
@@ -55,6 +57,7 @@ function setup(input?: {
     sessionTtlMs: 60_000,
     gatewayFeeBps: input?.gatewayFeeBps ?? 0,
     gatewayBaseUrl: "http://test",
+    paymentVerifier: input?.paymentVerifier,
     logger: false,
   });
   return { app, published, ledger };
@@ -93,6 +96,59 @@ test("1: one accepted word payment releases exactly one word", async () => {
   assert.equal(body.paidAtomic, `${PRICE}`);
   assert.equal((await ledger.listDeliveries(session.sessionId)).length, 1);
   await app.close();
+});
+
+test("payment responses include Circle transaction hashes when settlement returns them", async () => {
+  const transactionHash = "0xabc123";
+  const { app } = setup({
+    paymentVerifier: {
+      async verify() {
+        return {
+          accepted: true,
+          amountAtomic: `${PRICE}`,
+          transactionHash,
+          transactionHashes: [transactionHash],
+          transferId: transactionHash,
+        };
+      },
+    },
+  });
+  const session = await startSession(app);
+  const body = (await pay(app, session.sessionId)).json() as StreamPaymentResponse;
+  assert.equal(body.transactionHash, transactionHash);
+  assert.deepEqual(body.transactionHashes, [transactionHash]);
+  assert.equal(body.transferId, transactionHash);
+  await app.close();
+});
+
+test("agent API key protects v1 routes when configured", async () => {
+  const previous = process.env.RUBICON_AGENT_API_KEY;
+  process.env.RUBICON_AGENT_API_KEY = "test-agent-key";
+  const { app } = setup();
+  try {
+    const unauthorized = await app.inject({
+      method: "GET",
+      url: "/v1/repository",
+    });
+    assert.equal(unauthorized.statusCode, 401);
+
+    const authorized = await app.inject({
+      method: "GET",
+      url: "/v1/repository",
+      headers: { authorization: "Bearer test-agent-key" },
+    });
+    assert.equal(authorized.statusCode, 200);
+
+    const health = await app.inject({ method: "GET", url: "/health" });
+    assert.equal(health.statusCode, 200);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.RUBICON_AGENT_API_KEY;
+    } else {
+      process.env.RUBICON_AGENT_API_KEY = previous;
+    }
+    await app.close();
+  }
 });
 
 test("2: ten payments release exactly ten words", async () => {
