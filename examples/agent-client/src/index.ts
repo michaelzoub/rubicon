@@ -23,16 +23,14 @@ if (!article) {
 }
 console.log("reading", article.title, `(${article.pricePerWordAtomic} atomic USDC/word)`);
 
-for await (const event of rubicon.read({
+const receipt = await rubicon.run({
   articleId: article.articleId,
   goal: "Summarize the article",
   maxSpendAtomic: "50000",
   maxWords: 40,
-})) {
-  if (event.type === "article.word") {
-    process.stdout.write(`${event.word} `);
-  }
-  if (event.type === "article.completed") {
-    console.log("\n--", event.receipt.stopReason, event.receipt.wordsRead, "words");
-  }
-}
+  onWord: (word) => {
+    process.stdout.write(`${word} `);
+  },
+});
+
+console.log("\n--", receipt.stopReason, receipt.wordsRead, "words");

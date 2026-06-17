@@ -67,20 +67,20 @@ word.
 import { RubiconClient, StaticPaymentEngine } from "@rubicon-caliga/agent-sdk";
 
 const rubicon = new RubiconClient({
-  baseUrl: "http://localhost:8787",
   paymentEngine: new StaticPaymentEngine(),
 });
 
-const stream = rubicon.read({
+const receipt = await rubicon.run({
   articleId: "rubicon-streaming-001",
   goal: "Find the resale-fee clause",
   maxSpendAtomic: "20000",
   stopWhen: ({ text, wordsRead }) => wordsRead > 50 || /resale fee/i.test(text),
+  onWord: (word) => {
+    process.stdout.write(`${word} `);
+  },
 });
 
-for await (const event of stream) {
-  // seller.message, article.word, article.usage, article.completed
-}
+console.log("\nreceipt:", receipt);
 ```
 
 The SDK runs the entire seller conversation → session → one-word payment → word →

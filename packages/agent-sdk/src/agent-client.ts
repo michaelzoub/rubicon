@@ -10,11 +10,11 @@ import type {
   StreamPaymentRequest,
   StreamPaymentResponse,
 } from "@rubicon-caliga/core";
-import type { AgentPaymentEngine } from "./payment-engine.js";
+import { StaticPaymentEngine, type AgentPaymentEngine } from "./payment-engine.js";
 
 export interface RubiconClientOptions {
-  baseUrl: string;
-  paymentEngine: AgentPaymentEngine;
+  baseUrl?: string;
+  paymentEngine?: AgentPaymentEngine;
   /** Optional auth header value for the public agent API, e.g. "Bearer <token>". */
   authorization?: string;
   fetch?: typeof fetch;
@@ -75,6 +75,11 @@ export interface ReadOptions {
   metadata?: Record<string, unknown>;
 }
 
+export interface RunOptions extends ReadOptions {
+  onEvent?: (event: RubiconReadEvent) => void | Promise<void>;
+  onWord?: (word: string, state: { text: string; wordsRead: number; amountPaidAtomic: `${bigint}` }) => void | Promise<void>;
+}
+
 /**
  * High-level buyer-agent client for Rubicon. `read()` runs the entire
  * pay -> word -> usage loop one word at a time until a stop condition is met,
@@ -82,17 +87,21 @@ export interface ReadOptions {
  */
 export class RubiconClient {
   private readonly fetcher: typeof fetch;
+  private readonly baseUrl: string;
+  private readonly paymentEngine: AgentPaymentEngine;
 
   constructor(private readonly options: RubiconClientOptions) {
     this.fetcher = options.fetch ?? fetch;
+    this.baseUrl = options.baseUrl ?? "http://localhost:8787";
+    this.paymentEngine = options.paymentEngine ?? new StaticPaymentEngine();
   }
 
   async getRepository(): Promise<RepositoryResponse> {
-    return this.readJson(await this.fetcher(`${this.options.baseUrl}/v1/repository`, { headers: this.headers() }));
+    return this.readJson(await this.fetcher(`${this.baseUrl}/v1/repository`, { headers: this.headers() }));
   }
 
   async getNavigation(articleId: string, goal?: string): Promise<NavigationResponse> {
-    const url = new URL(`${this.options.baseUrl}/v1/articles/${articleId}/navigation`);
+    const url = new URL(`${this.baseUrl}/v1/articles/${articleId}/navigation`);
     if (goal) {
       url.searchParams.set("goal", goal);
     }
@@ -105,7 +114,7 @@ export class RubiconClient {
     message?: string;
   }): Promise<StartConversationResponse> {
     return this.readJson(
-      await this.fetcher(`${this.options.baseUrl}/v1/seller-agent/conversations`, {
+      await this.fetcher(`${this.baseUrl}/v1/seller-agent/conversations`, {
         method: "POST",
         headers: this.headers({ "content-type": "application/json" }),
         body: JSON.stringify(input),
@@ -119,7 +128,7 @@ export class RubiconClient {
   ): Promise<SendConversationMessageResponse> {
     return this.readJson(
       await this.fetcher(
-        `${this.options.baseUrl}/v1/seller-agent/conversations/${conversationId}/messages`,
+        `${this.baseUrl}/v1/seller-agent/conversations/${conversationId}/messages`,
         {
           method: "POST",
           headers: this.headers({ "content-type": "application/json" }),
@@ -131,7 +140,7 @@ export class RubiconClient {
 
   async startSession(request: StartSessionRequest): Promise<StartSessionResponse> {
     return this.readJson(
-      await this.fetcher(`${this.options.baseUrl}/v1/sessions`, {
+      await this.fetcher(`${this.baseUrl}/v1/sessions`, {
         method: "POST",
         headers: this.headers({ "content-type": "application/json" }),
         body: JSON.stringify(request),
@@ -140,7 +149,7 @@ export class RubiconClient {
   }
 
   async payForWord(sessionId: string, payment: StreamPaymentRequest): Promise<StreamPaymentResponse> {
-    const response = await this.fetcher(`${this.options.baseUrl}/v1/sessions/${sessionId}/payments`, {
+    const response = await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/payments`, {
       method: "POST",
       headers: this.headers({ "content-type": "application/json" }),
       body: JSON.stringify(payment),
@@ -152,7 +161,7 @@ export class RubiconClient {
   }
 
   async abort(sessionId: string, reason = "agent_cancelled"): Promise<void> {
-    await this.fetcher(`${this.options.baseUrl}/v1/sessions/${sessionId}/abort`, {
+    await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/abort`, {
       method: "POST",
       headers: this.headers({ "content-type": "application/json" }),
       body: JSON.stringify({ reason }),
@@ -161,10 +170,35 @@ export class RubiconClient {
 
   /** Subscribe to raw word-level server-sent events for observation/logging. */
   streamEvents(sessionId: string, onEvent: (event: GatewayEvent) => void): () => void {
-    const source = new EventSource(`${this.options.baseUrl}/v1/sessions/${sessionId}/events`);
+    const source = new EventSource(`${this.baseUrl}/v1/sessions/${sessionId}/events`);
     source.onmessage = (message) => onEvent(JSON.parse(message.data) as GatewayEvent);
     source.onerror = () => source.close();
     return () => source.close();
+  }
+
+  /**
+   * Simplest path for agents: run the whole paid read and return the receipt.
+   * Use callbacks only when the caller wants live progress.
+   */
+  async run(options: RunOptions): Promise<ReadReceipt> {
+    let receipt: ReadReceipt | undefined;
+    for await (const event of this.read(options)) {
+      await options.onEvent?.(event);
+      if (event.type === "article.word") {
+        await options.onWord?.(event.word, {
+          text: event.text,
+          wordsRead: event.wordsRead,
+          amountPaidAtomic: event.amountPaidAtomic,
+        });
+      }
+      if (event.type === "article.completed") {
+        receipt = event.receipt;
+      }
+    }
+    if (!receipt) {
+      throw new Error("Rubicon read finished without a receipt");
+    }
+    return receipt;
   }
 
   /**
@@ -245,7 +279,7 @@ export class RubiconClient {
         break;
       }
 
-      const payment = await this.options.paymentEngine.createWordPayment(session);
+      const payment = await this.paymentEngine.createWordPayment(session);
       // Idempotency key ties this payment to the specific next word; safe retries.
       const idempotencyKey = `${session.sessionId}:${wordsRead}`;
       let result: StreamPaymentResponse;

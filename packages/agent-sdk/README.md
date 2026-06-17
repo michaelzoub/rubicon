@@ -10,38 +10,38 @@ exactly the words it received.
 ## Quick Start
 
 ```ts
-import { RubiconClient, StaticPaymentEngine, CircleGatewayPaymentEngine } from "@rubicon-caliga/agent-sdk";
+import Rubicon, { CircleGatewayPaymentEngine, StaticPaymentEngine } from "@rubicon-caliga/agent-sdk";
 
 const privateKey = process.env.CIRCLE_PRIVATE_KEY as `0x${string}` | undefined;
 
-const rubicon = new RubiconClient({
-  baseUrl: process.env.GATEWAY_BASE_URL ?? "http://localhost:8787",
+const rubicon = new Rubicon({
   paymentEngine: privateKey
     ? new CircleGatewayPaymentEngine({ chain: "arcTestnet", privateKey, rpcUrl: process.env.CIRCLE_RPC_URL })
     : new StaticPaymentEngine(),
 });
 
-const stream = rubicon.read({
+const receipt = await rubicon.run({
   articleId: "rubicon-streaming-001",
   goal: "Find the resale-fee clause",
   maxSpendAtomic: "20000",
   stopWhen: ({ text, wordsRead, amountPaid }) => wordsRead > 50 || /resale fee/i.test(text),
+  onWord: (word) => {
+    process.stdout.write(`${word} `);
+  },
 });
 
-for await (const event of stream) {
-  switch (event.type) {
-    case "seller.message":
-      console.log("seller:", event.content);
-      break;
-    case "article.word":
-      process.stdout.write(`${event.word} `);
-      break;
-    case "article.completed":
-      console.log("\nreceipt:", event.receipt);
-      break;
-  }
-}
+console.log("\nreceipt:", receipt);
 ```
+
+`baseUrl` defaults to `http://localhost:8787`. In development, omitting
+`paymentEngine` uses `StaticPaymentEngine`, which works against a dev-mode
+gateway. For real settlement, pass `CircleGatewayPaymentEngine`.
+
+## `run(options)`
+
+Runs the whole seller conversation → session → one-word payment → word → usage
+cycle and returns a final receipt. Use `onWord` or `onEvent` when you want live
+progress.
 
 ## `read(options)`
 
