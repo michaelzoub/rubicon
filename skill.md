@@ -165,6 +165,7 @@ const rubicon = new Rubicon({
 On Railway, set:
 
 ```bash
+PORT=8080
 RUBICON_GATEWAY_URL=https://rubicon-caligagateway-production.up.railway.app
 RUBICON_AGENT_API_KEY=your-shared-buyer-agent-secret
 OPENAI_API_KEY=sk-...
@@ -176,6 +177,11 @@ CIRCLE_X402_NETWORKS=eip155:5042002
 
 `RUBICON_AGENT_API_KEY` protects the Rubicon HTTP API. `OPENAI_API_KEY` powers
 the hosted seller agent's navigation/conversation model.
+
+The gateway binds `0.0.0.0:$PORT` (see `apps/gateway/src/index.ts`). Keep
+`PORT=8080` and Railway's service/target port aligned to 8080 — if the edge
+proxy targets a different port, requests return `502 "Application failed to
+respond"` even though the container is healthy and listening.
 
 ## Buyer Budget Confirmation
 

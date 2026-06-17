@@ -112,6 +112,15 @@ Each word is verified and settled to the creator's wallet before the next word i
 emitted. The gateway returns the per-word receipt in the JSON response and in
 the `PAYMENT-RESPONSE` header.
 
+## Railway deployment
+
+The gateway binds `0.0.0.0:$PORT` (`apps/gateway/src/index.ts`). Set `PORT=8080`
+and keep the Railway service's target port aligned to **8080** so the edge proxy
+and the app agree. A target-port mismatch returns
+`502 "Application failed to respond"` even when the container is healthy and
+listening. The app always honors `process.env.PORT` for the bind, so no
+application-code change is needed — only the env/target port must match.
+
 ## Docs
 
 See [docs/architecture.md](./docs/architecture.md) and
