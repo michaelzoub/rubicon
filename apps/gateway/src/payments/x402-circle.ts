@@ -1,21 +1,28 @@
 import { BatchFacilitatorClient, GatewayEvmScheme } from "@circle-fin/x402-batching/server";
 import { x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, SchemeNetworkServer } from "@x402/core/types";
-import type { SessionRecord, StreamPaymentRequest, PaymentVerification } from "@rubicon-caliga/core";
-import type { ArticleRecord, AuthorRecord, PaymentVerifier } from "../server.js";
+import type { PaymentVerification, SessionRecord } from "@rubicon-caliga/core";
+import type { PaymentRequiredInput, PaymentVerifier, PaymentVerifyInput } from "./types.js";
 
 export interface CircleX402PaymentVerifierOptions {
   facilitatorUrl?: string;
   networks?: string[];
   maxTimeoutSeconds?: number;
   arcPrivateMainnet?: boolean;
+  gatewayBaseUrl?: string;
 }
 
+/**
+ * Circle/x402 one-word payment verifier. Each accepted payment settles exactly
+ * one word's price. Circle may batch settlement internally, but the Rubicon
+ * contract remains one word per payment.
+ */
 export class CircleX402PaymentVerifier implements PaymentVerifier {
   private readonly resourceServer: x402ResourceServer;
   private readonly ready: Promise<void>;
   private readonly networks: Network[];
   private readonly maxTimeoutSeconds: number;
+  private readonly gatewayBaseUrl: string;
 
   constructor(private readonly options: CircleX402PaymentVerifierOptions) {
     const facilitator = new BatchFacilitatorClient(
@@ -28,34 +35,43 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     this.ready = this.resourceServer.initialize();
     this.networks = (options.networks?.length ? options.networks : ["eip155:*"]) as Network[];
     this.maxTimeoutSeconds = options.maxTimeoutSeconds ?? 60;
+    this.gatewayBaseUrl = options.gatewayBaseUrl ?? "http://localhost:8787";
   }
 
-  async createPaymentRequired(input: {
-    session: SessionRecord;
-    article: ArticleRecord;
-    author: AuthorRecord;
-    amountAtomic: `${bigint}`;
-    gatewayBaseUrl: string;
-  }): Promise<PaymentRequired> {
+  async createPaymentRequired(input: PaymentRequiredInput): Promise<PaymentRequired> {
     await this.ready;
-    const requirements = await this.requirements(input);
+    const requirements = await this.requirements({
+      session: input.session,
+      sellerWallet: input.sellerWallet,
+      wordPaymentAtomic: input.wordPaymentAtomic,
+      gatewayBaseUrl: input.gatewayBaseUrl,
+      articleId: input.article.id,
+      author: input.article.author,
+    });
     return this.resourceServer.createPaymentRequiredResponse(requirements, {
       url: `${input.gatewayBaseUrl}/v1/sessions/${input.session.id}/payments`,
-      description: `Rubicon word stream payment for ${input.article.title}`,
+      description: `Rubicon one-word payment for ${input.article.title}`,
       serviceName: "rubicon-article-stream",
       mimeType: "application/json",
     });
   }
 
-  async verify(session: SessionRecord, payment: StreamPaymentRequest): Promise<PaymentVerification> {
+  async verify(input: PaymentVerifyInput): Promise<PaymentVerification> {
     await this.ready;
-    const paymentPayload = payment.paymentPayload as PaymentPayload | undefined;
+    const paymentPayload = input.payment.paymentPayload as PaymentPayload | undefined;
     if (!paymentPayload) {
       return { accepted: false, reason: "missing_x402_payment_payload" };
     }
 
     const requirements = this.resourceServer.findMatchingRequirements(
-      await this.requirementsForSession(session),
+      await this.requirements({
+        session: input.session,
+        sellerWallet: input.session.sellerWallet,
+        wordPaymentAtomic: input.wordPaymentAtomic,
+        gatewayBaseUrl: this.gatewayBaseUrl,
+        articleId: input.session.articleId,
+        author: input.session.articleId,
+      }),
       paymentPayload,
     );
     if (!requirements) {
@@ -87,88 +103,42 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
 
   private async requirements(input: {
     session: SessionRecord;
-    article: ArticleRecord;
-    author: AuthorRecord;
-    amountAtomic: `${bigint}`;
+    sellerWallet: `0x${string}`;
+    wordPaymentAtomic: bigint;
     gatewayBaseUrl: string;
+    articleId: string;
+    author: string;
   }): Promise<PaymentRequirements[]> {
     return this.resourceServer.buildPaymentRequirementsFromOptions(
       this.networks.map((network) => ({
         scheme: "exact",
         network,
-        payTo: input.author.walletAddress,
-        // Circle's GatewayEvmScheme registers a USDC money parser that turns a dollar
-        // amount into the correct on-chain USDC asset for the network. Passing a bare
-        // `{ asset: "USDC" }` bypasses it and the facilitator rejects it as
-        // `unsupported_asset`, so price must be USDC dollars (6 decimals).
-        price: usdcDollarsFromAtomic(input.amountAtomic),
+        payTo: input.sellerWallet,
+        // Circle's GatewayEvmScheme registers a USDC money parser that turns a
+        // dollar amount into the correct on-chain USDC asset. Price must be USDC
+        // dollars (6 decimals). One word === one payment.
+        price: usdcDollarsFromAtomic(`${input.wordPaymentAtomic}`),
         maxTimeoutSeconds: this.maxTimeoutSeconds,
         extra: {
           sessionId: input.session.id,
-          articleId: input.article.articleId,
-          authorUsername: input.article.authorUsername,
+          articleId: input.articleId,
+          author: input.author,
           meteringUnit: "word",
         },
       })),
       { sessionId: input.session.id, url: `${input.gatewayBaseUrl}/v1/sessions/${input.session.id}/payments` },
     );
   }
-
-  private async requirementsForSession(session: SessionRecord): Promise<PaymentRequirements[]> {
-    const amountAtomic = session.metadata.paymentChunkAtomic;
-    const articleSnapshot = session.metadata.articleSnapshot;
-    const gatewayBaseUrl = session.metadata.gatewayBaseUrl;
-    if (typeof amountAtomic !== "string" || typeof gatewayBaseUrl !== "string" || !isArticleSnapshot(articleSnapshot)) {
-      throw new Error("session_missing_x402_pricing_metadata");
-    }
-
-    return this.requirements({
-      session,
-      amountAtomic: amountAtomic as `${bigint}`,
-      gatewayBaseUrl,
-      article: {
-        articleId: articleSnapshot.articleId,
-        authorUsername: articleSnapshot.authorUsername,
-        title: articleSnapshot.articleId,
-        content: "",
-        pricePerWordAtomic: BigInt(articleSnapshot.pricePerWordAtomic),
-      },
-      author: {
-        authorUsername: articleSnapshot.authorUsername,
-        walletAddress: articleSnapshot.sellerAddress,
-      },
-    });
-  }
 }
 
 const USDC_DECIMALS = 6n;
 
-// Convert an atomic USDC amount (e.g. "1") to a decimal dollar string (e.g. "0.000001")
-// for the x402 money parser, which resolves it to the network's USDC asset.
+// Convert an atomic USDC amount (e.g. "1") to a decimal dollar string
+// (e.g. "0.000001") for the x402 money parser.
 function usdcDollarsFromAtomic(amountAtomic: string): string {
   const atomic = BigInt(amountAtomic);
   const divisor = 10n ** USDC_DECIMALS;
   const whole = atomic / divisor;
   const fraction = (atomic % divisor).toString().padStart(Number(USDC_DECIMALS), "0");
   return `${whole}.${fraction}`;
-}
-
-function isArticleSnapshot(value: unknown): value is {
-  articleId: string;
-  authorUsername: string;
-  sellerAddress: `0x${string}`;
-  pricePerWordAtomic: string;
-  paymentChunkWords: number;
-} {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.articleId === "string" &&
-    typeof record.authorUsername === "string" &&
-    typeof record.sellerAddress === "string" &&
-    typeof record.pricePerWordAtomic === "string" &&
-    typeof record.paymentChunkWords === "number"
-  );
 }

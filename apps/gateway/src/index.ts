@@ -1,61 +1,85 @@
+import { readFile } from "node:fs/promises";
 import { createGateway } from "./server.js";
 import { CircleX402PaymentVerifier } from "./payments/x402-circle.js";
-import type { AuthorRecord } from "./server.js";
-import { readFile } from "node:fs/promises";
+import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
+import {
+  InMemoryLedgerRepository,
+  InMemoryPublishedArticleRepository,
+} from "./repositories/in-memory.js";
+import type { LedgerRepository, PublishedArticleRepository } from "./repositories/types.js";
 
 const port = Number(process.env.GATEWAY_PORT ?? 8787);
 const gatewayBaseUrl = process.env.GATEWAY_BASE_URL ?? `http://localhost:${port}`;
-const authors = parseAuthorRegistry(process.env.AUTHOR_WALLET_REGISTRY);
-const hasAuthorWallets = authors.length > 0;
-const demoArticleContent = process.env.DEMO_ARTICLE_CONTENT?.trim()
-  ? process.env.DEMO_ARTICLE_CONTENT
-  : await readFile(new URL("./demo-article.md", import.meta.url), "utf8");
+const gatewayFeeBps = Number(process.env.GATEWAY_FEE_BPS ?? 0);
+const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 15 * 60_000);
 
-const gateway = createGateway({
-  gatewayBaseUrl,
-  sellerAgentApiKey: process.env.SELLER_AGENT_API_KEY,
-  paymentChunkWords: Number(process.env.PAYMENT_CHUNK_WORDS ?? 25),
-  sessionTtlMs: 15 * 60_000,
-  gatewayFeeBps: Number(process.env.GATEWAY_FEE_BPS ?? 250),
-  paymentVerifier: hasAuthorWallets
+let articleRepository: PublishedArticleRepository;
+let ledger: LedgerRepository;
+
+const databaseUrl = process.env.DATABASE_URL;
+if (databaseUrl) {
+  // Production: shared Postgres storage authored through rubicon-marketing.
+  const { createPgPool, runMigrations, PostgresPublishedArticleRepository, PostgresLedgerRepository } =
+    await import("./repositories/postgres.js");
+  const pool = createPgPool(databaseUrl);
+  if (process.env.RUN_MIGRATIONS === "true") {
+    await runMigrations(pool);
+  }
+  articleRepository = new PostgresPublishedArticleRepository(pool);
+  ledger = new PostgresLedgerRepository(pool);
+  console.log("[gateway] using Postgres persistence");
+} else {
+  // Development fixtures — local testing only, not production data.
+  const body = process.env.DEMO_ARTICLE_CONTENT?.trim()
+    ? process.env.DEMO_ARTICLE_CONTENT
+    : await readFile(new URL("./demo-article.md", import.meta.url), "utf8");
+  const creatorId = process.env.DEMO_CREATOR_ID ?? "rubicon-demo";
+  const walletAddress = (process.env.DEMO_CREATOR_WALLET ??
+    "0x000000000000000000000000000000000000dEaD") as `0x${string}`;
+  const published = new InMemoryPublishedArticleRepository({
+    articles: [
+      {
+        id: process.env.DEMO_ARTICLE_ID ?? "rubicon-streaming-001",
+        creatorId,
+        creatorUsername: process.env.DEMO_CREATOR_USERNAME ?? "rubicon-demo",
+        title: process.env.DEMO_ARTICLE_TITLE ?? "Rubicon streams articles by the word",
+        author: process.env.DEMO_AUTHOR ?? "Rubicon Demo",
+        state: "live",
+        pricePerWordAtomic: BigInt(process.env.PRICE_PER_WORD_ATOMIC ?? "1"),
+        body,
+      },
+    ],
+    wallets: [
+      {
+        creatorId,
+        address: walletAddress,
+        network: process.env.CIRCLE_X402_NETWORKS?.split(",")[0]?.trim() ?? "eip155:5042002",
+        verified: true,
+      },
+    ],
+  });
+  articleRepository = published;
+  ledger = new InMemoryLedgerRepository();
+  console.log("[gateway] using in-memory development fixtures");
+}
+
+const paymentVerifier: PaymentVerifier =
+  process.env.RUBICON_PAYMENTS === "circle"
     ? new CircleX402PaymentVerifier({
         facilitatorUrl: process.env.CIRCLE_FACILITATOR_URL,
-        networks: process.env.CIRCLE_X402_NETWORKS?.split(",").map((network) => network.trim()).filter(Boolean),
+        networks: process.env.CIRCLE_X402_NETWORKS?.split(",").map((n) => n.trim()).filter(Boolean),
         arcPrivateMainnet: process.env.CIRCLE_ARC_PRIVATE_MAINNET === "true",
+        gatewayBaseUrl,
       })
-    : undefined,
-  authors,
-  articles: [
-    {
-      articleId: process.env.DEMO_ARTICLE_ID ?? "rubicon-streaming-001",
-      authorUsername: process.env.DEMO_AUTHOR_USERNAME ?? "rubicon-demo",
-      title: "Rubicon streams articles by the word",
-      pricePerWordAtomic: BigInt(process.env.PRICE_PER_WORD_ATOMIC ?? "1"),
-      content: demoArticleContent,
-    },
-  ],
+    : new DevelopmentPaymentVerifier();
+
+const gateway = createGateway({
+  articleRepository,
+  ledger,
+  paymentVerifier,
+  sessionTtlMs,
+  gatewayFeeBps,
+  gatewayBaseUrl,
 });
 
 await gateway.listen({ port, host: "0.0.0.0" });
-
-function parseAuthorRegistry(value: string | undefined): AuthorRecord[] {
-  if (!value?.trim()) {
-    return [];
-  }
-
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => {
-      const [authorUsername, walletAddress] = entry.split(":");
-      if (!authorUsername || !isEvmAddress(walletAddress)) {
-        throw new Error(`Invalid AUTHOR_WALLET_REGISTRY entry: ${entry}`);
-      }
-      return { authorUsername, walletAddress };
-    });
-}
-
-function isEvmAddress(value: string | undefined): value is `0x${string}` {
-  return /^0x[a-fA-F0-9]{40}$/.test(value ?? "");
-}

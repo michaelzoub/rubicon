@@ -14,7 +14,7 @@ The seller agent acts as a neutral navigator. It can point to section identifier
 
 ## Sequential paid stream
 
-After a buyer selects a section, each x402 nanopayment unlocks the next chunk of words. The buyer can stop once it has enough information, hits a budget limit, or reaches the end of the selected section.
+After a buyer selects a section, each x402 payment releases exactly one more word. The buyer can stop once it has enough information, hits a budget limit, or reaches the end of the selected section.
 
 ## Creator upside
 

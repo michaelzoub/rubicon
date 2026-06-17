@@ -1,36 +1,84 @@
 # Architecture
 
-Rubicon has two runtime surfaces:
+Rubicon is the backend infrastructure for pay-per-word content consumption by AI
+agents. It connects:
 
-- **Agent SDK**: opens article streams, signs/sends x402 micropayments, receives word chunks and status.
-- **Streaming Endpoint**: seller-side Fastify server that resolves articles, prices words, accepts micropayments, streams paid words, and records usage.
+- A **buyer agent** looking for information. It pays for every word it receives
+  and can stop the moment it has enough.
+- A **seller agent** representing a paywalled article. It lives server-side,
+  understands the article's title, sections, body, author, and pricing, talks to
+  buyer agents, recommends a starting section, and controls the paid stream.
+- The **x402 gateway** that meters words, verifies one-word payments, releases
+  one word per payment, and records the ledger.
+- The **creator wallet** that receives the full per-word price.
 
 ```mermaid
 sequenceDiagram
-  participant A as Agent SDK
-  participant G as x402 Streaming Endpoint
-  participant D as Article DB
-  participant W as Author Wallet
-  participant C as Circle Gateway
+  participant B as Buyer agent (SDK)
+  participant G as Rubicon gateway
+  participant S as Seller agent
+  participant D as Shared Postgres
+  participant C as Circle / x402
+  participant W as Creator wallet
 
-  A->>G: Start stream(articleId/query, budget)
-  G->>D: Read article, price_per_word, author wallet
-  G-->>A: Quote, article summary, paymentRequired
-  A->>G: Payment(signed x402 auth)
-  G->>C: Verify/settle authorization
-  C-->>W: Forward micropayment
-  G-->>A: SSE article.chunk words
-  G-->>A: SSE article.usage
-  A->>G: More payments or abort
-  G-->>A: article.completed or session.aborted
+  B->>G: Open seller conversation (goal)
+  G->>S: navigate / respond (safe metadata only)
+  S-->>B: Recommended section, no unpaid content
+  B->>G: Start session (budget)
+  G->>D: Load live article, price/word, verified wallet
+  G-->>B: Session + one-word payment requirement
+  loop one word at a time
+    B->>G: Pay for one word (x402 auth)
+    G->>C: Verify/settle one-word payment
+    C-->>W: Creator receives the full word price
+    G->>S: selectNextWord
+    G->>D: Record word_delivery + word_payment (idempotent)
+    G-->>B: article.word + article.usage
+  end
+  B->>G: Stop / abort when satisfied
 ```
 
-The endpoint is the control plane for stream state, but it should not custody funds. Payment authorizations pass through to Circle Gateway settlement for the author wallet.
+## Components
 
-## Runtime Boundaries
+- **packages/core** — shared protocol types, word-level pricing math, session
+  primitives, and the shared API contract used by rubicon-marketing.
+- **apps/gateway** — the Fastify public agent API, seller agent, persistence
+  adapters, and payment verifiers.
+- **packages/agent-sdk** — the buyer-agent SDK (`RubiconClient.read()`).
 
-- Agent-facing API: public HTTPS, x402-protected, session scoped.
-- Article registry: stores article content, `price_per_word`, caps, and author ownership.
-- Author registry: maps author usernames to seller wallet addresses.
-- Payment adapter: owns Circle/x402 implementation details and can be swapped for test doubles.
-- Ledger: records words streamed, payment authorizations, fee calculations, and settlement references.
+## Persistence
+
+Production data lives in shared Postgres, authored through
+[rubicon-marketing](https://github.com/michaelzoub/rubicon-marketing). Rubicon
+reads published articles, sections, creators, and verified wallets through
+`PublishedArticleRepository`, and writes runtime activity
+(`stream_sessions`, `word_deliveries`, `word_payments`, `settlement_receipts`,
+`seller_agent_messages`) through `LedgerRepository`.
+
+The marketing app owns creator authentication and creator-facing CRUD; Rubicon
+does not implement a creator dashboard API. Development uses an in-memory adapter
+with fixtures.
+
+## Word-level integrity
+
+- One word is one paid unit; every delivered word has a payment record.
+- `word_deliveries` has a unique `(session_id, sequence)` constraint and a unique
+  `idempotency_key`, so a word is never delivered or charged twice.
+- Trusted values (price, wallet, creator, sequence, amount owed, recipient) are
+  always loaded from persistent storage, never from buyer input.
+
+## Seller agent
+
+The seller agent is a first-class component with `navigate`, `respond`, and
+`selectNextWord`. It uses a pluggable model/provider abstraction. A deterministic
+development fallback ships for local runs with no model key — it is explicitly
+development behavior, not the full production seller agent. The seller agent may
+inspect private article content internally, but its unpaid outputs only ever
+reveal safe navigation information.
+
+## Fee policy
+
+The Rubicon gateway fee is **0 basis points**. Creators receive the full per-word
+price, excluding only unavoidable external network/payment-provider costs. The
+`gatewayFeeBps` field remains in the protocol for forward compatibility but is
+never advertised or calculated as nonzero.

@@ -1,0 +1,279 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import type { FastifyInstance } from "fastify";
+import { createGateway } from "./server.js";
+import {
+  InMemoryLedgerRepository,
+  InMemoryPublishedArticleRepository,
+  type ArticleFixture,
+} from "./repositories/in-memory.js";
+import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
+
+const PRICE = 5n; // atomic USDC per word
+const PLAIN_BODY = Array.from({ length: 200 }, (_, index) => `w${index + 1}`).join(" ");
+const PLAIN_WORDS = PLAIN_BODY.split(" ");
+
+function plainArticle(overrides: Partial<ArticleFixture> = {}): ArticleFixture {
+  return {
+    id: "art-plain",
+    creatorId: "creator-a",
+    creatorUsername: "alice",
+    title: "Plain Article",
+    author: "Alice",
+    state: "live",
+    pricePerWordAtomic: PRICE,
+    body: PLAIN_BODY,
+    ...overrides,
+  };
+}
+
+function setup(input?: {
+  articles?: ArticleFixture[];
+  wallets?: { creatorId: string; address: `0x${string}`; network?: string; verified?: boolean }[];
+  gatewayFeeBps?: number;
+}): {
+  app: FastifyInstance;
+  published: InMemoryPublishedArticleRepository;
+  ledger: InMemoryLedgerRepository;
+} {
+  const published = new InMemoryPublishedArticleRepository({
+    articles: input?.articles ?? [plainArticle()],
+    wallets:
+      input?.wallets?.map((wallet) => ({
+        creatorId: wallet.creatorId,
+        address: wallet.address,
+        network: wallet.network ?? "eip155:5042002",
+        verified: wallet.verified ?? true,
+      })) ?? [
+        { creatorId: "creator-a", address: "0x000000000000000000000000000000000000aaaa", network: "eip155:5042002", verified: true },
+      ],
+  });
+  const ledger = new InMemoryLedgerRepository();
+  const app = createGateway({
+    articleRepository: published,
+    ledger,
+    sessionTtlMs: 60_000,
+    gatewayFeeBps: input?.gatewayFeeBps ?? 0,
+    gatewayBaseUrl: "http://test",
+    logger: false,
+  });
+  return { app, published, ledger };
+}
+
+async function startSession(app: FastifyInstance, articleId = "art-plain", maxAmountAtomic = "1000000"): Promise<StartSessionResponse> {
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/sessions",
+    payload: { articleId, budget: { currency: "USDC", maxAmountAtomic } },
+  });
+  assert.equal(res.statusCode, 201, res.body);
+  return res.json() as StartSessionResponse;
+}
+
+async function pay(
+  app: FastifyInstance,
+  sessionId: string,
+  opts?: { payload?: Record<string, unknown>; key?: string },
+) {
+  return app.inject({
+    method: "POST",
+    url: `/v1/sessions/${sessionId}/payments`,
+    payload: { paymentPayload: opts?.payload ?? {}, idempotencyKey: opts?.key },
+  });
+}
+
+test("1: one accepted word payment releases exactly one word", async () => {
+  const { app, ledger } = setup();
+  const session = await startSession(app);
+  const res = await pay(app, session.sessionId);
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as StreamPaymentResponse;
+  assert.equal(body.wordsDelivered, 1);
+  assert.equal(body.word, PLAIN_WORDS[0]);
+  assert.equal(body.paidAtomic, `${PRICE}`);
+  assert.equal((await ledger.listDeliveries(session.sessionId)).length, 1);
+  await app.close();
+});
+
+test("2: ten payments release exactly ten words", async () => {
+  const { app, ledger } = setup();
+  const session = await startSession(app);
+  for (let i = 0; i < 10; i += 1) {
+    const res = await pay(app, session.sessionId);
+    assert.equal(res.statusCode, 200);
+  }
+  const deliveries = await ledger.listDeliveries(session.sessionId);
+  assert.equal(deliveries.length, 10);
+  assert.deepEqual(deliveries.map((d) => d.word), PLAIN_WORDS.slice(0, 10));
+  await app.close();
+});
+
+test("3: stopping after 137 words charges exactly 137 × price per word", async () => {
+  const { app, ledger } = setup();
+  const session = await startSession(app);
+  let last: StreamPaymentResponse | undefined;
+  for (let i = 0; i < 137; i += 1) {
+    last = (await pay(app, session.sessionId)).json() as StreamPaymentResponse;
+  }
+  assert.equal(last?.wordsDelivered, 137);
+  assert.equal(last?.paidAtomic, `${PRICE * 137n}`);
+  const earnings = await ledger.earningsForArticle("art-plain");
+  assert.equal(earnings.wordsDelivered, 137);
+  assert.equal(earnings.creatorAmountAtomic, `${PRICE * 137n}`);
+  await app.close();
+});
+
+test("4: a failed payment releases no word", async () => {
+  const { app, ledger } = setup();
+  const session = await startSession(app);
+  const res = await pay(app, session.sessionId, { payload: { reject: true } });
+  assert.equal(res.statusCode, 402);
+  assert.equal((await ledger.listDeliveries(session.sessionId)).length, 0);
+  const reloaded = await ledger.getSession(session.sessionId);
+  assert.equal(reloaded?.wordsDelivered, 0);
+  await app.close();
+});
+
+test("5: a duplicate request does not release or charge for the word twice", async () => {
+  const { app, ledger } = setup();
+  const session = await startSession(app);
+  const first = (await pay(app, session.sessionId, { key: "dup-key" })).json() as StreamPaymentResponse;
+  const second = (await pay(app, session.sessionId, { key: "dup-key" })).json() as StreamPaymentResponse;
+  assert.equal(first.word, second.word);
+  assert.equal(second.wordsDelivered, 1);
+  assert.equal(second.paidAtomic, `${PRICE}`);
+  assert.equal((await ledger.listDeliveries(session.sessionId)).length, 1);
+  await app.close();
+});
+
+test("6: the seller agent does not expose unpaid body content", async () => {
+  const secret = "SECRETLEAKTOKEN";
+  const article = plainArticle({
+    id: "art-secret",
+    body: `# Findings\nThe ${secret} clause says resale is prohibited forever and the conclusion is hidden.`,
+  });
+  const { app } = setup({ articles: [article] });
+
+  const nav = await app.inject({ method: "GET", url: "/v1/articles/art-secret/navigation?goal=findings" });
+  assert.equal(nav.statusCode, 200);
+  assert.ok(!nav.body.includes(secret), "navigation must not leak unpaid body");
+
+  const convo = await app.inject({
+    method: "POST",
+    url: "/v1/seller-agent/conversations",
+    payload: { articleId: "art-secret", goal: "what does the clause say", message: "what does the clause say?" },
+  });
+  assert.equal(convo.statusCode, 201);
+  assert.ok(!convo.body.includes(secret), "conversation must not leak unpaid body");
+  await app.close();
+});
+
+test("7: a creator cannot access another creator's article (ownership is loaded from storage)", async () => {
+  const { app, published, ledger } = setup({
+    articles: [
+      plainArticle({ id: "art-a", creatorId: "creator-a", creatorUsername: "alice" }),
+      plainArticle({ id: "art-b", creatorId: "creator-b", creatorUsername: "bob" }),
+    ],
+    wallets: [
+      { creatorId: "creator-a", address: "0x000000000000000000000000000000000000aaaa" },
+      { creatorId: "creator-b", address: "0x000000000000000000000000000000000000bbbb" },
+    ],
+  });
+
+  const articleB = await published.getPublishedArticle("art-b");
+  assert.equal(articleB?.creatorId, "creator-b");
+
+  // A buyer cannot redirect settlement: the seller wallet is derived from the
+  // article's stored creator, never from buyer input.
+  const session = await startSession(app, "art-b");
+  const stored = await ledger.getSession(session.sessionId);
+  assert.equal(stored?.creatorId, "creator-b");
+  assert.equal(stored?.sellerWallet, "0x000000000000000000000000000000000000bbbb");
+  assert.notEqual(
+    (await published.getCreatorWallet("creator-a"))?.address,
+    (await published.getCreatorWallet("creator-b"))?.address,
+  );
+  await app.close();
+});
+
+test("8: a draft article is unavailable to public buyer agents", async () => {
+  const { app } = setup({ articles: [plainArticle({ id: "art-draft", state: "draft" })] });
+  const repo = await app.inject({ method: "GET", url: "/v1/repository" });
+  assert.equal((repo.json() as { articles: unknown[] }).articles.length, 0);
+  assert.equal((await app.inject({ method: "GET", url: "/v1/articles/art-draft/navigation" })).statusCode, 404);
+  const session = await app.inject({
+    method: "POST",
+    url: "/v1/sessions",
+    payload: { articleId: "art-draft", budget: { currency: "USDC", maxAmountAtomic: "1000" } },
+  });
+  assert.equal(session.statusCode, 404);
+  await app.close();
+});
+
+test("9: a paused article cannot start new sessions", async () => {
+  const { app } = setup({ articles: [plainArticle({ id: "art-paused", state: "paused" })] });
+  const session = await app.inject({
+    method: "POST",
+    url: "/v1/sessions",
+    payload: { articleId: "art-paused", budget: { currency: "USDC", maxAmountAtomic: "1000" } },
+  });
+  assert.equal(session.statusCode, 404);
+  await app.close();
+});
+
+test("10: gateway fee is zero", async () => {
+  const { app, ledger } = setup();
+  const session = await startSession(app);
+  assert.equal(session.gatewayFeeBps, 0);
+  assert.equal(session.wordPaymentAtomic, session.pricePerWordAtomic);
+  await pay(app, session.sessionId);
+  const payments = await ledger.listPayments(session.sessionId);
+  assert.equal(payments[0]?.rubiconFeeAtomic, "0");
+  assert.equal(payments[0]?.creatorAmountAtomic, `${PRICE}`);
+  await app.close();
+});
+
+test("11: creator earnings equal the full Rubicon word subtotal", async () => {
+  const { app, ledger } = setup();
+  const session = await startSession(app);
+  const n = 23;
+  for (let i = 0; i < n; i += 1) {
+    await pay(app, session.sessionId);
+  }
+  const byArticle = await ledger.earningsForArticle("art-plain");
+  const byCreator = await ledger.earningsForCreator("creator-a");
+  assert.equal(byArticle.creatorAmountAtomic, `${PRICE * BigInt(n)}`);
+  assert.equal(byArticle.rubiconFeeAtomic, "0");
+  assert.equal(byCreator.creatorAmountAtomic, `${PRICE * BigInt(n)}`);
+  await app.close();
+});
+
+test("12: dashboard-created articles become available after publishing", async () => {
+  const { app, published } = setup({ articles: [plainArticle({ id: "art-pub", state: "draft" })] });
+
+  // Draft: not in the public repository, cannot be navigated.
+  assert.equal((await app.inject({ method: "GET", url: "/v1/repository" }).then((r) => (r.json() as { articles: unknown[] }).articles.length)), 0);
+
+  // rubicon-marketing publishes it (writes state=live to shared storage).
+  published.upsertArticle(plainArticle({ id: "art-pub", state: "live" }));
+
+  const repo = (await app.inject({ method: "GET", url: "/v1/repository" })).json() as {
+    articles: { articleId: string }[];
+  };
+  assert.ok(repo.articles.some((a) => a.articleId === "art-pub"));
+  assert.equal((await app.inject({ method: "GET", url: "/v1/articles/art-pub/navigation" })).statusCode, 200);
+  await app.close();
+});
+
+test("budget exhaustion stops releasing words", async () => {
+  const { app } = setup();
+  // Budget covers exactly 3 words.
+  const session = await startSession(app, "art-plain", `${PRICE * 3n}`);
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal((await pay(app, session.sessionId)).statusCode, 200);
+  }
+  const overflow = await pay(app, session.sessionId);
+  assert.equal(overflow.statusCode, 402);
+  assert.equal((overflow.json() as { error: string }).error, "budget_exhausted");
+  await app.close();
+});

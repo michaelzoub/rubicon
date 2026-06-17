@@ -1,25 +1,39 @@
-# Rubicon x402 Article Streaming
+# Rubicon — Pay-Per-Word Content for AI Agents
 
-Rubicon is a streaming service for agents that need paid article content. Agents open a budgeted stream, receive words in chunks, and send x402 micropayments as they read. They can stop any time once they have enough information.
+Rubicon is the backend infrastructure for pay-per-word content consumption by AI
+agents. A **buyer agent** opens a budgeted reading session and pays for **every
+individual word** it receives; a server-side **seller agent** represents the
+article, helps the buyer find the right section without leaking unpaid content,
+and controls the paid stream one word at a time. The buyer can stop the instant
+it has enough information and pays for exactly the words it received.
 
-The repo is intentionally small:
+Rubicon meters and charges every word individually. Circle may batch settlement
+internally, but creators earn according to the exact number of words delivered.
+There are no payment chunks.
 
-- `apps/gateway`: Fastify x402 streaming endpoint. It owns article lookup, author wallet resolution, word streaming, usage accounting, and SSE events.
-- `packages/agent-sdk`: client SDK for autonomous agents consuming article streams.
-- `packages/core`: shared protocol types, pricing math, and session primitives.
-- `examples/agent-client`: local agent that reads an article stream.
+## Packages
 
-There is no provider SDK. Rubicon's server is the seller-side endpoint.
+- `apps/gateway` — Fastify public agent API: article repository, seller agent,
+  word-level billing, persistence, and SSE events.
+- `packages/agent-sdk` — buyer-agent SDK with a high-level `read()` loop.
+- `packages/core` — shared protocol types, word-level pricing, session
+  primitives, and the API contract shared with rubicon-marketing.
+- `examples/agent-client` — a local buyer agent that reads an article.
 
-## Circle Alignment
+Creator authentication, article CRUD, wallet settings, and the dashboard live in
+the separate Next.js app
+[rubicon-marketing](https://github.com/michaelzoub/rubicon-marketing). The two
+repositories integrate through a shared Postgres data model — Rubicon does not
+implement a creator dashboard API.
 
-Circle Gateway nanopayments use x402 with `402 Payment Required`, buyer-signed EIP-3009 authorizations, and batched Circle settlement. Buyer integrations use `@circle-fin/x402-batching/client`; the Rubicon streaming endpoint uses `@circle-fin/x402-batching/server` with `BatchFacilitatorClient` and `GatewayEvmScheme`.
+## Gateway fee
 
-The gateway exposes `GET /v1/endpoints` for route discovery and `GET /v1/repository` for the configured article repository. `GET /v1/articles` is kept as a compatibility alias.
+The Rubicon gateway fee is **0 bps**. Creators receive the full per-word price,
+excluding only unavoidable external network/payment-provider costs.
 
-## Quick Start
+## Quick Start (development)
 
-Development mode uses a static payment shim when Circle seller credentials are not set:
+Development mode uses in-memory fixtures and a no-money payment shim:
 
 ```bash
 pnpm install
@@ -27,41 +41,76 @@ cp .env.example .env
 pnpm dev:gateway
 ```
 
-In another terminal:
+In another terminal, run the buyer agent:
 
 ```bash
 pnpm dev:agent
 ```
 
-The demo gateway exposes one in-memory article. Configure `DEMO_ARTICLE_*`, `PRICE_PER_WORD_ATOMIC`, `PAYMENT_CHUNK_WORDS`, and `AUTHOR_WALLET_REGISTRY` in `.env`. Author registry entries use `author_username:arc_wallet_address`; the stream pays the wallet for the article's resolved author.
-
-## Real x402 Nanopayment Test
-
-To charge real Gateway USDC for streamed words:
-
-1. Fund the buyer wallet's Circle Gateway balance on the configured chain.
-2. Set `CIRCLE_PRIVATE_KEY` for the buyer agent.
-3. Set `AUTHOR_WALLET_REGISTRY` with an entry for every article author, for example `rubicon-demo:0x...`.
-4. Set `CIRCLE_FACILITATOR_URL=https://gateway-api-testnet.circle.com` for testnet.
-5. Set `PRICE_PER_WORD_ATOMIC=1` to charge `0.000001 USDC` per streamed word before gateway fees.
-
-Then run:
+Manual flow:
 
 ```bash
-pnpm dev:gateway
-pnpm dev:agent
+curl -s http://localhost:8787/v1/repository
+curl -s "http://localhost:8787/v1/articles/rubicon-streaming-001/navigation?goal=how%20billing%20works"
+curl -s -X POST http://localhost:8787/v1/seller-agent/conversations \
+  -H "content-type: application/json" \
+  -d '{"articleId":"rubicon-streaming-001","goal":"how billing works","message":"where do you explain pricing?"}'
 ```
 
-When `AUTHOR_WALLET_REGISTRY` contains the article author's wallet, the gateway uses Circle's x402 seller path and sets `payTo` from that author record. When `CIRCLE_PRIVATE_KEY` is present, the agent uses Circle's batch scheme to sign the gateway's `paymentRequired` terms. Each payment request is verified and settled before the next word chunk is emitted.
+Open a session with `POST /v1/sessions`, then send one `POST
+/v1/sessions/:id/payments` per word. Each accepted payment releases exactly one
+word.
 
-## First Implementation Milestones
+## Buyer SDK
 
-1. Replace the in-memory article and author registry with Postgres or SQLite.
-2. Persist receipts and signed authorizations for auditability.
-3. Add article search and discovery.
-4. Add creator onboarding and wallet verification.
-5. Add settlement reconciliation using Circle Gateway transfer history.
+```ts
+import { RubiconClient, StaticPaymentEngine } from "@rubicon-caliga/agent-sdk";
+
+const rubicon = new RubiconClient({
+  baseUrl: "http://localhost:8787",
+  paymentEngine: new StaticPaymentEngine(),
+});
+
+const stream = rubicon.read({
+  articleId: "rubicon-streaming-001",
+  goal: "Find the resale-fee clause",
+  maxSpendAtomic: "20000",
+  stopWhen: ({ text, wordsRead }) => wordsRead > 50 || /resale fee/i.test(text),
+});
+
+for await (const event of stream) {
+  // seller.message, article.word, article.usage, article.completed
+}
+```
+
+The SDK runs the entire seller conversation → session → one-word payment → word →
+usage loop until a stop condition is met, with retry idempotency, budget
+enforcement, early stopping, abort, and a final receipt. Developers never send a
+payment per word by hand.
+
+## Production storage
+
+Set `DATABASE_URL` to a shared Postgres instance authored by rubicon-marketing.
+The gateway then reads `live` articles, creators, and verified wallets from
+Postgres and writes word/payment/earnings activity. Apply migrations:
+
+```bash
+DATABASE_URL=postgres://... pnpm --filter @rubicon-caliga/gateway migrate
+```
+
+Only articles with `state = live` are consumable by buyer agents.
+
+## Real x402 word payments
+
+1. Fund the buyer wallet's Circle Gateway balance.
+2. Set `CIRCLE_PRIVATE_KEY` for the buyer and `RUBICON_PAYMENTS=circle`.
+3. Ensure each live article resolves to a verified creator wallet.
+4. Set `CIRCLE_FACILITATOR_URL` for the target network.
+
+Each word is verified and settled to the creator's wallet before the next word is
+emitted.
 
 ## Docs
 
-See [docs/architecture.md](./docs/architecture.md) and [docs/protocol.md](./docs/protocol.md).
+See [docs/architecture.md](./docs/architecture.md) and
+[docs/protocol.md](./docs/protocol.md).

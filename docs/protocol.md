@@ -1,91 +1,138 @@
-# Streaming Protocol
+# Rubicon Public Agent API
+
+Rubicon meters and charges **every word individually**. The atomic content unit
+is one word. Circle/x402 may batch settlement internally, but creators earn
+according to the exact number of words delivered. There are no payment chunks.
+
+Amounts are atomic USDC where `1 USDC = 1_000_000`.
 
 ## Endpoint Index
 
-`GET /v1/endpoints`
-
-Returns the currently exposed gateway endpoints.
+`GET /v1/endpoints` — lists the routes below.
 
 ## Article Repository
 
 `GET /v1/repository`
 
-Returns existing article summaries from the configured repository. `GET /v1/articles` returns the same article list for compatibility.
+Lists `live` articles available to buyer agents (safe public metadata only).
+Draft, paused, archived, and deleted articles never appear. `GET /v1/articles`
+returns the same list.
 
-## Free Article Navigation
+## Seller-Agent Navigation
 
-`GET /v1/articles/:articleId/navigation`
+`GET /v1/articles/:articleId/navigation?goal=<goal>`
 
-Returns free title/header metadata, section IDs, word ranges, and stop-condition guidance. It does not return section body content.
+Returns safe article metadata and a seller-agent navigation recommendation:
+the recommended starting section, alternatives, a rationale, and safe hints. It
+never returns body text, quotes, conclusions, summaries, or unpaid facts.
 
-## Neutral Seller Agent
+## Seller-Agent Conversations
 
-`POST /v1/seller-agent/navigation`
-
-Requires:
-
-```text
-authorization: Bearer $SELLER_AGENT_API_KEY
-```
-
-Request:
+`POST /v1/seller-agent/conversations`
 
 ```json
-{
-  "articleId": "rubicon-streaming-001",
-  "buyerGoal": "understand how neutral seller guidance works",
-  "maxSpendAtomic": "50000"
-}
+{ "articleId": "rubicon-streaming-001", "goal": "Find the resale-fee clause", "message": "where is the resale fee discussed?" }
 ```
 
-Returns neutral section routing hints derived only from free headers and pricing metadata. It must not summarize hidden article content.
+Opens a conversation with the article's seller agent. Returns a
+`conversationId`, the article summary, navigation, and any seller reply. The
+seller agent helps the buyer choose a starting section without leaking unpaid
+content.
 
-## Start Article Stream
+`POST /v1/seller-agent/conversations/:conversationId/messages`
+
+```json
+{ "message": "is there anything about lifetime caps?" }
+```
+
+Continues the conversation; returns the buyer/seller messages and an optional
+`recommendedSectionId`.
+
+## Start a Reading Session
 
 `POST /v1/sessions`
 
 ```json
 {
   "articleId": "rubicon-streaming-001",
-  "budget": { "maxAmountAtomic": "50000", "currency": "USDC" },
-  "metadata": { "agent": "demo" }
+  "goal": "Find the resale-fee clause",
+  "conversationId": "<optional, from a seller conversation>",
+  "sectionId": "<optional starting section>",
+  "budget": { "currency": "USDC", "maxAmountAtomic": "20000" }
 }
 ```
 
-The client may send `query` instead of `articleId` when the server supports lookup.
-The client may send `sectionId` to stream only a selected section from the free navigation headers.
+Opens a budgeted session. The response includes article metadata, safe section
+navigation, `pricePerWordAtomic`, `maxArticlePriceAtomic`, the seller
+`conversationId`, the one-word `wordPaymentAtomic`, `gatewayFeeBps` (0), the
+session `expiresAt`, and the live counters `wordsPaid`, `wordsDelivered`,
+`paidAtomic`. When Circle/x402 is enabled, `paymentRequired` carries the x402
+terms for **one word**.
 
-Returns a session, article summary, per-word quote, and payment chunk size. Amounts are denominated in USDC atomic units where `1 USDC = 1_000_000`.
+All trusted values — price, creator wallet, creator identity, article ownership,
+word sequence, amount owed, settlement recipient — are loaded from persistent
+storage. Buyer-supplied values are never trusted.
 
-When Circle/x402 is enabled, the response also includes `paymentRequired`, the x402 terms the agent signs for each chunk payment.
-
-## Stream Payment
+## Pay For One Word
 
 `POST /v1/sessions/:sessionId/payments`
 
 ```json
-{
-  "paymentPayload": {
-    "x402Version": 2,
-    "accepted": {},
-    "payload": {}
-  }
-}
+{ "paymentPayload": { /* signed one-word x402 payload */ }, "idempotencyKey": "<session>:<sequence>" }
 ```
 
-The agent SDK can create this payload from the session's `paymentRequired` object using Circle's batch x402 client. Each accepted payment must match `quote.chargePerChunkAtomic` and unlocks the next paid word chunk.
+Each accepted payment releases **exactly one** word:
+
+1. The buyer authorizes/sends the price of one word.
+2. The gateway verifies the word-level payment.
+3. The gateway releases exactly one additional word.
+4. The ledger records that exact word and payment.
+5. The gateway emits updated word count and cost information.
+
+The response contains the released `word`, its `sequence`, `priceAtomic`,
+`wordsPaid`, `wordsDelivered`, `paidAtomic`, and `completed`. A failed payment
+releases no word. A retried payment with the same `idempotencyKey` returns the
+same word and never charges twice.
 
 ## Stream Events
 
-`GET /v1/sessions/:sessionId/events`
-
-Server-sent events:
+`GET /v1/sessions/:sessionId/events` — Server-Sent Events:
 
 - `session.started`
-- `session.payment_accepted`
-- `article.chunk`
+- `seller.message`
+- `word.payment_accepted`
+- `article.word`
 - `article.usage`
 - `article.completed`
 - `article.error`
 - `session.aborted`
 - `session.closed`
+
+An `article.word` event:
+
+```json
+{
+  "type": "article.word",
+  "sessionId": "...",
+  "articleId": "...",
+  "sequence": 0,
+  "word": "Rubicon",
+  "priceAtomic": "1",
+  "totalWordsStreamed": 1,
+  "totalPaidAtomic": "1"
+}
+```
+
+The gateway never reveals or emits unpaid future words.
+
+## Abort
+
+`POST /v1/sessions/:sessionId/abort` — stops the session. The buyer may stop at
+any moment once it has enough information; it pays for exactly the words it
+received.
+
+## Existing-Session Policy When an Article Is Paused
+
+A paused, archived, or deleted article cannot start a **new** session. An
+already-open session continues against the article snapshot captured when the
+session started, up to its budget or completion.

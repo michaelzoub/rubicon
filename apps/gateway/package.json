@@ -6,8 +6,9 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp src/demo-article.md dist/demo-article.md",
     "dev": "tsx --env-file-if-exists=../../.env src/index.ts",
+    "migrate": "tsx --env-file-if-exists=../../.env src/migrate.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test dist/**/*.test.js"
@@ -18,5 +19,8 @@
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "fastify": "^5.1.0"
+  },
+  "optionalDependencies": {
+    "pg": "^8.13.1"
   }
 }

@@ -1,90 +1,72 @@
 # @rubicon-caliga/agent-sdk
 
-Client SDK for autonomous agents that consume **metered article streams** through the Rubicon x402 streaming endpoint. The agent opens a budgeted stream, pays per word chunk with x402 nanopayments, receives article words over SSE, and can stop once it has enough information.
-
-## Flow
-
-```
-Agent SDK  ──POST /v1/sessions────────────────────▶  x402 Streaming Endpoint
-    │       ◀── quote + article + paymentRequired ──┤
-    ├──────POST /v1/sessions/:id/payments──────────▶│ verify + settle
-    │       (signed x402 payment per word chunk)     │
-    │       ◀── SSE: article.chunk, article.usage ───┤
-    └──────POST /v1/sessions/:id/abort─────────────▶│ stop anytime
-```
-
-You call the Rubicon endpoint directly. There is no provider SDK.
+Buyer-agent SDK for Rubicon. The agent opens a budgeted reading session and pays
+for **every individual word** it receives via x402. A high-level `read()` loop
+runs the whole seller conversation → session → one-word payment → word → usage
+cycle until a stop condition is met, so you never send a payment per word by
+hand. The buyer can stop the moment it has enough information and pays for
+exactly the words it received.
 
 ## Quick Start
 
 ```ts
-import { AgentClient, CircleGatewayPaymentEngine, StaticPaymentEngine } from "@rubicon-caliga/agent-sdk";
+import { RubiconClient, StaticPaymentEngine, CircleGatewayPaymentEngine } from "@rubicon-caliga/agent-sdk";
 
 const privateKey = process.env.CIRCLE_PRIVATE_KEY as `0x${string}` | undefined;
-const client = new AgentClient({
+
+const rubicon = new RubiconClient({
   baseUrl: process.env.GATEWAY_BASE_URL ?? "http://localhost:8787",
   paymentEngine: privateKey
     ? new CircleGatewayPaymentEngine({ chain: "arcTestnet", privateKey, rpcUrl: process.env.CIRCLE_RPC_URL })
     : new StaticPaymentEngine(),
 });
 
-const session = await client.startArticleStream({
+const stream = rubicon.read({
   articleId: "rubicon-streaming-001",
-  budget: { currency: "USDC", maxAmountAtomic: "50000" },
-  metadata: { agent: "demo" },
+  goal: "Find the resale-fee clause",
+  maxSpendAtomic: "20000",
+  stopWhen: ({ text, wordsRead, amountPaid }) => wordsRead > 50 || /resale fee/i.test(text),
 });
 
-const stop = client.stream(session.sessionId, (event) => {
-  console.log(event);
-  if (event.type === "session.closed" || event.type === "session.aborted") {
-    stop();
+for await (const event of stream) {
+  switch (event.type) {
+    case "seller.message":
+      console.log("seller:", event.content);
+      break;
+    case "article.word":
+      process.stdout.write(`${event.word} `);
+      break;
+    case "article.completed":
+      console.log("\nreceipt:", event.receipt);
+      break;
   }
-});
-
-await client.sendPayment(session);
-```
-
-## API
-
-- `startArticleStream(req)` opens a stream session. `startSession(req)` is also available as the lower-level protocol name.
-- `sendPayment(session)` signs and sends payment for `session.quote.chargePerChunkAtomic`.
-- `sendRawPayment(sessionId, payment)` sends a pre-built payment payload.
-- `stream(sessionId, onEvent)` opens the SSE stream.
-- `abort(sessionId, reason?)` cancels the stream.
-
-## Key Types
-
-```ts
-interface StartSessionRequest {
-  articleId?: string;
-  query?: string;
-  budget: { currency: "USDC"; maxAmountAtomic: `${bigint}` };
-  metadata?: Record<string, unknown>;
-}
-
-interface StartSessionResponse {
-  sessionId: string;
-  article: {
-    articleId: string;
-    authorUsername: string;
-    title: string;
-    totalWords: number;
-    maxPriceAtomic: `${bigint}`;
-  };
-  quote: {
-    currency: "USDC";
-    chunkWords: number;
-    meteringUnit: "word";
-    unitPriceAtomic: `${bigint}`;
-    gatewayFeeBps: number;
-    chargePerWordAtomic: `${bigint}`;
-    chargePerChunkAtomic: `${bigint}`;
-  };
-  paymentRequired?: unknown;
-  paymentChunkWords: number;
-  expiresAt: string;
 }
 ```
+
+## `read(options)`
+
+Yields `session.started`, `seller.message`, `article.word`, `article.usage`,
+`article.completed` (with a final receipt), and `article.error`. It handles:
+
+- seller-agent conversation and starting-section selection
+- session creation and one-word payment creation/submission
+- word receipt and running usage
+- retry idempotency (per-word idempotency keys)
+- budget enforcement (`maxSpendAtomic` / `budget`)
+- early stopping (`stopWhen`, `maxWords`)
+- stream abortion and a final receipt
+
+## Lower-level methods
+
+`getRepository`, `getNavigation`, `startConversation`, `sendConversationMessage`,
+`startSession`, `payForWord`, `abort`, and `streamEvents` (raw SSE) are available
+for custom flows.
+
+## Payment engines
+
+- `StaticPaymentEngine` — no-money development engine for a dev-mode gateway.
+- `CircleGatewayPaymentEngine` — signs the gateway's one-word x402 terms; Circle
+  may batch settlement internally, but each payload corresponds to one word.
 
 ## Local Run
 
@@ -92,5 +74,3 @@ interface StartSessionResponse {
 pnpm dev:gateway
 pnpm dev:agent
 ```
-
-Dev mode uses `StaticPaymentEngine`. Real mode uses `CircleGatewayPaymentEngine` when `CIRCLE_PRIVATE_KEY` is set on the agent and `AUTHOR_WALLET_REGISTRY` maps the article author to an Arc wallet on the gateway.

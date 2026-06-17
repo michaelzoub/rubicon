@@ -1,183 +1,313 @@
 import { EventSource } from "eventsource";
 import type {
-  ArticleNavigation,
   ArticleSummary,
+  Budget,
   GatewayEvent,
+  SendConversationMessageResponse,
+  StartConversationResponse,
   StartSessionRequest,
   StartSessionResponse,
   StreamPaymentRequest,
+  StreamPaymentResponse,
 } from "@rubicon-caliga/core";
 import type { AgentPaymentEngine } from "./payment-engine.js";
 
-export interface AgentClientOptions {
+export interface RubiconClientOptions {
   baseUrl: string;
   paymentEngine: AgentPaymentEngine;
-  sellerAgentApiKey?: string;
+  /** Optional auth header value for the public agent API, e.g. "Bearer <token>". */
+  authorization?: string;
   fetch?: typeof fetch;
+}
+
+export interface RepositoryResponse {
+  repository: "articles";
+  articles: ArticleSummary[];
 }
 
 export interface NavigationResponse {
   article: ArticleSummary;
-  navigation: ArticleNavigation;
+  navigation: StartSessionResponse["navigation"];
 }
 
-export interface SellerAgentNavigationResponse {
-  article: ArticleSummary;
-  sellerAgent: {
-    role: "neutral_article_navigator";
-    selectedSectionIds: string[];
-    hints: string[];
-    constraints: string[];
-    withholds: string[];
-  };
+export interface ReadReceipt {
+  sessionId: string;
+  articleId: string;
+  conversationId: string;
+  wordsRead: number;
+  amountPaidAtomic: `${bigint}`;
+  text: string;
+  completed: boolean;
+  stopReason: "article_completed" | "stop_condition" | "budget_reached" | "max_words" | "aborted";
 }
 
-export interface StreamStopOptions {
-  maxWords?: number;
-  maxPayments?: number;
+export type RubiconReadEvent =
+  | { type: "session.started"; session: StartSessionResponse }
+  | { type: "seller.message"; content: string; recommendedSectionId?: string }
+  | {
+      type: "article.word";
+      sequence: number;
+      word: string;
+      priceAtomic: `${bigint}`;
+      wordsRead: number;
+      amountPaidAtomic: `${bigint}`;
+      text: string;
+    }
+  | { type: "article.usage"; wordsPaid: number; wordsDelivered: number; paidAtomic: `${bigint}` }
+  | { type: "article.completed"; receipt: ReadReceipt }
+  | { type: "article.error"; message: string };
+
+export interface ReadOptions {
+  articleId: string;
+  goal?: string;
+  sectionId?: string;
+  conversationId?: string;
+  /** Hard spend ceiling in atomic USDC. Equivalent to budget.maxAmountAtomic. */
   maxSpendAtomic?: `${bigint}`;
-  hasEnoughInformation?: (input: {
-    event: GatewayEvent;
-    wordsStreamed: number;
-    paymentsSent: number;
-    paidAtomic: bigint;
-  }) => boolean;
+  budget?: Budget;
+  maxWords?: number;
+  /** Return true to stop reading once enough information has been collected. */
+  stopWhen?: (state: {
+    text: string;
+    wordsRead: number;
+    amountPaid: bigint;
+  }) => boolean | Promise<boolean>;
+  metadata?: Record<string, unknown>;
 }
 
-export class AgentClient {
+/**
+ * High-level buyer-agent client for Rubicon. `read()` runs the entire
+ * pay -> word -> usage loop one word at a time until a stop condition is met,
+ * so application developers never send a payment for every word themselves.
+ */
+export class RubiconClient {
   private readonly fetcher: typeof fetch;
 
-  constructor(private readonly options: AgentClientOptions) {
+  constructor(private readonly options: RubiconClientOptions) {
     this.fetcher = options.fetch ?? fetch;
   }
 
-  async startSession(request: StartSessionRequest): Promise<StartSessionResponse> {
-    const response = await this.fetcher(`${this.options.baseUrl}/v1/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(request),
-    });
-    return this.readJson(response);
+  async getRepository(): Promise<RepositoryResponse> {
+    return this.readJson(await this.fetcher(`${this.options.baseUrl}/v1/repository`, { headers: this.headers() }));
   }
 
-  async startArticleStream(request: StartSessionRequest): Promise<StartSessionResponse> {
-    return this.startSession(request);
-  }
-
-  async getArticleNavigation(articleId: string): Promise<NavigationResponse> {
-    const response = await this.fetcher(`${this.options.baseUrl}/v1/articles/${articleId}/navigation`);
-    return this.readJson(response);
-  }
-
-  async askSellerAgentNavigation(request: {
-    articleId: string;
-    buyerGoal?: string;
-    candidateSectionIds?: string[];
-    maxSpendAtomic?: `${bigint}`;
-  }): Promise<SellerAgentNavigationResponse> {
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    if (this.options.sellerAgentApiKey) {
-      headers.authorization = `Bearer ${this.options.sellerAgentApiKey}`;
+  async getNavigation(articleId: string, goal?: string): Promise<NavigationResponse> {
+    const url = new URL(`${this.options.baseUrl}/v1/articles/${articleId}/navigation`);
+    if (goal) {
+      url.searchParams.set("goal", goal);
     }
-    const response = await this.fetcher(`${this.options.baseUrl}/v1/seller-agent/navigation`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(request),
-    });
-    return this.readJson(response);
+    return this.readJson(await this.fetcher(url.toString(), { headers: this.headers() }));
   }
 
-  async sendPayment(session: StartSessionResponse): Promise<void> {
-    const payment = await this.options.paymentEngine.createPayment(session);
-    await this.sendRawPayment(session.sessionId, payment);
+  async startConversation(input: {
+    articleId: string;
+    goal?: string;
+    message?: string;
+  }): Promise<StartConversationResponse> {
+    return this.readJson(
+      await this.fetcher(`${this.options.baseUrl}/v1/seller-agent/conversations`, {
+        method: "POST",
+        headers: this.headers({ "content-type": "application/json" }),
+        body: JSON.stringify(input),
+      }),
+    );
   }
 
-  async sendRawPayment(sessionId: string, payment: StreamPaymentRequest): Promise<void> {
+  async sendConversationMessage(
+    conversationId: string,
+    message: string,
+  ): Promise<SendConversationMessageResponse> {
+    return this.readJson(
+      await this.fetcher(
+        `${this.options.baseUrl}/v1/seller-agent/conversations/${conversationId}/messages`,
+        {
+          method: "POST",
+          headers: this.headers({ "content-type": "application/json" }),
+          body: JSON.stringify({ message }),
+        },
+      ),
+    );
+  }
+
+  async startSession(request: StartSessionRequest): Promise<StartSessionResponse> {
+    return this.readJson(
+      await this.fetcher(`${this.options.baseUrl}/v1/sessions`, {
+        method: "POST",
+        headers: this.headers({ "content-type": "application/json" }),
+        body: JSON.stringify(request),
+      }),
+    );
+  }
+
+  async payForWord(sessionId: string, payment: StreamPaymentRequest): Promise<StreamPaymentResponse> {
     const response = await this.fetcher(`${this.options.baseUrl}/v1/sessions/${sessionId}/payments`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: this.headers({ "content-type": "application/json" }),
       body: JSON.stringify(payment),
     });
     if (!response.ok) {
-      throw new Error(`Payment rejected: ${response.status} ${await response.text()}`);
+      throw new Error(`Word payment rejected: ${response.status} ${await response.text()}`);
     }
+    return response.json() as Promise<StreamPaymentResponse>;
   }
 
   async abort(sessionId: string, reason = "agent_cancelled"): Promise<void> {
     await this.fetcher(`${this.options.baseUrl}/v1/sessions/${sessionId}/abort`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: this.headers({ "content-type": "application/json" }),
       body: JSON.stringify({ reason }),
     });
   }
 
-  stream(sessionId: string, onEvent: (event: GatewayEvent) => void): () => void {
+  /** Subscribe to raw word-level server-sent events for observation/logging. */
+  streamEvents(sessionId: string, onEvent: (event: GatewayEvent) => void): () => void {
     const source = new EventSource(`${this.options.baseUrl}/v1/sessions/${sessionId}/events`);
     source.onmessage = (message) => onEvent(JSON.parse(message.data) as GatewayEvent);
     source.onerror = () => source.close();
     return () => source.close();
   }
 
-  streamWithStopConditions(
-    session: StartSessionResponse,
-    options: StreamStopOptions,
-    onEvent: (event: GatewayEvent) => void,
-  ): () => void {
-    let wordsStreamed = 0;
-    let paymentsSent = 0;
-    let paidAtomic = 0n;
-    let paymentInFlight = false;
-    let closed = false;
+  /**
+   * Read an article one paid word at a time. Yields seller messages, paid words,
+   * running usage, and a final completion event carrying the receipt.
+   */
+  async *read(options: ReadOptions): AsyncGenerator<RubiconReadEvent, ReadReceipt> {
+    const budget: Budget =
+      options.budget ??
+      (options.maxSpendAtomic
+        ? { currency: "USDC", maxAmountAtomic: options.maxSpendAtomic }
+        : (() => {
+            throw new Error("read() requires maxSpendAtomic or budget");
+          })());
+    const budgetAtomic = BigInt(budget.maxAmountAtomic);
 
-    const stop = this.stream(session.sessionId, (event) => {
-      onEvent(event);
-      if (event.type === "session.payment_accepted") {
-        paidAtomic = BigInt(event.paidAtomic);
+    // Let the seller agent recommend a starting section if the buyer has a goal
+    // and did not pick one explicitly.
+    let conversationId = options.conversationId;
+    let sectionId = options.sectionId;
+    if (options.goal && !conversationId) {
+      const conversation = await this.startConversation({
+        articleId: options.articleId,
+        goal: options.goal,
+        message: options.goal,
+      });
+      conversationId = conversation.conversationId;
+      const seller = conversation.messages.find((message) => message.role === "seller");
+      if (seller) {
+        yield {
+          type: "seller.message",
+          content: seller.content,
+          recommendedSectionId: seller.recommendedSectionId,
+        };
+        sectionId = sectionId ?? seller.recommendedSectionId;
       }
-      if (event.type === "article.usage") {
-        wordsStreamed = event.wordsStreamed;
-      }
-      if (event.type === "session.closed" || event.type === "session.aborted") {
-        closed = true;
-        stop();
-        return;
-      }
-      if (
-        shouldStop({
-          event,
-          wordsStreamed,
-          paymentsSent,
-          paidAtomic,
-          options,
-        })
-      ) {
-        closed = true;
-        void this.abort(session.sessionId, "buyer_stop_condition_met").finally(stop);
-        return;
-      }
-      if (event.type === "article.usage") {
-        void payNext();
-      }
+    }
+
+    const session = await this.startSession({
+      articleId: options.articleId,
+      goal: options.goal,
+      conversationId,
+      sectionId,
+      budget,
+      metadata: options.metadata,
+    });
+    yield { type: "session.started", session };
+
+    const wordPaymentAtomic = BigInt(session.wordPaymentAtomic);
+    let text = "";
+    let wordsRead = 0;
+    let amountPaid = 0n;
+    let stopReason: ReadReceipt["stopReason"] = "article_completed";
+    let completed = false;
+
+    const makeReceipt = (): ReadReceipt => ({
+      sessionId: session.sessionId,
+      articleId: session.article.articleId,
+      conversationId: session.conversationId,
+      wordsRead,
+      amountPaidAtomic: `${amountPaid}`,
+      text,
+      completed,
+      stopReason,
     });
 
-    const payNext = async (): Promise<void> => {
-      if (closed || paymentInFlight) {
-        return;
+    while (true) {
+      if (options.maxWords !== undefined && wordsRead >= options.maxWords) {
+        stopReason = "max_words";
+        break;
       }
-      paymentInFlight = true;
-      paymentsSent += 1;
-      try {
-        await this.sendPayment(session);
-      } finally {
-        paymentInFlight = false;
+      if (amountPaid + wordPaymentAtomic > budgetAtomic) {
+        stopReason = "budget_reached";
+        break;
       }
-    };
+      if (await options.stopWhen?.({ text, wordsRead, amountPaid })) {
+        stopReason = "stop_condition";
+        break;
+      }
 
-    void payNext();
-    return () => {
-      closed = true;
-      stop();
-    };
+      const payment = await this.options.paymentEngine.createWordPayment(session);
+      // Idempotency key ties this payment to the specific next word; safe retries.
+      const idempotencyKey = `${session.sessionId}:${wordsRead}`;
+      let result: StreamPaymentResponse;
+      try {
+        result = await this.payForWord(session.sessionId, { ...payment, idempotencyKey });
+      } catch (error) {
+        yield { type: "article.error", message: error instanceof Error ? error.message : String(error) };
+        stopReason = "aborted";
+        break;
+      }
+
+      if (result.completed && result.word === "") {
+        // Article exhausted with no further word to deliver.
+        completed = true;
+        stopReason = "article_completed";
+        const receipt = makeReceipt();
+        yield { type: "article.completed", receipt };
+        return receipt;
+      }
+
+      wordsRead = result.wordsDelivered;
+      amountPaid = BigInt(result.paidAtomic);
+      text = text ? `${text} ${result.word}` : result.word;
+
+      yield {
+        type: "article.word",
+        sequence: result.sequence,
+        word: result.word,
+        priceAtomic: result.priceAtomic,
+        wordsRead,
+        amountPaidAtomic: `${amountPaid}`,
+        text,
+      };
+      yield {
+        type: "article.usage",
+        wordsPaid: result.wordsPaid,
+        wordsDelivered: result.wordsDelivered,
+        paidAtomic: result.paidAtomic,
+      };
+
+      if (result.completed) {
+        completed = true;
+        stopReason = "article_completed";
+        const receipt = makeReceipt();
+        yield { type: "article.completed", receipt };
+        return receipt;
+      }
+    }
+
+    // Stopped early by the buyer: abort the session so no further words are owed.
+    await this.abort(session.sessionId, stopReason).catch(() => {});
+    const receipt = makeReceipt();
+    yield { type: "article.completed", receipt };
+    return receipt;
+  }
+
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    const headers: Record<string, string> = { ...extra };
+    if (this.options.authorization) {
+      headers.authorization = this.options.authorization;
+    }
+    return headers;
   }
 
   private async readJson<T>(response: Response): Promise<T> {
@@ -188,26 +318,5 @@ export class AgentClient {
   }
 }
 
-function shouldStop(input: {
-  event: GatewayEvent;
-  wordsStreamed: number;
-  paymentsSent: number;
-  paidAtomic: bigint;
-  options: StreamStopOptions;
-}): boolean {
-  if (input.options.maxWords !== undefined && input.wordsStreamed >= input.options.maxWords) {
-    return true;
-  }
-  if (input.options.maxPayments !== undefined && input.paymentsSent >= input.options.maxPayments) {
-    return true;
-  }
-  if (input.options.maxSpendAtomic !== undefined && input.paidAtomic >= BigInt(input.options.maxSpendAtomic)) {
-    return true;
-  }
-  return input.options.hasEnoughInformation?.({
-    event: input.event,
-    wordsStreamed: input.wordsStreamed,
-    paymentsSent: input.paymentsSent,
-    paidAtomic: input.paidAtomic,
-  }) === true;
-}
+/** Backwards-compatible alias. */
+export const AgentClient = RubiconClient;

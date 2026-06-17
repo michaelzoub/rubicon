@@ -1,9 +1,12 @@
-import { AgentClient, CircleGatewayPaymentEngine, StaticPaymentEngine } from "@rubicon-caliga/agent-sdk";
+import { RubiconClient, StaticPaymentEngine, CircleGatewayPaymentEngine } from "@rubicon-caliga/agent-sdk";
+
+// Minimal end-to-end demo: discover an article, then read it word by word.
 
 const privateKey = process.env.CIRCLE_PRIVATE_KEY as `0x${string}` | undefined;
+const baseUrl = process.env.GATEWAY_BASE_URL ?? "http://localhost:8787";
 
-const client = new AgentClient({
-  baseUrl: process.env.GATEWAY_BASE_URL ?? "http://localhost:8787",
+const rubicon = new RubiconClient({
+  baseUrl,
   paymentEngine: privateKey
     ? new CircleGatewayPaymentEngine({
         chain: (process.env.CIRCLE_CHAIN ?? "arcTestnet") as never,
@@ -13,43 +16,23 @@ const client = new AgentClient({
     : new StaticPaymentEngine(),
 });
 
-const session = await client.startSession({
-  articleId: process.env.DEMO_ARTICLE_ID ?? "rubicon-streaming-001",
-  budget: { currency: "USDC", maxAmountAtomic: "50000" },
-  metadata: { agent: "example-agent" },
-});
+const { articles } = await rubicon.getRepository();
+const article = articles[0];
+if (!article) {
+  throw new Error("No live articles available in the Rubicon repository");
+}
+console.log("reading", article.title, `(${article.pricePerWordAtomic} atomic USDC/word)`);
 
-console.log("started", session);
-
-let paymentInFlight = false;
-let streamClosed = false;
-
-async function payForNextChunk(): Promise<void> {
-  if (paymentInFlight || streamClosed) {
-    return;
+for await (const event of rubicon.read({
+  articleId: article.articleId,
+  goal: "Summarize the article",
+  maxSpendAtomic: "50000",
+  maxWords: 40,
+})) {
+  if (event.type === "article.word") {
+    process.stdout.write(`${event.word} `);
   }
-  paymentInFlight = true;
-  try {
-    await client.sendPayment(session);
-  } catch (error) {
-    console.error(error);
-    stop();
-    process.exit(1);
-  } finally {
-    paymentInFlight = false;
+  if (event.type === "article.completed") {
+    console.log("\n--", event.receipt.stopReason, event.receipt.wordsRead, "words");
   }
 }
-
-const stop = client.stream(session.sessionId, (event) => {
-  console.log(event);
-  if (event.type === "article.usage") {
-    void payForNextChunk();
-  }
-  if (event.type === "session.closed" || event.type === "session.aborted") {
-    streamClosed = true;
-    stop();
-    process.exit(0);
-  }
-});
-
-await payForNextChunk();
