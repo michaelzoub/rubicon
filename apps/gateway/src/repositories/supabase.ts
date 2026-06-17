@@ -1,9 +1,14 @@
 import { createClient } from "@supabase/supabase-js";
+import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
 import type { ArticleSection, ArticleState, ArticleSummary, CreatorWallet, SellerAgentConfig } from "@rubicon-caliga/core";
 import { PUBLIC_ARTICLE_STATE } from "@rubicon-caliga/core";
+import { createRequire } from "node:module";
 import { toCaip2Network } from "../chain.js";
 import { tokenizeWords } from "../words.js";
 import type { ArticleRecord, PublishedArticleRepository } from "./types.js";
+
+const require = createRequire(import.meta.url);
+const WebSocket = require("ws") as WebSocketLikeConstructor;
 
 type SupabaseResult<T> = PromiseLike<{ data: T | null; error: SupabaseQueryError | null }>;
 
@@ -96,6 +101,9 @@ export function createSupabaseClientFromEnv(env: NodeJS.ProcessEnv = process.env
     auth: {
       persistSession: false,
       autoRefreshToken: false,
+    },
+    realtime: {
+      transport: WebSocket,
     },
   }) as unknown as SupabaseReader;
 }

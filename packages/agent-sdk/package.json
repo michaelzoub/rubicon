@@ -32,7 +32,7 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@rubicon-caliga/core": "workspace:*",
+    "@rubicon-caliga/core": "^0.1.0",
     "@circle-fin/x402-batching": "^3.1.2",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
