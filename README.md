@@ -40,7 +40,7 @@ path can still use the no-money payment shim:
 ```bash
 pnpm install
 cp .env.example .env
-# Fill SUPABASE_URL and SUPABASE_ANON_KEY in .env.
+# Fill SUPABASE_URL and the anon/publishable Supabase key in .env or .env.local.
 pnpm dev:gateway
 ```
 
@@ -94,7 +94,10 @@ payment per word by hand.
 ## Production storage
 
 Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` so the gateway can read `live`
-articles, creators, sections, and verified wallets through Supabase RLS. Set
+articles, creators, sections, and verified wallets through Supabase RLS. The
+gateway also accepts `SUPABASE_PUBLISHABLE_KEY` or
+`NEXT_PUBLIC_SUPABASE_ANON_KEY`. Do not use `SUPABASE_SERVICE_ROLE_KEY` here;
+the repository must read as the anon role for RLS to apply. Set
 `DATABASE_URL` when you also want runtime sessions, word deliveries, payments,
 and earnings persisted in Postgres. Apply migrations:
 

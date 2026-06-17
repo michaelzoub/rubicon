@@ -20,7 +20,7 @@ From this repo:
 ```bash
 pnpm install
 pnpm --filter @rubicon-caliga/agent-sdk build
-# Ensure .env has SUPABASE_URL and SUPABASE_ANON_KEY.
+# Ensure .env or .env.local has SUPABASE_URL and the anon/publishable Supabase key.
 GATEWAY_PORT=8788 pnpm dev:gateway
 ```
 

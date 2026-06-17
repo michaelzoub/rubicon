@@ -85,19 +85,9 @@ export class SupabaseRepositoryError extends Error {
 }
 
 export function createSupabaseClientFromEnv(env: NodeJS.ProcessEnv = process.env): SupabaseReader {
-  const url = env.SUPABASE_URL;
-  const anonKey = env.SUPABASE_ANON_KEY;
-  const missing: string[] = [];
-  if (!url) {
-    missing.push("SUPABASE_URL");
-  }
-  if (!anonKey) {
-    missing.push("SUPABASE_ANON_KEY");
-  }
-  if (missing.length > 0) {
-    throw new Error(`Missing required Supabase environment variable${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
-  }
-  return createClient(url!, anonKey!, {
+  const { url, anonKey } = resolveSupabaseConfigFromEnv(env);
+
+  return createClient(url, anonKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
@@ -106,6 +96,30 @@ export function createSupabaseClientFromEnv(env: NodeJS.ProcessEnv = process.env
       transport: WebSocket,
     },
   }) as unknown as SupabaseReader;
+}
+
+export function resolveSupabaseConfigFromEnv(env: NodeJS.ProcessEnv = process.env): { url: string; anonKey: string } {
+  const url = env.SUPABASE_URL;
+  const anonKey = env.SUPABASE_ANON_KEY ?? env.SUPABASE_PUBLISHABLE_KEY ?? env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const missing: string[] = [];
+  if (!url) {
+    missing.push("SUPABASE_URL");
+  }
+  if (!anonKey) {
+    missing.push("SUPABASE_ANON_KEY (or SUPABASE_PUBLISHABLE_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY)");
+  }
+  if (missing.length > 0) {
+    const serviceRoleHint = env.SUPABASE_SERVICE_ROLE_KEY
+      ? " SUPABASE_SERVICE_ROLE_KEY is present, but the gateway reads public articles as the anon role so Supabase RLS remains enforced."
+      : "";
+    throw new Error(
+      `Missing required Supabase environment variable${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.${serviceRoleHint}`,
+    );
+  }
+  if (!url || !anonKey) {
+    throw new Error("Missing required Supabase configuration.");
+  }
+  return { url, anonKey };
 }
 
 const ARTICLE_SUMMARY_SELECT = `

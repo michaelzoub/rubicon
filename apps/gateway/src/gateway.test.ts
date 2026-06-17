@@ -7,7 +7,7 @@ import {
   InMemoryPublishedArticleRepository,
   type ArticleFixture,
 } from "./repositories/in-memory.js";
-import { SupabasePublishedArticleRepository, type SupabaseReader } from "./repositories/supabase.js";
+import { resolveSupabaseConfigFromEnv, SupabasePublishedArticleRepository, type SupabaseReader } from "./repositories/supabase.js";
 import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
 import type { PaymentVerifier } from "./payments/types.js";
 
@@ -359,6 +359,26 @@ test("repository endpoint returns live article records from Supabase", async () 
     ],
   });
   await app.close();
+});
+
+test("Supabase env config requires an anon key so public RLS remains enforced", () => {
+  assert.deepEqual(
+    resolveSupabaseConfigFromEnv({
+      SUPABASE_URL: "https://project.supabase.co",
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key",
+      SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+    }),
+    { url: "https://project.supabase.co", anonKey: "anon-key" },
+  );
+
+  assert.throws(
+    () =>
+      resolveSupabaseConfigFromEnv({
+        SUPABASE_URL: "https://project.supabase.co",
+        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+      }),
+    /SUPABASE_SERVICE_ROLE_KEY is present, but the gateway reads public articles as the anon role/,
+  );
 });
 
 test("repository endpoint reflects Supabase record changes without recreating the app", async () => {
