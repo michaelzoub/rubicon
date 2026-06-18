@@ -53,13 +53,18 @@ rubicon search "agent economies" --json
 rubicon article show <article-id> --json
 rubicon article navigation <article-id> --goal "find pricing" --json
 rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --dry-run --json
-rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --json
+rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --mode batch --json
 rubicon receipts list --json
 rubicon receipts show <receipt-id> --json
 ```
 
 Always set `--max-usdc` or `--max-atomic` for reads. Prefer `--json` in
-automated workflows. Do not use raw HTTP unless testing the protocol.
+automated workflows. Repository, article, and dry-run output include
+`paymentTerms.circleChain`, network environment, and funding guidance when
+known. For Arc Testnet, `paymentTerms.network` is `eip155:5042002` and
+`paymentTerms.circleChain` is `ARC-TESTNET`; fund through Circle's testnet
+faucet / Gateway testnet flow, not mainnet fiat or crypto. Do not use raw HTTP
+unless testing the protocol.
 
 Install the SDK:
 
@@ -137,6 +142,8 @@ backing EOA separate. `agentWalletAddress` is passed to
 is used as the x402 `TransferWithAuthorization.from` address. If only the Agent
 Wallet is configured, the SDK discovers `data.backingEOA` with
 `circle gateway balance --address <agent-wallet-address> --chain ARC-TESTNET --output json`.
+Final Rubicon receipts may therefore show a buyer wallet that differs from the
+Agent Wallet address used for Circle CLI signing.
 
 Rubicon's target Circle / Arc model authorizes the session cap once and settles
 actual words delivered. Current compatibility gateways may still ask the SDK for

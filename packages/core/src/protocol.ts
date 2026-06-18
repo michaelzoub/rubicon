@@ -31,6 +31,9 @@ export interface SellerPaymentTerms {
   asset: "USDC";
   network: string;
   networkLabel?: string;
+  circleChain?: string;
+  environment?: "testnet" | "mainnet" | "unknown";
+  fundingMethod?: string;
   payTo: `0x${string}`;
   pricePerWordAtomic: AtomicAmount;
   meteringUnit: "word";

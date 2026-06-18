@@ -2,7 +2,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { RubiconClient } from "@rubicon-caliga/agent-sdk";
-import { parseUsdcToAtomic, type ArticleSummary } from "@rubicon-caliga/core";
+import { parseUsdcToAtomic, settlementNetworkInfo, type ArticleSectionSummary, type ArticleSummary } from "@rubicon-caliga/core";
 import { parseArgs, booleanFlag, stringFlag, type ParsedArgs } from "./args.js";
 import { configPath, HOSTED_GATEWAY_URL, readConfig, writeConfig, type RubiconCliConfig } from "./config.js";
 import { CliError, toCliError } from "./errors.js";
@@ -29,6 +29,7 @@ interface Runtime {
   gatewayUrl: string;
   apiKey?: string;
   paymentMode: PaymentMode;
+  circleChain?: string;
   client: RubiconClient;
 }
 
@@ -54,7 +55,7 @@ async function main(): Promise<void> {
       authorization: apiKey ? `Bearer ${apiKey}` : undefined,
       paymentEngine: payment.engine,
     });
-    await dispatch({ parsed, json, config, gatewayUrl, apiKey, paymentMode: payment.mode, client });
+    await dispatch({ parsed, json, config, gatewayUrl, apiKey, paymentMode: payment.mode, circleChain: payment.circleChain, client });
   } catch (error) {
     const cliError = toCliError(error);
     if (json) {
@@ -280,6 +281,8 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
     storedReceipt = await saveReceipt(finalReceipt);
     if (runtime.json && !summary) {
       printJson({ type: "receipt.saved", success: true, receiptId: storedReceipt.receiptId, savedAt: storedReceipt.savedAt, receipt: storedReceipt.receipt });
+    } else if (!runtime.json && !summary) {
+      process.stdout.write(`Receipt ID: ${storedReceipt.receiptId}\n`);
     }
   }
 
@@ -308,12 +311,32 @@ async function dryRun(
   chunkWords: number | undefined,
 ): Promise<void> {
   const article = await findArticle(runtime, articleId);
+  const navigation = goal && !sectionId ? await runtime.client.getNavigation(articleId, goal).catch(() => undefined) : undefined;
+  const effectiveSectionId = sectionId ?? navigation?.navigation.sellerAgent.recommendedSectionId;
+  const effectiveSection = effectiveSectionId ? findSection(article, effectiveSectionId) : undefined;
+  const estimatedWords = Math.min(maxWords ?? Number.MAX_SAFE_INTEGER, effectiveSection?.wordCount ?? article.totalWords);
+  const estimatedMaxCostAtomic = BigInt(article.pricePerWordAtomic) * BigInt(estimatedWords);
+  const budgetAtomic = BigInt(maxSpendAtomic);
+  const networkInfo = settlementNetworkInfo(article.paymentTerms?.network);
+  const fundingMethod = article.paymentTerms?.fundingMethod ?? networkInfo.fundingMethod;
+  const balanceCheck = {
+    checked: false,
+    sufficient: undefined,
+    reason: "Live Circle Gateway balance is not checked during dry-run.",
+  };
+  const budgetSufficiency = {
+    sufficientForEstimatedMax: budgetAtomic >= estimatedMaxCostAtomic,
+    estimatedMaxCostAtomic: `${estimatedMaxCostAtomic}`,
+    estimatedMaxCostUsdc: formatAtomic(`${estimatedMaxCostAtomic}`),
+    estimatedWords,
+  };
   if (runtime.json) {
     printJson({
       success: true,
       dryRun: true,
       gatewayUrl: runtime.gatewayUrl,
       paymentMode: runtime.paymentMode,
+      circleChain: article.paymentTerms?.circleChain ?? networkInfo.circleChain ?? runtime.circleChain,
       budget: {
         maxSpendAtomic,
         maxSpendUsdc: formatAtomic(maxSpendAtomic),
@@ -321,8 +344,14 @@ async function dryRun(
       },
       goal,
       sectionId,
+      recommendedSectionId: navigation?.navigation.sellerAgent.recommendedSectionId,
+      effectiveSectionId,
+      readStartsAt: effectiveSectionId ? `section:${effectiveSectionId}` : "full-article",
       stopAfterSection,
       chunkWords,
+      fundingMethod,
+      estimatedMax: budgetSufficiency,
+      walletBalance: balanceCheck,
       article: articleJson(article),
     });
     return;
@@ -333,9 +362,18 @@ async function dryRun(
       "Dry run: no paid read started.",
       `Gateway: ${runtime.gatewayUrl}`,
       `Payment mode: ${runtime.paymentMode}`,
+      article.paymentTerms?.circleChain ?? networkInfo.circleChain ?? runtime.circleChain
+        ? `Circle chain: ${article.paymentTerms?.circleChain ?? networkInfo.circleChain ?? runtime.circleChain}`
+        : undefined,
       `Budget: ${formatAtomic(maxSpendAtomic)} USDC (${maxSpendAtomic} atomic)`,
+      `Estimated max for ${effectiveSectionId ? effectiveSectionId : "full article"}: ${formatAtomic(`${estimatedMaxCostAtomic}`)} USDC (${estimatedWords.toLocaleString("en-US")} words)`,
+      `Budget covers estimate: ${budgetSufficiency.sufficientForEstimatedMax ? "yes" : "no"}`,
+      `Wallet balance check: not checked`,
+      fundingMethod ? `Funding: ${fundingMethod}` : undefined,
       maxWords ? `Max words: ${maxWords}` : undefined,
       goal ? `Goal: ${goal}` : undefined,
+      navigation?.navigation.sellerAgent.recommendedSectionId ? `Recommended section: ${navigation.navigation.sellerAgent.recommendedSectionId}` : undefined,
+      `Read starts at: ${effectiveSectionId ? `section ${effectiveSectionId}` : "full article"}`,
       sectionId ? `Section: ${sectionId}` : undefined,
       stopAfterSection ? "Stop after section: yes" : undefined,
       chunkWords ? `Chunk words: ${chunkWords}` : undefined,
@@ -397,6 +435,7 @@ async function configShow(runtime: Runtime): Promise<void> {
       gatewayUrl: runtime.gatewayUrl,
       apiKey: runtime.apiKey ? "set" : undefined,
       paymentMode: runtime.paymentMode,
+      circleChain: runtime.circleChain,
     },
   };
   if (runtime.json) {
@@ -490,13 +529,24 @@ function limitFlag(parsed: ParsedArgs): number | undefined {
 
 function chunkWordsFlag(parsed: ParsedArgs): number | undefined {
   const fast = booleanFlag(parsed.flags, "fast");
+  const mode = stringFlag(parsed.flags, "mode");
+  if (mode !== undefined && mode !== "batch" && mode !== "word") {
+    throw new CliError("INVALID_READ_MODE", "--mode must be batch or word.");
+  }
   const rawChunkWords = stringFlag(parsed.flags, "chunk-words");
-  if (rawChunkWords === undefined) return fast ? 32 : undefined;
+  if (rawChunkWords === undefined) return fast || mode === "batch" ? 32 : undefined;
+  if (mode === "word") {
+    throw new CliError("INVALID_READ_MODE", "--mode word cannot be combined with --chunk-words.");
+  }
   const chunkWords = Number(rawChunkWords);
   if (!Number.isInteger(chunkWords) || chunkWords < 1) {
     throw new CliError("INVALID_CHUNK_WORDS", "--chunk-words must be a positive integer.");
   }
   return Math.min(chunkWords, 256);
+}
+
+function findSection(article: ArticleSummary, sectionId: string): ArticleSectionSummary | undefined {
+  return article.sections.find((section) => section.sectionId === sectionId);
 }
 
 async function validateSection(runtime: Runtime, articleId: string, sectionId: string): Promise<void> {

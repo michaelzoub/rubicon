@@ -1,4 +1,4 @@
-import { formatAtomicUsdc } from "@rubicon-caliga/core";
+import { formatAtomicUsdc, settlementNetworkInfo } from "@rubicon-caliga/core";
 import type { ArticleSummary, ArticleNavigation, SellerPaymentTerms } from "@rubicon-caliga/core";
 import type { ReadReceipt } from "@rubicon-caliga/agent-sdk";
 import type { StoredReceipt } from "./receipts.js";
@@ -12,6 +12,7 @@ export function printJsonEvent(type: string, value: unknown): void {
 }
 
 export function articleJson(article: ArticleSummary): Record<string, unknown> {
+  const paymentTerms = article.paymentTerms ? enrichedPaymentTerms(article.paymentTerms) : undefined;
   return {
     articleId: article.articleId,
     title: article.title,
@@ -22,7 +23,7 @@ export function articleJson(article: ArticleSummary): Record<string, unknown> {
     totalWords: article.totalWords,
     pricePerWordAtomic: article.pricePerWordAtomic,
     maxArticlePriceAtomic: article.maxArticlePriceAtomic,
-    paymentTerms: article.paymentTerms,
+    paymentTerms,
     sections: article.sections,
   };
 }
@@ -50,13 +51,17 @@ export function humanArticle(article: ArticleSummary): string {
 }
 
 export function humanPaymentTerms(terms: SellerPaymentTerms): string[] {
+  const enriched = enrichedPaymentTerms(terms);
   return [
     "Payment terms:",
-    `- Asset: ${terms.asset}`,
-    `- Network: ${terms.networkLabel ?? terms.network}`,
+    `- Asset: ${enriched.asset}`,
+    `- Network: ${enriched.networkLabel ?? enriched.network}`,
+    enriched.circleChain ? `- Circle chain: ${enriched.circleChain}` : undefined,
+    enriched.environment ? `- Environment: ${enriched.environment}` : undefined,
+    enriched.fundingMethod ? `- Funding: ${enriched.fundingMethod}` : undefined,
     `- Pay to: ${terms.payTo}`,
     `- Price/word: ${formatAtomic(terms.pricePerWordAtomic)} USDC`,
-  ];
+  ].filter((line): line is string => line !== undefined);
 }
 
 export function humanNavigation(navigation: ArticleNavigation): string {
@@ -84,6 +89,7 @@ export function humanNavigation(navigation: ArticleNavigation): string {
 }
 
 export function humanReceipt(receipt: ReadReceipt): string {
+  const networkInfo = settlementNetworkInfo(receipt.network);
   const lines = [
     "Receipt:",
     `- Session: ${receipt.sessionId}`,
@@ -105,7 +111,13 @@ export function humanReceipt(receipt: ReadReceipt): string {
     lines.push(`- Seller pay to: ${receipt.sellerPayTo}`);
   }
   if (receipt.network) {
-    lines.push(`- Network: ${receipt.network}`);
+    lines.push(`- Network: ${networkInfo.networkLabel} (${receipt.network})`);
+  }
+  if (networkInfo.circleChain) {
+    lines.push(`- Circle chain: ${networkInfo.circleChain}`);
+  }
+  if (receipt.buyerWalletAddress && networkInfo.buyerWalletExplanation) {
+    lines.push(`- Buyer wallet note: ${networkInfo.buyerWalletExplanation}`);
   }
   return lines.join("\n");
 }
@@ -119,6 +131,7 @@ export function receiptSummaryJson(stored: StoredReceipt): Record<string, unknow
 }
 
 export function readReceiptSummaryJson(receipt: ReadReceipt): Record<string, unknown> {
+  const networkInfo = settlementNetworkInfo(receipt.network);
   return {
     articleId: receipt.articleId,
     sessionId: receipt.sessionId,
@@ -127,11 +140,19 @@ export function readReceiptSummaryJson(receipt: ReadReceipt): Record<string, unk
     amountPaidUsdc: formatAtomic(receipt.amountPaidAtomic),
     stopReason: receipt.stopReason,
     completed: receipt.completed,
+    buyerWalletAddress: receipt.buyerWalletAddress,
+    sellerPayTo: receipt.sellerPayTo,
+    network: receipt.network,
+    circleChain: networkInfo.circleChain,
+    buyerWalletExplanation: receipt.buyerWalletAddress ? networkInfo.buyerWalletExplanation : undefined,
+    settlementIds: receipt.settlementIds,
+    transactionHashes: receipt.transactionHashes,
     text: receipt.text,
   };
 }
 
 export function humanReceiptSummary(receipt: ReadReceipt, receiptId?: string): string {
+  const networkInfo = settlementNetworkInfo(receipt.network);
   const lines = [
     "Summary:",
     receiptId ? `- Receipt ID: ${receiptId}` : undefined,
@@ -139,6 +160,13 @@ export function humanReceiptSummary(receipt: ReadReceipt, receiptId?: string): s
     `- Words read: ${receipt.wordsRead.toLocaleString("en-US")}`,
     `- Amount paid: ${formatAtomic(receipt.amountPaidAtomic)} USDC`,
     `- Stop reason: ${receipt.stopReason}`,
+    receipt.buyerWalletAddress ? `- Buyer wallet: ${receipt.buyerWalletAddress}` : undefined,
+    receipt.sellerPayTo ? `- Seller pay to: ${receipt.sellerPayTo}` : undefined,
+    receipt.network ? `- Network: ${networkInfo.networkLabel} (${receipt.network})` : undefined,
+    networkInfo.circleChain ? `- Circle chain: ${networkInfo.circleChain}` : undefined,
+    receipt.buyerWalletAddress && networkInfo.buyerWalletExplanation
+      ? `- Buyer wallet note: ${networkInfo.buyerWalletExplanation}`
+      : undefined,
     "",
     receipt.text,
   ];
@@ -151,6 +179,17 @@ export function formatAtomic(value: string | bigint): string {
 
 export function recommendedReadCommandFor(articleId: string, sectionId: string): string {
   return `rubicon read ${articleId} --section ${sectionId} --stop-after-section --max-usdc <amount>`;
+}
+
+function enrichedPaymentTerms(terms: SellerPaymentTerms): SellerPaymentTerms {
+  const networkInfo = settlementNetworkInfo(terms.network);
+  return {
+    ...terms,
+    networkLabel: terms.networkLabel ?? networkInfo.networkLabel,
+    circleChain: terms.circleChain ?? networkInfo.circleChain,
+    environment: terms.environment ?? networkInfo.environment,
+    fundingMethod: terms.fundingMethod ?? networkInfo.fundingMethod,
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

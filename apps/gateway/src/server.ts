@@ -9,6 +9,7 @@ import {
   quotePerWord,
   recordWordDelivery,
   recordWordPayment,
+  settlementNetworkInfo,
   usageForWords,
   type ArticleNavigation,
   type ArticleSummary,
@@ -35,7 +36,6 @@ import type { ArticleRecord, LedgerRepository, PublishedArticleRepository } from
 import { DefaultSellerAgent, type SellerAgent } from "./seller-agent/seller-agent.js";
 import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
 import { wordsForSection } from "./words.js";
-import { RECEIVING_NETWORK_LABEL } from "./chain.js";
 
 export interface GatewayOptions {
   articleRepository: PublishedArticleRepository;
@@ -154,10 +154,14 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     payTo: `0x${string}`,
     network: string,
   ): SellerPaymentTerms {
+    const networkInfo = settlementNetworkInfo(network);
     return {
       asset: "USDC",
       network,
-      networkLabel: RECEIVING_NETWORK_LABEL,
+      networkLabel: networkInfo.networkLabel,
+      circleChain: networkInfo.circleChain,
+      environment: networkInfo.environment,
+      fundingMethod: networkInfo.fundingMethod,
       payTo,
       pricePerWordAtomic,
       meteringUnit: "word",

@@ -11,6 +11,7 @@ export type PaymentMode = "static" | "circle-cli";
 export interface PaymentSelection {
   mode: PaymentMode;
   engine: AgentPaymentEngine;
+  circleChain?: string;
 }
 
 export function selectPaymentEngine(input: {
@@ -25,12 +26,14 @@ export function selectPaymentEngine(input: {
     return { mode: selectedMode, engine: new StaticPaymentEngine() };
   }
 
+  const circleChain = process.env.CIRCLE_CLI_CHAIN ?? input.config.circleChain ?? "ARC-TESTNET";
   return {
     mode: selectedMode,
     engine: new CircleCliGatewayPaymentEngine({
       agentWalletAddress: envAddress("CIRCLE_AGENT_WALLET_ADDRESS") ?? input.config.agentWalletAddress,
-      chain: process.env.CIRCLE_CLI_CHAIN ?? input.config.circleChain ?? "ARC-TESTNET",
+      chain: circleChain,
     }),
+    circleChain,
   };
 }
 

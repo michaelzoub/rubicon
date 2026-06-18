@@ -76,6 +76,11 @@ rubicon read <article-id> --payment-mode circle-cli --max-usdc 0.10 --dry-run
 rubicon read <article-id> --payment-mode circle-cli --max-usdc 0.10
 ```
 
+Rubicon article metadata includes the Circle chain mapping when it is known.
+For Arc Testnet articles (`paymentTerms.network: "eip155:5042002"`), the Circle
+CLI chain is `ARC-TESTNET`. Fund with Circle's testnet faucet / Gateway testnet
+funding flow; do not send mainnet fiat or crypto to satisfy an Arc Testnet read.
+
 The CLI respects:
 
 - `CIRCLE_CLI_PAYMENT`
@@ -131,7 +136,12 @@ Dry run fetches repository/article metadata and shows:
 
 - article title, author, word count, price per word, max article price
 - payment terms when present
+- testnet/mainnet environment, Circle chain, and recommended funding method
 - intended budget
+- estimated maximum cost for the selected section, seller-recommended section,
+  `--max-words` slice, or full article
+- whether the requested budget covers that estimate
+- whether live wallet balance was checked
 - gateway URL
 - payment mode
 
@@ -148,6 +158,7 @@ rubicon read <article-id> --max-usdc 0.10 --goal "find the pricing section"
 rubicon read <article-id> --max-usdc 0.10 --section section-22 --stop-after-section
 rubicon read <article-id> --max-usdc 0.10 --section section-22 --chunk-words 32
 rubicon read <article-id> --max-usdc 0.10 --section section-22 --fast
+rubicon read <article-id> --max-usdc 0.10 --section section-22 --mode batch
 rubicon read <article-id> --max-usdc 0.10 --max-words 50
 rubicon read <article-id> --max-atomic 100000
 ```
@@ -160,11 +171,14 @@ section flag or a goal that lets the seller agent recommend one.
 Use `--chunk-words` to keep word-accurate accounting while reducing round trips.
 The buyer authorizes a small batch, the gateway releases the paid words together,
 and the receipt still records each delivered word separately. `--fast` is a
-shortcut for `--chunk-words 32`.
+shortcut for `--chunk-words 32`; `--mode batch` is the same batch-friendly
+default. Use `--mode word` when you explicitly want compatibility one-word
+delivery.
 
 Without `--json`, words stream as they arrive. At the end, the CLI prints a
 compact receipt summary with session id, article id, words read, amount paid,
-stop reason, settlement ids, and transaction hashes when present.
+stop reason, buyer/seller wallet details, network/Circle chain, settlement ids,
+transaction hashes when present, and the saved receipt id.
 
 With `--json`, the CLI emits newline-delimited JSON events during the stream and
 a final `receipt.saved` event:

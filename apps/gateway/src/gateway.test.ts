@@ -261,6 +261,9 @@ test("public articles expose seller payment terms", async () => {
   const body = res.json() as { articles: Array<{ paymentTerms?: Record<string, unknown> }> };
   assert.equal(body.articles[0]?.paymentTerms?.asset, "USDC");
   assert.equal(body.articles[0]?.paymentTerms?.network, "eip155:5042002");
+  assert.equal(body.articles[0]?.paymentTerms?.circleChain, "ARC-TESTNET");
+  assert.equal(body.articles[0]?.paymentTerms?.environment, "testnet");
+  assert.match(String(body.articles[0]?.paymentTerms?.fundingMethod), /testnet faucet/);
   assert.equal(body.articles[0]?.paymentTerms?.payTo, "0x000000000000000000000000000000000000aaaa");
   assert.equal(body.articles[0]?.paymentTerms?.meteringUnit, "word");
   await app.close();
@@ -617,6 +620,10 @@ test("repository endpoint returns live article records from Supabase", async () 
           asset: "USDC",
           network: "eip155:5042002",
           networkLabel: "Arc Testnet",
+          circleChain: "ARC-TESTNET",
+          environment: "testnet",
+          fundingMethod:
+            "Circle testnet funds on ARC-TESTNET. Use Circle's testnet faucet / Gateway testnet funding flow; do not send mainnet fiat or crypto.",
           payTo: "0x0000000000000000000000000000000000000db0",
           pricePerWordAtomic: "7",
           meteringUnit: "word",
