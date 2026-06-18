@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toEip712Payload } from "./circle-agent-wallet.js";
+import { serializeTypedData, toEip712Payload } from "./circle-agent-wallet.js";
 
 // The x402 schemes hand the signer viem-style typed data with no EIP712Domain
 // entry; Circle's API needs the complete document. These pin the bridging.
@@ -61,4 +61,21 @@ test("does not overwrite an EIP712Domain the caller already supplied", () => {
   });
 
   assert.deepEqual(payload.types.EIP712Domain, provided);
+});
+
+test("serializes bigint authorization fields (exact fallback) as decimal strings", () => {
+  // The `exact` scheme hands the signer bigint value/validAfter/validBefore;
+  // plain JSON.stringify would throw, so they must be coerced to strings.
+  const payload = toEip712Payload({
+    domain: { name: "USD Coin", chainId: 5042002 },
+    types: TRANSFER_TYPES,
+    primaryType: "TransferWithAuthorization",
+    message: { from: "0x1", to: "0x2", value: 5n, validAfter: 0n, validBefore: 1893456000n },
+  });
+
+  const json = serializeTypedData(payload);
+  const parsed = JSON.parse(json);
+  assert.equal(parsed.message.value, "5");
+  assert.equal(parsed.message.validAfter, "0");
+  assert.equal(parsed.message.validBefore, "1893456000");
 });

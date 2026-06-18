@@ -79,7 +79,7 @@ class CircleAgentWalletSigner {
     await this.ensureAddress();
     const res = await this.client.signTypedData({
       walletId: this.walletId,
-      data: JSON.stringify(toEip712Payload(typed)),
+      data: serializeTypedData(toEip712Payload(typed)),
       memo: "Rubicon one-word payment",
     });
     const signature = res.data?.signature;
@@ -138,6 +138,20 @@ export class CircleAgentWalletEngine implements AgentPaymentEngine {
  *
  * Exported for unit testing — application code never calls this directly.
  */
+/**
+ * Serialize an EIP-712 document to the JSON string Circle's API expects. The
+ * `exact` fallback scheme passes the authorization's `value`/`validAfter`/
+ * `validBefore` as bigints, which `JSON.stringify` cannot encode — emit them as
+ * decimal strings (the EIP-712 JSON convention) instead of throwing.
+ *
+ * Exported for unit testing — application code never calls this directly.
+ */
+export function serializeTypedData(typed: ReturnType<typeof toEip712Payload>): string {
+  return JSON.stringify(typed, (_key, value) =>
+    typeof value === "bigint" ? value.toString() : value,
+  );
+}
+
 export function toEip712Payload(typed: TypedDataRequest) {
   const domain = typed.domain ?? {};
   const types = { ...(typed.types as Record<string, unknown>) };

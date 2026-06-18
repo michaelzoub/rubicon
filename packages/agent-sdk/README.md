@@ -67,6 +67,38 @@ for custom flows.
 - `StaticPaymentEngine` — no-money development engine for a dev-mode gateway.
 - `CircleGatewayPaymentEngine` — signs the gateway's one-word x402 terms; Circle
   may batch settlement internally, but each payload corresponds to one word.
+  Accepts either a raw `privateKey` (a controller-provisioned EOA) or a custodial
+  `signer`.
+- `CircleAgentWalletEngine` — **custodial, Circle-native.** Each word's
+  authorization is signed by a Circle Agent / Developer-Controlled Wallet through
+  Circle's API, so the SDK never holds a private key. The wallet controller
+  provisions, funds, and sets spending policies on the wallet beforehand; the SDK
+  only consumes it and keeps enforcing the confirmed budget.
+
+```ts
+import Rubicon, { CircleAgentWalletEngine } from "@rubicon-caliga/agent-sdk";
+
+const rubicon = new Rubicon({
+  baseUrl: process.env.RUBICON_GATEWAY_URL,
+  paymentEngine: new CircleAgentWalletEngine({
+    apiKey: process.env.CIRCLE_API_KEY!,
+    entitySecret: process.env.CIRCLE_ENTITY_SECRET!,
+    walletId: process.env.CIRCLE_WALLET_ID!,
+  }),
+});
+```
+
+You can also pass an already-initiated Circle client instead of credentials:
+
+```ts
+import { initiateDeveloperControlledWalletsClient } from "@circle-fin/developer-controlled-wallets";
+
+const client = initiateDeveloperControlledWalletsClient({ apiKey, entitySecret });
+new CircleAgentWalletEngine({ client, walletId });
+```
+
+> Circle Agent Wallets must be EOA wallets — EIP-3009 (the x402 `exact` scheme)
+> requires an EOA signature, not an EIP-1271 smart-contract-account signature.
 
 ## Local Run
 
