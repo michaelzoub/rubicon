@@ -1,12 +1,22 @@
-import { CircleGatewayPaymentEngine, RubiconClient, StaticPaymentEngine } from "@rubicon-caliga/agent-sdk";
+import {
+  CircleAgentWalletEngine,
+  CircleGatewayPaymentEngine,
+  RubiconClient,
+  StaticPaymentEngine,
+  type AgentPaymentEngine,
+} from "@rubicon-caliga/agent-sdk";
 
 // Read an article from Rubicon, paying one word at a time.
 //
 //   pnpm --filter @rubicon-caliga/agent-example consume
 //
-// With CIRCLE_PRIVATE_KEY set, each word settles real testnet USDC to the
-// creator's verified wallet; without one it uses the no-money StaticPaymentEngine
-// accepted by a dev-mode gateway. The buyer stops as soon as it has enough.
+// Payment engine is chosen from the environment, most accessible last:
+//   1. A Circle Agent Wallet (CIRCLE_API_KEY + CIRCLE_ENTITY_SECRET +
+//      CIRCLE_AGENT_WALLET_ID) signs each word custodially — no raw key.
+//   2. A raw EOA key (CIRCLE_PRIVATE_KEY) signs locally.
+//   3. Otherwise the no-money StaticPaymentEngine, for a dev-mode gateway.
+// Both Circle paths settle real testnet USDC to the creator's verified wallet.
+// The buyer stops as soon as it has enough.
 
 const privateKey = process.env.CIRCLE_PRIVATE_KEY as `0x${string}` | undefined;
 const baseUrl = process.env.GATEWAY_BASE_URL ?? "http://localhost:8787";
@@ -19,18 +29,36 @@ if (!articleId) {
   throw new Error("CONSUME_ARTICLE_ID must be set to a live article id from /v1/repository");
 }
 
-const rubicon = new RubiconClient({
-  baseUrl,
-  paymentEngine: privateKey
-    ? new CircleGatewayPaymentEngine({
-        chain: (process.env.CIRCLE_CHAIN ?? "arcTestnet") as never,
-        privateKey,
-        rpcUrl: process.env.CIRCLE_RPC_URL,
-      })
-    : new StaticPaymentEngine(),
-});
+const agentWalletId = process.env.CIRCLE_AGENT_WALLET_ID;
+const circleApiKey = process.env.CIRCLE_API_KEY;
+const circleEntitySecret = process.env.CIRCLE_ENTITY_SECRET;
 
-console.log(`[consume] mode=${privateKey ? "real-x402" : "static-dev-shim"} gateway=${baseUrl}`);
+let paymentEngine: AgentPaymentEngine;
+let mode: string;
+if (agentWalletId && circleApiKey && circleEntitySecret) {
+  paymentEngine = new CircleAgentWalletEngine({
+    apiKey: circleApiKey,
+    entitySecret: circleEntitySecret,
+    walletId: agentWalletId,
+    walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
+    baseUrl: process.env.CIRCLE_API_BASE_URL,
+  });
+  mode = "circle-agent-wallet";
+} else if (privateKey) {
+  paymentEngine = new CircleGatewayPaymentEngine({
+    chain: (process.env.CIRCLE_CHAIN ?? "arcTestnet") as never,
+    privateKey,
+    rpcUrl: process.env.CIRCLE_RPC_URL,
+  });
+  mode = "real-x402";
+} else {
+  paymentEngine = new StaticPaymentEngine();
+  mode = "static-dev-shim";
+}
+
+const rubicon = new RubiconClient({ baseUrl, paymentEngine });
+
+console.log(`[consume] mode=${mode} gateway=${baseUrl}`);
 
 const stream = rubicon.read({
   articleId,

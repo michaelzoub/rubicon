@@ -142,7 +142,10 @@ same receipt is mirrored in the gateway's `PAYMENT-RESPONSE` header.
 Development mode uses `StaticPaymentEngine` and settles no real funds. This is
 the default when no payment engine is passed.
 
-Production/testnet settlement uses `CircleGatewayPaymentEngine`:
+Production/testnet settlement uses a Circle engine. Prefer
+`CircleAgentWalletEngine` (custodial signing, no raw key — see Circle Agent
+Wallets below). `CircleGatewayPaymentEngine` signs with a raw EOA key and is the
+fallback when no Agent Wallet is configured:
 
 ```ts
 import Rubicon, { CircleGatewayPaymentEngine } from "@rubicon-caliga/agent-sdk";
@@ -162,15 +165,43 @@ const rubicon = new Rubicon({
 
 ### Circle Agent Wallets
 
-Circle Agent Wallets are a recommended buyer setup path, not something Rubicon
-should silently create or configure for the user. The person controlling the
-wallet/funds should create the Agent Wallet, fund it, and set spending policies
-such as transfer limits, recipient allowlists, and contract blocklists before
-the agent starts a paid read. See Circle's Agent Wallets guide:
-https://developers.circle.com/agent-stack/agent-wallets
+Circle Agent Wallets are the recommended buyer setup path because the agent
+never handles a raw private key — payments are signed custodially through
+Circle's API. The person controlling the wallet/funds should create the Agent
+Wallet, fund it, and set spending policies such as transfer limits, recipient
+allowlists, and contract blocklists before the agent starts a paid read. See
+Circle's Agent Wallets guide: https://developers.circle.com/agent-stack/agent-wallets
 
-The SDK should consume an already configured wallet-backed payment capability
-and keep enforcing the user's confirmed Rubicon budget. Do not create wallets,
+Once that wallet exists, use `CircleAgentWalletEngine`. It signs each one-word
+x402 payment with the wallet over the Circle API — no `CIRCLE_PRIVATE_KEY`:
+
+```ts
+import Rubicon, { CircleAgentWalletEngine } from "@rubicon-caliga/agent-sdk";
+
+const rubicon = new Rubicon({
+  baseUrl: process.env.RUBICON_GATEWAY_URL ?? "https://rubicon-caligagateway-production.up.railway.app",
+  authorization: process.env.RUBICON_AGENT_API_KEY
+    ? `Bearer ${process.env.RUBICON_AGENT_API_KEY}`
+    : undefined,
+  paymentEngine: new CircleAgentWalletEngine({
+    apiKey: process.env.CIRCLE_API_KEY!,
+    entitySecret: process.env.CIRCLE_ENTITY_SECRET!,
+    walletId: process.env.CIRCLE_AGENT_WALLET_ID!,
+    // Optional — resolved from the Circle API when omitted:
+    walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
+    // Optional — override the Circle API base URL (sandbox vs. production):
+    baseUrl: process.env.CIRCLE_API_BASE_URL,
+  }),
+});
+```
+
+`CircleAgentWalletEngine` uses the same gasless Gateway batching (with an
+`exact` EIP-3009 fallback) as `CircleGatewayPaymentEngine`; only the signer
+differs. Prefer it over `CircleGatewayPaymentEngine` whenever a wallet is
+configured, and fall back to a raw key only when explicitly asked.
+
+The SDK consumes an already configured wallet-backed payment capability and
+keeps enforcing the user's confirmed Rubicon budget. Do not create wallets,
 fund wallets, change wallet policies, or use a user's personal key unless the
 wallet controller has explicitly asked for that setup action.
 
