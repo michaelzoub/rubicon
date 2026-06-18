@@ -2,10 +2,8 @@ import type { StartSessionResponse, StreamPaymentRequest } from "@rubicon-caliga
 import { x402Client } from "@x402/core/client";
 import { registerBatchScheme } from "@circle-fin/x402-batching/client";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
-import {
-  initiateDeveloperControlledWalletsClient,
-  type CircleDeveloperControlledWalletsClient,
-} from "@circle-fin/developer-controlled-wallets";
+import * as CircleWallets from "@circle-fin/developer-controlled-wallets";
+import type { CircleDeveloperControlledWalletsClient } from "@circle-fin/developer-controlled-wallets";
 import type { AgentPaymentEngine } from "./payment-engine.js";
 
 export interface CircleAgentWalletEngineOptions {
@@ -103,7 +101,7 @@ export class CircleAgentWalletEngine implements AgentPaymentEngine {
   constructor(options: CircleAgentWalletEngineOptions) {
     const client =
       options.client ??
-      initiateDeveloperControlledWalletsClient({
+      CircleWallets.initiateDeveloperControlledWalletsClient({
         apiKey: options.apiKey,
         entitySecret: options.entitySecret,
         ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),

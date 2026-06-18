@@ -11,21 +11,26 @@ Rubicon lets an AI agent read paid articles one word at a time. The buyer opens
 a budgeted session, pays for each delivered word, stops when it has enough
 information, and receives a final receipt.
 
-Use the SDK for normal integrations. Do not hand-wire the HTTP
+Use the `rubicon` CLI first for common terminal-native agents such as Codex,
+Claude Code, Cursor agents, and other shell-based tools. Use the SDK for custom
+agent runtimes or deeper integrations. Do not hand-wire the HTTP
 session/payment/abort routes unless the user asks for a custom protocol test.
 Do not request, store, export, infer, or use raw private keys for normal
 Rubicon paid reads.
 
 ## Decision Flow
 
-1. **Use the SDK first** — prefer `@rubicon-caliga/agent-sdk` and
-   `rubicon.run(...)`.
-2. **Use Circle CLI custody for real reads** — prefer
+1. **Use the CLI first for terminal agents** — prefer `rubicon repository`,
+   `rubicon article navigation`, and `rubicon read` with `--json`.
+2. **Use the SDK for custom runtimes** — prefer `@rubicon-caliga/agent-sdk` and
+   `rubicon.run(...)` when building an embedded integration.
+3. **Use Circle CLI custody for real reads** — prefer
    `CircleCliGatewayPaymentEngine`, which signs through Circle CLI / Agent
    Wallet custody.
-3. **Pass the gateway URL explicitly** — use the hosted Rubicon gateway unless
+4. **Pass the gateway URL explicitly** — use the hosted Rubicon gateway unless
    the user is deliberately running a local gateway.
-4. **Confirm the budget before spending** — use the user's exact approved limit
+5. **Dry-run before spending** — always run `rubicon read ... --dry-run` first.
+6. **Confirm the budget before spending** — use the user's exact approved limit
    as `maxSpendAtomic`.
 
 Hosted gateway:
@@ -35,6 +40,24 @@ https://rubicon-caligagateway-production.up.railway.app
 ```
 
 ## Quick Start
+
+For terminal-native agents, configure the hosted gateway and inspect safe public
+metadata through the CLI:
+
+```bash
+rubicon config set gateway-url https://rubicon-caligagateway-production.up.railway.app
+rubicon repository --json
+rubicon search "agent economies" --json
+rubicon article show <article-id> --json
+rubicon article navigation <article-id> --goal "find pricing" --json
+rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --dry-run --json
+rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --json
+rubicon receipts list --json
+rubicon receipts show <receipt-id> --json
+```
+
+Always set `--max-usdc` or `--max-atomic` for reads. Prefer `--json` in
+automated workflows. Do not use raw HTTP unless testing the protocol.
 
 Install the SDK:
 

@@ -9,6 +9,7 @@
     "build": "pnpm -r build",
     "dev:gateway": "pnpm --filter @rubicon-caliga/gateway dev",
     "dev:agent": "pnpm --filter @rubicon-caliga/agent-example dev",
+    "dev:cli": "pnpm --filter @rubicon-caliga/cli dev",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test"

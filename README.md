@@ -91,6 +91,22 @@ usage loop until a stop condition is met, with retry idempotency, budget
 enforcement, early stopping, abort, and a final receipt. Developers never send a
 payment per word by hand.
 
+## CLI
+
+Terminal-native agents can use the Rubicon CLI instead of importing the SDK
+directly:
+
+```bash
+pnpm --filter @rubicon-caliga/cli build
+pnpm dev:cli -- repository --json
+pnpm dev:cli -- read <article-id> --goal "find pricing" --max-usdc 0.10 --dry-run --json
+```
+
+The CLI is a thin wrapper around `@rubicon-caliga/agent-sdk`. It supports public
+repository discovery, safe metadata search, article navigation, budgeted reads,
+local receipt persistence, and `~/.rubicon/config.json`. It does not implement
+creator dashboard functionality. See [docs/cli.md](./docs/cli.md).
+
 ## Production storage
 
 Set `SUPABASE_URL` and a Supabase key so the gateway can read `live` articles,
@@ -130,7 +146,8 @@ application-code change is needed — only the env/target port must match.
 
 ## Docs
 
-See [docs/architecture.md](./docs/architecture.md) and
+See [docs/architecture.md](./docs/architecture.md),
+[docs/cli.md](./docs/cli.md), and
 [docs/protocol.md](./docs/protocol.md). To test an unpublished SDK from another
 local agent project, use
 [docs/local-agent-test.md](./docs/local-agent-test.md). For a public agent setup
