@@ -373,6 +373,32 @@ test("payment endpoint returns a standard x402 challenge before a payment is sup
   await app.close();
 });
 
+test("payment endpoint can be inspected with GET as a standard x402 challenge", async () => {
+  const { app } = setup();
+  const session = await startSession(app);
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/sessions/${session.sessionId}/payments`,
+  });
+
+  assert.equal(res.statusCode, 402);
+  assert.equal(res.headers["payment-required"], encodePaymentRequiredHeader(session.paymentRequired as never));
+  assert.deepEqual(res.json(), session.paymentRequired);
+  await app.close();
+});
+
+test("payment endpoint inspection keeps missing sessions explicit", async () => {
+  const { app } = setup();
+  const res = await app.inject({
+    method: "GET",
+    url: "/v1/sessions/missing-session/payments",
+  });
+
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(res.json(), { error: "session_not_found" });
+  await app.close();
+});
+
 test("payment endpoint accepts a standard x402 payment signature header", async () => {
   const { app, ledger } = setup();
   const session = await startSession(app);

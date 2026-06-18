@@ -558,6 +558,26 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     },
   );
 
+  app.get<{ Params: { sessionId: string } }>(
+    "/v1/sessions/:sessionId/payments",
+    async (request, reply) => {
+      const session = await ledger.getSession(request.params.sessionId);
+      if (!session) {
+        return reply.code(404).send({ error: "session_not_found" });
+      }
+      if (session.state === "completed" || session.state === "aborted" || session.state === "expired") {
+        return reply.code(409).send({ error: `session_${session.state}` });
+      }
+      if (isSessionExpired(session)) {
+        session.state = "expired";
+        await ledger.saveSession(session);
+        events.publish({ type: "session.closed", sessionId: session.id, reason: "session_expired" });
+        return reply.code(402).send({ error: "session_expired" });
+      }
+      return sendPaymentRequired(reply, session.paymentRequired);
+    },
+  );
+
   app.get<{ Params: { sessionId: string } }>("/v1/sessions/:sessionId/events", async (request, reply) => {
     const session = await ledger.getSession(request.params.sessionId);
     if (!session) {
