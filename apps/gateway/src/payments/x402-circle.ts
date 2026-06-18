@@ -1,7 +1,7 @@
 import { BatchFacilitatorClient, GatewayEvmScheme } from "@circle-fin/x402-batching/server";
 import { x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, SchemeNetworkServer } from "@x402/core/types";
-import type { PaymentVerification, SessionRecord } from "@rubicon-caliga/core";
+import { quotePerWord, type PaymentVerification, type SessionRecord } from "@rubicon-caliga/core";
 import type { PaymentRequiredInput, PaymentVerifier, PaymentVerifyInput } from "./types.js";
 import { ACTIVE_X402_NETWORK, USDC_DECIMALS as ARC_USDC_DECIMALS } from "../chain.js";
 import { SettlementQueue } from "./settlement-queue.js";
@@ -190,7 +190,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       return { accepted: false, reason: "missing_x402_payment_payload" };
     }
 
-    const issuedRequirements = paymentRequirementsFromSession(input.session);
+    const issuedRequirements = paymentRequirementsFromSession(input.session, input.wordPaymentAtomic);
     if (!issuedRequirements.length) {
       return { accepted: false, reason: "missing_session_payment_requirements" };
     }
@@ -230,6 +230,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     this.settlementQueue.enqueue({
       sessionId: input.session.id,
       sequence,
+      words: wordsCoveredByAuthorization(input.wordPaymentAtomic, input.session.pricePerWordAtomic, input.session.gatewayFeeBps),
       paymentPayload,
       requirements,
     });
@@ -309,9 +310,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
           requirements: item.requirements,
           settlement,
         });
-        await this.reportSettlement({
-          sessionId: item.sessionId,
-          sequence: item.sequence,
+        await this.reportSettlements(item, {
           success: false,
           reason:
             (settlement.errorReason as string) ??
@@ -326,9 +325,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
         requirements: item.requirements,
         settlement,
       });
-      await this.reportSettlement({
-        sessionId: item.sessionId,
-        sequence: item.sequence,
+      await this.reportSettlements(item, {
         success: true,
         amountAtomic: (settlement.amount ?? item.requirements.amount) as `${bigint}`,
         network: item.requirements.network,
@@ -342,11 +339,19 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     } catch (error) {
       // A settle that throws (network/facilitator error) also halts the session.
       this.haltedSessions.add(item.sessionId);
-      await this.reportSettlement({
-        sessionId: item.sessionId,
-        sequence: item.sequence,
+      await this.reportSettlements(item, {
         success: false,
         reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async reportSettlements(item: QueuedSettlement, outcome: Omit<SettlementOutcome, "sessionId" | "sequence">): Promise<void> {
+    for (let offset = 0; offset < item.words; offset += 1) {
+      await this.reportSettlement({
+        sessionId: item.sessionId,
+        sequence: item.sequence + offset,
+        ...outcome,
       });
     }
   }
@@ -439,9 +444,40 @@ function usdcDollarsFromAtomic(amountAtomic: string): string {
   return `${whole}.${fraction}`;
 }
 
-function paymentRequirementsFromSession(session: SessionRecord): PaymentRequirements[] {
+function paymentRequirementsFromSession(session: SessionRecord, expectedAmountAtomic: bigint): PaymentRequirements[] {
   const paymentRequired = session.paymentRequired as { accepts?: PaymentRequirements[] } | undefined;
-  return Array.isArray(paymentRequired?.accepts) ? paymentRequired.accepts : [];
+  if (!Array.isArray(paymentRequired?.accepts)) return [];
+  return paymentRequired.accepts.flatMap((requirement) => {
+    const currentAmount = BigInt(requirement.amount as `${bigint}`);
+    if (currentAmount === expectedAmountAtomic) return [requirement];
+    return [
+      requirement,
+      {
+        ...requirement,
+        amount: `${expectedAmountAtomic}`,
+        extra: {
+          ...((requirement.extra as Record<string, unknown> | undefined) ?? {}),
+          amountAtomic: `${expectedAmountAtomic}`,
+          authorizationMode: "chunk",
+        },
+      },
+    ];
+  });
+}
+
+function wordsCoveredByAuthorization(amountAtomic: bigint, pricePerWordAtomic: bigint | undefined, gatewayFeeBps: number | undefined): number {
+  if (pricePerWordAtomic === undefined) return 1;
+  const quote = BigInt(
+    quotePerWord({
+      pricePerWordAtomic: BigInt(pricePerWordAtomic),
+      gatewayFeeBps: gatewayFeeBps ?? 0,
+    }).wordPaymentAtomic,
+  );
+  if (quote <= 0n) return 1;
+  const words = amountAtomic / quote;
+  if (words < 1n) return 1;
+  const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+  return Number(words > maxSafe ? maxSafe : words);
 }
 
 function logCircleSettlement(
@@ -473,6 +509,7 @@ function logCircleSettlement(
 interface QueuedSettlement {
   sessionId: string;
   sequence: number;
+  words: number;
   paymentPayload: PaymentPayload;
   requirements: PaymentRequirements;
 }

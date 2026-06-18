@@ -12,8 +12,12 @@ import {
   humanArticle,
   humanNavigation,
   humanReceipt,
+  humanReceiptSummary,
   printJson,
   printJsonEvent,
+  readReceiptSummaryJson,
+  recommendedReadCommandFor,
+  receiptSummaryJson,
 } from "./format.js";
 import { selectPaymentEngine, type PaymentMode } from "./payments.js";
 import { listReceipts, loadReceipt, saveReceipt } from "./receipts.js";
@@ -156,8 +160,12 @@ async function articleNavigation(runtime: Runtime, articleId: string | undefined
   const goal = stringFlag(runtime.parsed.flags, "goal");
   if (!goal) throw new CliError("MISSING_GOAL", "rubicon article navigation requires --goal.");
   const response = await runtime.client.getNavigation(articleId, goal);
+  const recommendedReadCommand = recommendedReadCommandFor(
+    response.article.articleId,
+    response.navigation.sellerAgent.recommendedSectionId,
+  );
   if (runtime.json) {
-    printJson({ success: true, article: articleJson(response.article), navigation: response.navigation });
+    printJson({ success: true, article: articleJson(response.article), navigation: response.navigation, recommendedReadCommand });
     return;
   }
   process.stdout.write(`${humanArticle(response.article)}\n\n${humanNavigation(response.navigation)}\n`);
@@ -167,60 +175,124 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
   if (!articleId) throw new CliError("MISSING_ARTICLE_ID", "rubicon read requires an article id.");
   const maxSpendAtomic = parseBudget(runtime.parsed);
   const goal = stringFlag(runtime.parsed.flags, "goal");
+  const sectionId = sectionFlag(runtime.parsed);
+  const stopAfterSection = booleanFlag(runtime.parsed.flags, "stop-after-section");
+  const summary = booleanFlag(runtime.parsed.flags, "summary") || booleanFlag(runtime.parsed.flags, "receipt-summary");
+  const chunkWords = chunkWordsFlag(runtime.parsed);
   const maxWordsFlag = stringFlag(runtime.parsed.flags, "max-words");
   const maxWords = maxWordsFlag === undefined ? undefined : Number(maxWordsFlag);
   if (maxWords !== undefined && (!Number.isInteger(maxWords) || maxWords < 1)) {
     throw new CliError("INVALID_MAX_WORDS", "--max-words must be a positive integer.");
   }
+  if (stopAfterSection && !sectionId && !goal) {
+    throw new CliError("MISSING_SECTION", "--stop-after-section requires --section/--section-id or --goal.");
+  }
+  if (sectionId) {
+    await validateSection(runtime, articleId, sectionId);
+  }
 
   if (booleanFlag(runtime.parsed.flags, "dry-run")) {
-    await dryRun(runtime, articleId, maxSpendAtomic, goal, maxWords);
+    await dryRun(runtime, articleId, maxSpendAtomic, goal, maxWords, sectionId, stopAfterSection, chunkWords);
     return;
   }
 
   let finalReceipt = undefined;
+  let storedReceipt = undefined;
+  let currentSessionId: string | undefined;
+  let cancelled = false;
+  const abortOnSigint = (): void => {
+    cancelled = true;
+    process.exitCode = 130;
+    if (!runtime.json) {
+      process.stderr.write("\nCancelling read and aborting the active session...\n");
+    }
+    if (currentSessionId) {
+      void runtime.client.abort(currentSessionId, "agent_cancelled").catch(() => {});
+    }
+  };
+  process.once("SIGINT", abortOnSigint);
+
   const stream = runtime.client.read({
     articleId,
     goal,
+    sectionId,
     maxSpendAtomic,
     maxWords,
+    chunkWords,
+    metadata: stopAfterSection ? { stopAfterSection: true } : undefined,
   });
 
-  for await (const event of stream) {
-    if (runtime.json) {
-      printJsonEvent("event", { event });
-      if (event.type === "article.completed") {
-        finalReceipt = event.receipt;
+  try {
+    for await (const event of stream) {
+      if (event.type === "session.started") {
+        currentSessionId = event.session.sessionId;
       }
-      continue;
-    }
+      if (runtime.json && !summary) {
+        printJsonEvent("event", { event });
+        if (event.type === "article.completed") {
+          finalReceipt = event.receipt;
+        }
+        continue;
+      }
 
-    switch (event.type) {
-      case "seller.message":
-        process.stdout.write(`Seller: ${event.content}\n\n`);
+      if (runtime.json && summary) {
+        if (event.type === "article.completed") {
+          finalReceipt = event.receipt;
+        }
+        continue;
+      }
+
+      switch (event.type) {
+        case "seller.message":
+          if (!summary) process.stdout.write(`Seller: ${event.content}\n\n`);
+          break;
+        case "session.started":
+          if (!summary) process.stdout.write(`Session: ${event.session.sessionId}\n\n`);
+          break;
+        case "article.word":
+          if (!summary) process.stdout.write(`${event.word} `);
+          break;
+        case "article.chunk":
+          if (!summary) process.stdout.write(`${event.words.map((entry) => entry.word).join(" ")} `);
+          break;
+        case "article.error":
+          process.stderr.write(`\nError: ${event.message}\n`);
+          break;
+        case "article.completed":
+          finalReceipt = event.receipt;
+          if (!summary) {
+            process.stdout.write(`\n\n${humanReceipt(event.receipt)}\n`);
+          }
+          break;
+        case "article.usage":
+          break;
+      }
+
+      if (cancelled) {
         break;
-      case "session.started":
-        process.stdout.write(`Session: ${event.session.sessionId}\n\n`);
-        break;
-      case "article.word":
-        process.stdout.write(`${event.word} `);
-        break;
-      case "article.error":
-        process.stderr.write(`\nError: ${event.message}\n`);
-        break;
-      case "article.completed":
-        finalReceipt = event.receipt;
-        process.stdout.write(`\n\n${humanReceipt(event.receipt)}\n`);
-        break;
-      case "article.usage":
-        break;
+      }
     }
+  } finally {
+    process.removeListener("SIGINT", abortOnSigint);
   }
 
   if (finalReceipt) {
-    const stored = await saveReceipt(finalReceipt);
+    storedReceipt = await saveReceipt(finalReceipt);
+    if (runtime.json && !summary) {
+      printJson({ type: "receipt.saved", success: true, receiptId: storedReceipt.receiptId, savedAt: storedReceipt.savedAt, receipt: storedReceipt.receipt });
+    }
+  }
+
+  if (summary && finalReceipt) {
     if (runtime.json) {
-      printJson({ type: "receipt.saved", success: true, receiptId: stored.receiptId, savedAt: stored.savedAt, receipt: stored.receipt });
+      printJson({
+        success: true,
+        receiptId: storedReceipt?.receiptId,
+        savedAt: storedReceipt?.savedAt,
+        receipt: readReceiptSummaryJson(finalReceipt),
+      });
+    } else {
+      process.stdout.write(`${humanReceiptSummary(finalReceipt, storedReceipt?.receiptId)}\n`);
     }
   }
 }
@@ -231,6 +303,9 @@ async function dryRun(
   maxSpendAtomic: `${bigint}`,
   goal: string | undefined,
   maxWords: number | undefined,
+  sectionId: string | undefined,
+  stopAfterSection: boolean,
+  chunkWords: number | undefined,
 ): Promise<void> {
   const article = await findArticle(runtime, articleId);
   if (runtime.json) {
@@ -245,6 +320,9 @@ async function dryRun(
         maxWords,
       },
       goal,
+      sectionId,
+      stopAfterSection,
+      chunkWords,
       article: articleJson(article),
     });
     return;
@@ -258,6 +336,9 @@ async function dryRun(
       `Budget: ${formatAtomic(maxSpendAtomic)} USDC (${maxSpendAtomic} atomic)`,
       maxWords ? `Max words: ${maxWords}` : undefined,
       goal ? `Goal: ${goal}` : undefined,
+      sectionId ? `Section: ${sectionId}` : undefined,
+      stopAfterSection ? "Stop after section: yes" : undefined,
+      chunkWords ? `Chunk words: ${chunkWords}` : undefined,
       "",
       humanArticle(article),
       "",
@@ -268,9 +349,11 @@ async function dryRun(
 }
 
 async function receiptsList(runtime: Runtime): Promise<void> {
-  const receipts = await listReceipts();
+  const limit = limitFlag(runtime.parsed);
+  const receipts = (await listReceipts()).slice(0, limit);
+  const summary = booleanFlag(runtime.parsed.flags, "summary") || booleanFlag(runtime.parsed.flags, "receipt-summary");
   if (runtime.json) {
-    printJson({ success: true, receipts });
+    printJson({ success: true, receipts: summary ? receipts.map(receiptSummaryJson) : receipts });
     return;
   }
   if (receipts.length === 0) {
@@ -290,8 +373,13 @@ async function receiptsList(runtime: Runtime): Promise<void> {
 async function receiptsShow(runtime: Runtime, receiptId: string | undefined): Promise<void> {
   if (!receiptId) throw new CliError("MISSING_RECEIPT_ID", "rubicon receipts show requires a receipt id.");
   const stored = await loadReceipt(receiptId);
+  const summary = booleanFlag(runtime.parsed.flags, "summary") || booleanFlag(runtime.parsed.flags, "receipt-summary");
   if (runtime.json) {
-    printJson({ success: true, ...stored });
+    printJson({ success: true, ...(summary ? receiptSummaryJson(stored) : stored) });
+    return;
+  }
+  if (summary) {
+    process.stdout.write(`${humanReceiptSummary(stored.receipt, stored.receiptId)}\n`);
     return;
   }
   process.stdout.write(`Receipt ID: ${stored.receiptId}\nSaved: ${stored.savedAt}\n${humanReceipt(stored.receipt)}\n`);
@@ -381,6 +469,43 @@ function parseBudget(parsed: ParsedArgs): `${bigint}` {
   }
 }
 
+function sectionFlag(parsed: ParsedArgs): string | undefined {
+  const section = stringFlag(parsed.flags, "section");
+  const sectionId = stringFlag(parsed.flags, "section-id");
+  if (section && sectionId && section !== sectionId) {
+    throw new CliError("MULTIPLE_SECTIONS", "Use either --section or --section-id, not both.");
+  }
+  return section ?? sectionId;
+}
+
+function limitFlag(parsed: ParsedArgs): number | undefined {
+  const rawLimit = stringFlag(parsed.flags, "limit");
+  if (rawLimit === undefined) return undefined;
+  const limit = Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new CliError("INVALID_LIMIT", "--limit must be a positive integer.");
+  }
+  return limit;
+}
+
+function chunkWordsFlag(parsed: ParsedArgs): number | undefined {
+  const fast = booleanFlag(parsed.flags, "fast");
+  const rawChunkWords = stringFlag(parsed.flags, "chunk-words");
+  if (rawChunkWords === undefined) return fast ? 32 : undefined;
+  const chunkWords = Number(rawChunkWords);
+  if (!Number.isInteger(chunkWords) || chunkWords < 1) {
+    throw new CliError("INVALID_CHUNK_WORDS", "--chunk-words must be a positive integer.");
+  }
+  return Math.min(chunkWords, 256);
+}
+
+async function validateSection(runtime: Runtime, articleId: string, sectionId: string): Promise<void> {
+  const article = await findArticle(runtime, articleId);
+  if (!article.sections.some((section) => section.sectionId === sectionId)) {
+    throw new CliError("SECTION_NOT_FOUND", `Section not found for ${articleId}: ${sectionId}`);
+  }
+}
+
 function matchesQuery(article: ArticleSummary, query: string): boolean {
   const haystack = [
     article.articleId,
@@ -405,9 +530,9 @@ function showHelp(json: boolean): void {
     "rubicon search \"<query>\"",
     "rubicon article show <article-id>",
     "rubicon article navigation <article-id> --goal \"<goal>\"",
-    "rubicon read <article-id> --max-usdc 0.10 [--goal \"...\"] [--max-words 50] [--dry-run]",
-    "rubicon receipts list",
-    "rubicon receipts show <receipt-id>",
+    "rubicon read <article-id> --max-usdc 0.10 [--goal \"...\"] [--section <section-id>] [--stop-after-section] [--chunk-words 32] [--fast] [--max-words 50] [--summary] [--dry-run]",
+    "rubicon receipts list [--limit 10] [--summary]",
+    "rubicon receipts show <receipt-id> [--summary]",
     "rubicon config show",
     "rubicon config set gateway-url <url>",
     "rubicon config set api-key <key>",

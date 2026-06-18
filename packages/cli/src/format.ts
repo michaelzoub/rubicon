@@ -1,6 +1,7 @@
 import { formatAtomicUsdc } from "@rubicon-caliga/core";
 import type { ArticleSummary, ArticleNavigation, SellerPaymentTerms } from "@rubicon-caliga/core";
 import type { ReadReceipt } from "@rubicon-caliga/agent-sdk";
+import type { StoredReceipt } from "./receipts.js";
 
 export function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -60,10 +61,12 @@ export function humanPaymentTerms(terms: SellerPaymentTerms): string[] {
 
 export function humanNavigation(navigation: ArticleNavigation): string {
   const seller = navigation.sellerAgent;
+  const recommendedReadCommand = recommendedReadCommandFor(navigation.articleId, seller.recommendedSectionId);
   const lines = [
     `Recommended section: ${seller.recommendedSectionId}`,
     `Alternatives: ${seller.alternativeSectionIds.length ? seller.alternativeSectionIds.join(", ") : "none"}`,
     `Rationale: ${seller.rationale}`,
+    `Recommended read: ${recommendedReadCommand}`,
   ];
   if (seller.safeHints.length > 0) {
     lines.push("", "Safe hints:", ...seller.safeHints.map((hint) => `- ${hint}`));
@@ -107,8 +110,47 @@ export function humanReceipt(receipt: ReadReceipt): string {
   return lines.join("\n");
 }
 
+export function receiptSummaryJson(stored: StoredReceipt): Record<string, unknown> {
+  return {
+    receiptId: stored.receiptId,
+    savedAt: stored.savedAt,
+    ...readReceiptSummaryJson(stored.receipt),
+  };
+}
+
+export function readReceiptSummaryJson(receipt: ReadReceipt): Record<string, unknown> {
+  return {
+    articleId: receipt.articleId,
+    sessionId: receipt.sessionId,
+    wordsRead: receipt.wordsRead,
+    amountPaidAtomic: receipt.amountPaidAtomic,
+    amountPaidUsdc: formatAtomic(receipt.amountPaidAtomic),
+    stopReason: receipt.stopReason,
+    completed: receipt.completed,
+    text: receipt.text,
+  };
+}
+
+export function humanReceiptSummary(receipt: ReadReceipt, receiptId?: string): string {
+  const lines = [
+    "Summary:",
+    receiptId ? `- Receipt ID: ${receiptId}` : undefined,
+    `- Article: ${receipt.articleId}`,
+    `- Words read: ${receipt.wordsRead.toLocaleString("en-US")}`,
+    `- Amount paid: ${formatAtomic(receipt.amountPaidAtomic)} USDC`,
+    `- Stop reason: ${receipt.stopReason}`,
+    "",
+    receipt.text,
+  ];
+  return lines.filter((line): line is string => line !== undefined).join("\n");
+}
+
 export function formatAtomic(value: string | bigint): string {
   return formatAtomicUsdc(typeof value === "bigint" ? value : BigInt(value));
+}
+
+export function recommendedReadCommandFor(articleId: string, sectionId: string): string {
+  return `rubicon read ${articleId} --section ${sectionId} --stop-after-section --max-usdc <amount>`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

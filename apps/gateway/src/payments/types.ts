@@ -3,7 +3,7 @@ import type { ArticleRecord } from "../repositories/types.js";
 
 export interface PaymentVerifyInput {
   session: SessionRecord;
-  /** Exact amount consumed from authorization to release one additional word. */
+  /** Exact amount consumed from authorization. Usually one word; chunk reads may authorize multiple words. */
   wordPaymentAtomic: bigint;
   payment: StreamPaymentRequest;
 }

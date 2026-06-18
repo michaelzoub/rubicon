@@ -7,6 +7,7 @@ import type {
   StartConversationResponse,
   StartSessionRequest,
   StartSessionResponse,
+  StreamChunkResponse,
   StreamPaymentRequest,
   StreamPaymentResponse,
   WordPaymentReceipt,
@@ -63,6 +64,14 @@ export type RubiconReadEvent =
       payment?: WordPaymentReceipt;
       text: string;
     }
+  | {
+      type: "article.chunk";
+      words: Array<{ sequence: number; word: string; priceAtomic: `${bigint}`; payment?: WordPaymentReceipt }>;
+      text: string;
+      wordsRead: number;
+      amountPaidAtomic: `${bigint}`;
+      completed: boolean;
+    }
   | { type: "article.usage"; wordsPaid: number; wordsDelivered: number; paidAtomic: `${bigint}` }
   | { type: "article.completed"; receipt: ReadReceipt }
   | { type: "article.error"; message: string };
@@ -76,6 +85,8 @@ export interface ReadOptions {
   maxSpendAtomic?: `${bigint}`;
   budget?: Budget;
   maxWords?: number;
+  /** Number of words to authorize and deliver per gateway round trip when supported. */
+  chunkWords?: number;
   /** Return true to stop reading once enough information has been collected. */
   stopWhen?: (state: {
     text: string;
@@ -168,6 +179,18 @@ export class RubiconClient {
       throw new Error(`Word payment rejected: ${response.status} ${await response.text()}`);
     }
     return response.json() as Promise<StreamPaymentResponse>;
+  }
+
+  async streamChunk(sessionId: string, payment: StreamPaymentRequest): Promise<StreamChunkResponse> {
+    const response = await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/stream`, {
+      method: "POST",
+      headers: this.headers({ "content-type": "application/json" }),
+      body: JSON.stringify(payment),
+    });
+    if (!response.ok) {
+      throw new Error(`Chunk stream rejected: ${response.status} ${await response.text()}`);
+    }
+    return response.json() as Promise<StreamChunkResponse>;
   }
 
   async abort(sessionId: string, reason = "agent_cancelled"): Promise<void> {
@@ -274,6 +297,8 @@ export class RubiconClient {
     const transactionHashes: string[] = [];
     const settlementIds: string[] = [];
     const payments: WordPaymentReceipt[] = [];
+    const chunkWords = normalizeChunkWords(options.chunkWords);
+    const useChunks = chunkWords > 1 && typeof this.paymentEngine.createChunkPayment === "function";
     let stopReason: ReadReceipt["stopReason"] = "article_completed";
     let completed = false;
 
@@ -306,6 +331,64 @@ export class RubiconClient {
       if (await options.stopWhen?.({ text, wordsRead, amountPaid })) {
         stopReason = "stop_condition";
         break;
+      }
+
+      if (useChunks) {
+        const remainingWords = options.maxWords === undefined ? chunkWords : Math.max(0, options.maxWords - wordsRead);
+        const affordableWords = Number((budgetAtomic - amountPaid) / wordPaymentAtomic);
+        const maxWords = Math.max(1, Math.min(chunkWords, remainingWords || chunkWords, affordableWords));
+        const payment = await this.paymentEngine.createChunkPayment!(session, {
+          nextSequence: wordsRead,
+          maxWords,
+        });
+        const idempotencyKey = `${session.sessionId}:${wordsRead}:${maxWords}`;
+        let result: StreamChunkResponse;
+        try {
+          result = await this.streamChunk(session.sessionId, { ...payment, idempotencyKey, maxWords });
+        } catch (error) {
+          yield { type: "article.error", message: error instanceof Error ? error.message : String(error) };
+          stopReason = "aborted";
+          break;
+        }
+        if (result.words.length === 0 && result.completed) {
+          completed = true;
+          stopReason = "article_completed";
+          const receipt = makeReceipt();
+          yield { type: "article.completed", receipt };
+          return receipt;
+        }
+        for (const entry of result.words) {
+          if (entry.payment) {
+            payments.push(entry.payment);
+          }
+          text = text ? `${text} ${entry.word}` : entry.word;
+        }
+        wordsRead = result.wordsDelivered;
+        amountPaid = BigInt(result.paidAtomic);
+        transactionHashes.push(...(result.transactionHashes ?? (result.transactionHash ? [result.transactionHash] : [])));
+        settlementIds.push(...(result.settlementIds ?? (result.settlementId ? [result.settlementId] : [])));
+        yield {
+          type: "article.chunk",
+          words: result.words,
+          text,
+          wordsRead,
+          amountPaidAtomic: `${amountPaid}`,
+          completed: result.completed,
+        };
+        yield {
+          type: "article.usage",
+          wordsPaid: result.wordsPaid,
+          wordsDelivered: result.wordsDelivered,
+          paidAtomic: result.paidAtomic,
+        };
+        if (result.completed) {
+          completed = true;
+          stopReason = "article_completed";
+          const receipt = makeReceipt();
+          yield { type: "article.completed", receipt };
+          return receipt;
+        }
+        continue;
       }
 
       const payment = await this.paymentEngine.createWordPayment(session);
@@ -391,3 +474,9 @@ export class RubiconClient {
 
 /** Backwards-compatible alias. */
 export const AgentClient = RubiconClient;
+
+function normalizeChunkWords(chunkWords: number | undefined): number {
+  if (chunkWords === undefined) return 1;
+  if (!Number.isInteger(chunkWords) || chunkWords < 1) return 1;
+  return Math.min(chunkWords, 256);
+}

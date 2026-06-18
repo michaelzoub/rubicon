@@ -718,6 +718,31 @@ test("2: ten payments release exactly ten words", async () => {
   await app.close();
 });
 
+test("chunk stream releases several words from one authorization but records each word", async () => {
+  const { app, ledger } = setup();
+  const session = await startSession(app);
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/stream`,
+    payload: {
+      paymentPayload: { amountAtomic: `${PRICE * 5n}` },
+      maxWords: 5,
+      idempotencyKey: "chunk-1",
+    },
+  });
+  assert.equal(res.statusCode, 200, res.body);
+  const body = res.json() as { words: Array<{ word: string }>; wordsDelivered: number; paidAtomic: string };
+  assert.deepEqual(body.words.map((entry) => entry.word), PLAIN_WORDS.slice(0, 5));
+  assert.equal(body.wordsDelivered, 5);
+  assert.equal(body.paidAtomic, `${PRICE * 5n}`);
+  const deliveries = await ledger.listDeliveries(session.sessionId);
+  assert.equal(deliveries.length, 5);
+  const payments = await ledger.listPayments(session.sessionId);
+  assert.equal(payments.length, 5);
+  assert.ok(payments.every((payment) => payment.amountAtomic === `${PRICE}`));
+  await app.close();
+});
+
 test("3: stopping after 137 words charges exactly 137 × price per word", async () => {
   const { app, ledger } = setup();
   const session = await startSession(app);

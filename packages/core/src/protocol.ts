@@ -212,6 +212,28 @@ export interface StreamPaymentResponse {
   transferId?: string;
 }
 
+export interface StreamChunkResponse {
+  accepted: boolean;
+  words: Array<{
+    sequence: number;
+    word: string;
+    priceAtomic: AtomicAmount;
+    payment?: WordPaymentReceipt;
+  }>;
+  text: string;
+  wordsPaid: number;
+  wordsDelivered: number;
+  paidAtomic: AtomicAmount;
+  completed: boolean;
+  authorizationMode?: AuthorizationMode;
+  transactionHash?: string;
+  transactionHashes?: string[];
+  settlementId?: string;
+  settlementIds?: string[];
+  buyerWalletAddress?: `0x${string}`;
+  transferId?: string;
+}
+
 export interface WordPaymentReceipt {
   paymentId: string;
   sessionId: string;

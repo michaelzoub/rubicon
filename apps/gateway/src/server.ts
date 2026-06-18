@@ -23,6 +23,7 @@ import {
   type StartConversationResponse,
   type StartSessionRequest,
   type StartSessionResponse,
+  type StreamChunkResponse,
   type StreamPaymentRequest,
   type StreamPaymentResponse,
   type StreamStopCondition,
@@ -570,18 +571,194 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     },
   );
 
-  app.post<{ Params: { sessionId: string }; Body: { authorizationPayload?: unknown; maxWords?: number } | undefined }>(
+  app.post<{ Params: { sessionId: string }; Body: StreamPaymentRequest | undefined }>(
     "/v1/sessions/:sessionId/stream",
     async (request, reply) => {
       const session = await ledger.getSession(request.params.sessionId);
       if (!session) {
         return reply.code(404).send({ error: "session_not_found" });
       }
-      return reply.code(501).send({
-        error: "session_authorization_stream_not_enabled",
-        message:
-          "This gateway build documents the Circle / Arc session-authorization protocol, but still uses the /payments chunk-compatibility path at runtime.",
+      if (session.state === "completed" || session.state === "aborted" || session.state === "expired") {
+        return reply.code(409).send({ error: `session_${session.state}` });
+      }
+      if (isSessionExpired(session)) {
+        session.state = "expired";
+        await ledger.saveSession(session);
+        events.publish({ type: "session.closed", sessionId: session.id, reason: "session_expired" });
+        return reply.code(402).send({ error: "session_expired" });
+      }
+
+      const streamPayment = request.body;
+      if (!streamPayment?.paymentPayload) {
+        return sendPaymentRequired(reply, session.paymentRequired);
+      }
+
+      const quote = quotePerWord({ pricePerWordAtomic: session.pricePerWordAtomic, gatewayFeeBps: session.gatewayFeeBps });
+      const wordPaymentAtomic = BigInt(quote.wordPaymentAtomic);
+      const maxWords = Math.min(normalizeChunkWords(streamPayment.maxWords), affordableWordCount(session, wordPaymentAtomic));
+      if (maxWords < 1) {
+        await closeSession(session, "budget_exhausted");
+        return reply.code(402).send({ error: "budget_exhausted" });
+      }
+
+      const state = await resolveStreamState(session);
+      if (!state) {
+        return reply.code(404).send({ error: "article_unavailable" });
+      }
+
+      const chunkPaymentAtomic = wordPaymentAtomic * BigInt(maxWords);
+      const idempotencyKey =
+        streamPayment.idempotencyKey ??
+        idempotencyKeyFromPaymentPayload(streamPayment.paymentPayload) ??
+        `${session.id}:${session.wordsDelivered}:${maxWords}`;
+      const verification = await paymentVerifier.verify({
+        session,
+        wordPaymentAtomic: chunkPaymentAtomic,
+        payment: { ...streamPayment, maxWords },
       });
+      logPaymentAttempt(reply, session, session.wordsDelivered, idempotencyKey, { ...streamPayment, maxWords }, verification);
+      if (!verification.accepted || !verification.amountAtomic) {
+        return reply.code(402).send({ error: verification.reason ?? "payment_rejected" });
+      }
+      if (BigInt(verification.amountAtomic) !== chunkPaymentAtomic) {
+        return reply.code(402).send({
+          error: "payment_amount_mismatch",
+          expectedAmountAtomic: `${chunkPaymentAtomic}`,
+          receivedAmountAtomic: verification.amountAtomic,
+        });
+      }
+
+      const released: StreamChunkResponse["words"] = [];
+      let chunkCompleted = false;
+      for (let offset = 0; offset < maxWords; offset += 1) {
+        if (!canAffordNextWord(session, wordPaymentAtomic)) {
+          break;
+        }
+        const next = await sellerAgent.selectNextWord({
+          article: state.article,
+          words: state.words,
+          nextIndex: session.wordsDelivered,
+          sectionId: state.sectionId,
+        });
+        if (next.word === null) {
+          await complete(session, state.article.id);
+          chunkCompleted = true;
+          break;
+        }
+
+        const sequence = session.wordsDelivered;
+        const usage = usageForWords({
+          wordsDelivered: 1,
+          pricePerWordAtomic: session.pricePerWordAtomic,
+          gatewayFeeBps: session.gatewayFeeBps,
+        });
+        const record = await ledger.recordWordDelivery({
+          sessionId: session.id,
+          articleId: session.articleId,
+          creatorId: session.creatorId,
+          sequence,
+          word: next.word,
+          priceAtomic: wordPaymentAtomic,
+          creatorAmountAtomic: BigInt(usage.creatorAmountAtomic),
+          rubiconFeeAtomic: BigInt(usage.rubiconFeeAtomic),
+          paymentId: randomUUID(),
+          network: verification.network,
+          payTo: verification.payTo ?? session.sellerWallet,
+          transactionHash: verification.transactionHash,
+          transactionHashes: verification.transactionHashes,
+          settlementId: verification.settlementId,
+          settlementIds: verification.settlementIds,
+          buyerWalletAddress: verification.buyerWalletAddress,
+          transferId: verification.transferId,
+          idempotencyKey: `${idempotencyKey}:${sequence}`,
+        });
+        if (record.duplicate) {
+          continue;
+        }
+
+        recordWordPayment(session, `${wordPaymentAtomic}`);
+        recordWordDelivery(session);
+        await ledger.saveSession(session);
+        events.publish({
+          type: "word.payment_accepted",
+          sessionId: session.id,
+          sequence,
+          paymentId: record.payment.paymentId,
+          amountAtomic: `${wordPaymentAtomic}`,
+          network: record.payment.network,
+          payTo: record.payment.payTo,
+          transactionHash: verification.transactionHash,
+          transactionHashes: verification.transactionHashes,
+          transferId: verification.transferId,
+        });
+        events.publish({
+          type: "article.word",
+          sessionId: session.id,
+          articleId: session.articleId,
+          sequence,
+          word: next.word,
+          priceAtomic: `${wordPaymentAtomic}`,
+          totalWordsStreamed: session.wordsDelivered,
+          totalPaidAtomic: `${session.paidAtomic}`,
+        });
+        released.push({
+          sequence,
+          word: next.word,
+          priceAtomic: `${wordPaymentAtomic}`,
+          payment: buildWordReceipt(
+            session,
+            sequence,
+            wordPaymentAtomic,
+            record.payment.paymentId,
+            record.payment.network,
+            record.payment.payTo,
+            record.payment.createdAt,
+            verification.transactionHash,
+            verification.transactionHashes,
+            verification.settlementId,
+            verification.settlementIds,
+            verification.buyerWalletAddress,
+            verification.transferId,
+          ),
+        });
+
+        if (next.done) {
+          await complete(session, session.articleId);
+          chunkCompleted = true;
+          break;
+        }
+      }
+
+      events.publish({
+        type: "article.usage",
+        sessionId: session.id,
+        usage: usageForWords({
+          wordsDelivered: session.wordsDelivered,
+          pricePerWordAtomic: session.pricePerWordAtomic,
+          gatewayFeeBps: session.gatewayFeeBps,
+        }),
+        wordsPaid: session.wordsPaid,
+        wordsDelivered: session.wordsDelivered,
+        paidAtomic: `${session.paidAtomic}`,
+      });
+
+      const response: StreamChunkResponse = {
+        accepted: true,
+        words: released,
+        text: released.map((entry) => entry.word).join(" "),
+        wordsPaid: session.wordsPaid,
+        wordsDelivered: session.wordsDelivered,
+        paidAtomic: `${session.paidAtomic}`,
+        completed: chunkCompleted,
+        authorizationMode: "chunk",
+        transactionHash: verification.transactionHash,
+        transactionHashes: verification.transactionHashes,
+        settlementId: verification.settlementId,
+        settlementIds: verification.settlementIds,
+        buyerWalletAddress: verification.buyerWalletAddress,
+        transferId: verification.transferId,
+      };
+      return reply.send(response);
     },
   );
 
@@ -806,6 +983,20 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     return Number(count > maxSafe ? maxSafe : count);
   }
 
+  function affordableWordCount(session: SessionRecord, wordPaymentAtomic: bigint): number {
+    const remaining = BigInt(session.budget.maxAmountAtomic) - session.paidAtomic;
+    if (remaining <= 0n) return 0;
+    const count = remaining / wordPaymentAtomic;
+    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+    return Number(count > maxSafe ? maxSafe : count);
+  }
+
+  function normalizeChunkWords(maxWords: number | undefined): number {
+    if (maxWords === undefined) return 32;
+    if (!Number.isInteger(maxWords) || maxWords < 1) return 1;
+    return Math.min(maxWords, 256);
+  }
+
   function paymentRequestFromHttp(
     body: Partial<StreamPaymentRequest> | undefined,
     getHeader: (name: string) => string | string[] | undefined,
@@ -861,27 +1052,21 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     buyerWalletAddress?: `0x${string}`,
     transferId?: string,
   ): StreamPaymentResponse {
-    const hashes = transactionHashes ?? (transactionHash ? [transactionHash] : undefined);
-    const payment: WordPaymentReceipt | undefined = paymentId
-      ? {
-          paymentId,
-          sessionId: session.id,
-          articleId: session.articleId,
-          sequence,
-          meteringUnit: "word",
-          amountAtomic: `${priceAtomic}`,
-          currency: "USDC",
-          network,
-          payTo,
-          transactionHash,
-          transactionHashes: hashes,
-          settlementId,
-          settlementIds,
-          buyerWalletAddress,
-          transferId,
-          settledAt,
-        }
-      : undefined;
+    const payment = buildWordReceipt(
+      session,
+      sequence,
+      priceAtomic,
+      paymentId,
+      network,
+      payTo,
+      settledAt,
+      transactionHash,
+      transactionHashes,
+      settlementId,
+      settlementIds,
+      buyerWalletAddress,
+      transferId,
+    );
     return {
       accepted: true,
       sequence,
@@ -893,11 +1078,48 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       completed,
       payment,
       transactionHash,
+      transactionHashes: transactionHashes ?? (transactionHash ? [transactionHash] : undefined),
+      settlementId,
+      settlementIds,
+      buyerWalletAddress,
+      transferId,
+    };
+  }
+
+  function buildWordReceipt(
+    session: SessionRecord,
+    sequence: number,
+    priceAtomic: bigint,
+    paymentId = "",
+    network?: string,
+    payTo?: `0x${string}`,
+    settledAt = new Date().toISOString(),
+    transactionHash?: string,
+    transactionHashes?: string[],
+    settlementId?: string,
+    settlementIds?: string[],
+    buyerWalletAddress?: `0x${string}`,
+    transferId?: string,
+  ): WordPaymentReceipt | undefined {
+    if (!paymentId) return undefined;
+    const hashes = transactionHashes ?? (transactionHash ? [transactionHash] : undefined);
+    return {
+      paymentId,
+      sessionId: session.id,
+      articleId: session.articleId,
+      sequence,
+      meteringUnit: "word",
+      amountAtomic: `${priceAtomic}`,
+      currency: "USDC",
+      network,
+      payTo,
+      transactionHash,
       transactionHashes: hashes,
       settlementId,
       settlementIds,
       buyerWalletAddress,
       transferId,
+      settledAt,
     };
   }
 
