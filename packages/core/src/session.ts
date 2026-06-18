@@ -31,6 +31,8 @@ export interface SessionRecord {
   wordsDelivered: number;
   /** Total atomic USDC the buyer has paid in this session. */
   paidAtomic: bigint;
+  /** Exact provider payment requirement issued when the session was opened. */
+  paymentRequired?: unknown;
   createdAt: Date;
   updatedAt: Date;
   expiresAt: Date;

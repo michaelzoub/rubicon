@@ -253,6 +253,47 @@ test("1: one accepted word payment releases exactly one word", async () => {
   await app.close();
 });
 
+test("payment verifier receives the exact requirement snapshot issued at session start", async () => {
+  const issuedRequirement = {
+    x402Version: 2,
+    accepts: [
+      {
+        scheme: "exact",
+        network: "eip155:5042002",
+        amount: `${PRICE}`,
+        payTo: "0x000000000000000000000000000000000000aaaa",
+        extra: { author: "Alice", meteringUnit: "word" },
+      },
+    ],
+  };
+  let verifiedRequirement: unknown;
+  const { app } = setup({
+    paymentVerifier: {
+      async createPaymentRequired() {
+        return issuedRequirement;
+      },
+      async verify(input) {
+        verifiedRequirement = input.session.paymentRequired;
+        return {
+          accepted: true,
+          amountAtomic: `${PRICE}`,
+          network: "eip155:5042002",
+          payTo: "0x000000000000000000000000000000000000aaaa",
+          transferId: `test_${input.session.id}`,
+        };
+      },
+    },
+  });
+
+  const session = await startSession(app);
+  assert.deepEqual(session.paymentRequired, issuedRequirement);
+
+  const res = await pay(app, session.sessionId);
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(verifiedRequirement, issuedRequirement);
+  await app.close();
+});
+
 test("payment responses include Circle transaction hashes when settlement returns them", async () => {
   const transactionHash = "0xabc123";
   const network = "eip155:5042002";

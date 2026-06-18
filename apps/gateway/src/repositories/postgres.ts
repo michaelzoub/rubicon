@@ -202,8 +202,8 @@ export class PostgresLedgerRepository implements LedgerRepository {
       `INSERT INTO stream_sessions
          (id, article_id, creator_id, conversation_id, state, goal, section_id,
           price_per_word_atomic, gateway_fee_bps, seller_wallet, budget_atomic,
-          words_paid, words_delivered, paid_atomic, metadata, created_at, updated_at, expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+          words_paid, words_delivered, paid_atomic, payment_required, metadata, created_at, updated_at, expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
       [
         session.id,
         session.articleId,
@@ -219,6 +219,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
         session.wordsPaid,
         session.wordsDelivered,
         `${session.paidAtomic}`,
+        session.paymentRequired === undefined ? null : JSON.stringify(session.paymentRequired),
         JSON.stringify(session.metadata),
         session.createdAt.toISOString(),
         session.updatedAt.toISOString(),
@@ -243,6 +244,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
       words_paid: number;
       words_delivered: number;
       paid_atomic: string;
+      payment_required: unknown | null;
       metadata: Record<string, unknown>;
       created_at: string;
       updated_at: string;
@@ -268,6 +270,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
       wordsPaid: row.words_paid,
       wordsDelivered: row.words_delivered,
       paidAtomic: BigInt(row.paid_atomic),
+      paymentRequired: row.payment_required ?? undefined,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
       expiresAt: new Date(row.expires_at),
@@ -277,7 +280,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
   async saveSession(session: SessionRecord): Promise<void> {
     await this.pool.query(
       `UPDATE stream_sessions SET state=$2, words_paid=$3, words_delivered=$4, paid_atomic=$5,
-         conversation_id=$6, metadata=$7, updated_at=$8 WHERE id=$1`,
+         conversation_id=$6, metadata=$7, payment_required=$8, updated_at=$9 WHERE id=$1`,
       [
         session.id,
         session.state,
@@ -286,6 +289,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
         `${session.paidAtomic}`,
         session.conversationId ?? null,
         JSON.stringify(session.metadata),
+        session.paymentRequired === undefined ? null : JSON.stringify(session.paymentRequired),
         new Date().toISOString(),
       ],
     );

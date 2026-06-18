@@ -23,7 +23,6 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
   private readonly ready: Promise<void>;
   private readonly networks: Network[];
   private readonly maxTimeoutSeconds: number;
-  private readonly gatewayBaseUrl: string;
 
   constructor(private readonly options: CircleX402PaymentVerifierOptions) {
     const facilitator = new BatchFacilitatorClient(
@@ -40,7 +39,6 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     // window — e.g. the 60s that suits a plain x402 facilitator — is rejected
     // outright by the Arc Testnet Gateway. Default to 7 days + a small buffer.
     this.maxTimeoutSeconds = options.maxTimeoutSeconds ?? 604_900;
-    this.gatewayBaseUrl = options.gatewayBaseUrl ?? "http://localhost:8787";
   }
 
   async createPaymentRequired(input: PaymentRequiredInput): Promise<PaymentRequired> {
@@ -68,19 +66,13 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       return { accepted: false, reason: "missing_x402_payment_payload" };
     }
 
+    const issuedRequirements = paymentRequirementsFromSession(input.session);
+    if (!issuedRequirements.length) {
+      return { accepted: false, reason: "missing_session_payment_requirements" };
+    }
+
     const requirements = this.resourceServer.findMatchingRequirements(
-      await this.requirements({
-        session: input.session,
-        sellerWallet: input.session.sellerWallet,
-        wordPaymentAtomic: input.wordPaymentAtomic,
-        gatewayBaseUrl: this.gatewayBaseUrl,
-        articleId: input.session.articleId,
-        // `author` only feeds the `extra` metadata; keep it consistent with the
-        // value used when the requirement was first issued.
-        author: input.session.articleId,
-      }),
-      // NOTE: author is the articleId here (we don't reload the article in the
-      // verify path); requirement matching keys off scheme/network/payTo/amount.
+      issuedRequirements,
       paymentPayload,
     );
     if (!requirements) {
@@ -151,4 +143,9 @@ function usdcDollarsFromAtomic(amountAtomic: string): string {
   const whole = atomic / divisor;
   const fraction = (atomic % divisor).toString().padStart(Number(USDC_DECIMALS), "0");
   return `${whole}.${fraction}`;
+}
+
+function paymentRequirementsFromSession(session: SessionRecord): PaymentRequirements[] {
+  const paymentRequired = session.paymentRequired as { accepts?: PaymentRequirements[] } | undefined;
+  return Array.isArray(paymentRequired?.accepts) ? paymentRequired.accepts : [];
 }

@@ -261,8 +261,6 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       metadata: request.body.metadata,
       ttlMs: options.sessionTtlMs,
     });
-    await ledger.createSession(session);
-    streamStates.set(session.id, { article, words: slice.words, sectionId });
 
     const paymentRequired = await paymentVerifier.createPaymentRequired?.({
       session,
@@ -271,6 +269,10 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       wordPaymentAtomic: BigInt(quote.wordPaymentAtomic),
       gatewayBaseUrl,
     });
+    session.paymentRequired = paymentRequired;
+
+    await ledger.createSession(session);
+    streamStates.set(session.id, { article, words: slice.words, sectionId });
 
     const summary = summarizeArticle(article);
     events.publish({
