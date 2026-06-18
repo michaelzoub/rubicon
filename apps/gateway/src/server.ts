@@ -80,7 +80,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? true });
   const events = new InMemoryEventBus();
   const sellerAgent = options.sellerAgent ?? new DefaultSellerAgent();
-  const paymentVerifier = options.paymentVerifier ?? new DevelopmentPaymentVerifier();
+  const paymentVerifier: PaymentVerifier = options.paymentVerifier ?? new DevelopmentPaymentVerifier();
   const ledger = options.ledger;
   const articles = options.articleRepository;
   const gatewayFeeBps = options.gatewayFeeBps ?? 0;
@@ -97,6 +97,11 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     if (authorization !== expected) {
       return reply.code(401).send({ error: "unauthorized" });
     }
+  });
+
+  // Flush settlements batched behind the stream before the process exits.
+  app.addHook("onClose", async () => {
+    await paymentVerifier.drain?.().catch(() => {});
   });
 
   async function buildNavigation(article: ArticleRecord, goal?: string): Promise<ArticleNavigation> {
@@ -695,6 +700,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     session.state = "completed";
     await ledger.saveSession(session);
     streamStates.delete(session.id);
+    // Settle any words still batched behind the stream so the final receipts are
+    // backfilled promptly rather than waiting on the batch timer.
+    await paymentVerifier.flush?.().catch(() => {});
     events.publish({
       type: "article.completed",
       sessionId: session.id,
@@ -709,6 +717,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     session.state = reason === "budget_exhausted" ? "expired" : "aborted";
     await ledger.saveSession(session);
     streamStates.delete(session.id);
+    await paymentVerifier.flush?.().catch(() => {});
     events.publish({ type: "session.aborted", sessionId: session.id, reason });
   }
 

@@ -24,6 +24,7 @@ import type {
   PublishedArticleRepository,
   RecordWordDeliveryInput,
   RecordWordDeliveryResult,
+  UpdatePaymentSettlementInput,
 } from "./types.js";
 
 export function createPgPool(databaseUrl: string): Pool {
@@ -547,6 +548,69 @@ export class PostgresLedgerRepository implements LedgerRepository {
         createdAt,
       },
     };
+  }
+
+  async updatePaymentSettlement(input: UpdatePaymentSettlementInput): Promise<void> {
+    const transferId = input.transferId ?? input.settlementId ?? input.transactionHash ?? null;
+    const settlementId = input.settlementId ?? input.transferId ?? input.transactionHash ?? null;
+    const settlementIds = input.settlementIds ? JSON.stringify(input.settlementIds) : null;
+    const transactionHashes = input.transactionHashes ? JSON.stringify(input.transactionHashes) : null;
+    const buyerWalletAddress = input.buyerWalletAddress ?? null;
+    const transactionHash = input.transactionHash ?? null;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // COALESCE so a later partial backfill never clobbers fields already set.
+      const updated = await client.query<{ payment_id: string }>(
+        `UPDATE word_payments
+            SET settlement_id = COALESCE($3, settlement_id),
+                settlement_ids = COALESCE($4, settlement_ids),
+                transfer_id = COALESCE($5, transfer_id),
+                transaction_hash = COALESCE($6, transaction_hash),
+                transaction_hashes = COALESCE($7, transaction_hashes),
+                buyer_wallet_address = COALESCE($8, buyer_wallet_address)
+          WHERE session_id = $1 AND sequence = $2
+          RETURNING payment_id`,
+        [
+          input.sessionId,
+          input.sequence,
+          settlementId,
+          settlementIds,
+          transferId,
+          transactionHash,
+          transactionHashes,
+          buyerWalletAddress,
+        ],
+      );
+      const paymentId = updated.rows[0]?.payment_id;
+      if (paymentId) {
+        await client.query(
+          `UPDATE settlement_receipts
+              SET settlement_id = COALESCE($2, settlement_id),
+                  settlement_ids = COALESCE($3, settlement_ids),
+                  transfer_id = COALESCE($4, transfer_id),
+                  transaction_hash = COALESCE($5, transaction_hash),
+                  transaction_hashes = COALESCE($6, transaction_hashes),
+                  buyer_wallet_address = COALESCE($7, buyer_wallet_address)
+            WHERE payment_id = $1`,
+          [
+            paymentId,
+            settlementId,
+            settlementIds,
+            transferId,
+            transactionHash,
+            transactionHashes,
+            buyerWalletAddress,
+          ],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async listDeliveries(sessionId: string): Promise<WordDeliveryRecord[]> {
