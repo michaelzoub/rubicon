@@ -86,11 +86,24 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     // that the payment matches this session's seller, network, and amount.
     const settlement = await this.resourceServer.settlePayment(paymentPayload, requirements);
     if (!settlement.success) {
+      logCircleSettlement("warn", {
+        message: "circle_x402_settlement_failed",
+        session: input.session,
+        requirements,
+        settlement,
+      });
       return {
         accepted: false,
         reason: settlement.errorReason ?? settlement.errorMessage ?? "payment_settlement_failed",
       };
     }
+
+    logCircleSettlement("info", {
+      message: "circle_x402_settlement_succeeded",
+      session: input.session,
+      requirements,
+      settlement,
+    });
 
     return {
       accepted: true,
@@ -148,4 +161,52 @@ function usdcDollarsFromAtomic(amountAtomic: string): string {
 function paymentRequirementsFromSession(session: SessionRecord): PaymentRequirements[] {
   const paymentRequired = session.paymentRequired as { accepts?: PaymentRequirements[] } | undefined;
   return Array.isArray(paymentRequired?.accepts) ? paymentRequired.accepts : [];
+}
+
+function logCircleSettlement(
+  level: "info" | "warn",
+  input: {
+    message: string;
+    session: SessionRecord;
+    requirements: PaymentRequirements;
+    settlement: unknown;
+  },
+): void {
+  const settlement = input.settlement as Record<string, unknown>;
+  const log = {
+    event: input.message,
+    sessionId: input.session.id,
+    articleId: input.session.articleId,
+    creatorId: input.session.creatorId,
+    network: input.requirements.network,
+    payTo: input.requirements.payTo,
+    amount: input.requirements.amount,
+    maxTimeoutSeconds: input.requirements.maxTimeoutSeconds,
+    settlement: pickSettlementFields(settlement),
+  };
+  console[level]("[rubicon:circle-x402]", JSON.stringify(log));
+}
+
+function pickSettlementFields(settlement: Record<string, unknown>): Record<string, unknown> {
+  const allowed = [
+    "success",
+    "amount",
+    "asset",
+    "network",
+    "payer",
+    "payTo",
+    "transaction",
+    "transferId",
+    "error",
+    "errorCode",
+    "errorReason",
+    "errorMessage",
+    "message",
+    "status",
+  ];
+  return Object.fromEntries(
+    allowed
+      .filter((key) => settlement[key] !== undefined)
+      .map((key) => [key, settlement[key]]),
+  );
 }
