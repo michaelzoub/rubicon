@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import { decodePaymentSignatureHeader, encodePaymentRequiredHeader } from "@x402/core/http";
+import type { PaymentPayload, PaymentRequired } from "@x402/core/types";
 import {
   canAffordNextWord,
   createSession,
@@ -349,7 +351,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     return reply.code(201).send(response);
   });
 
-  app.post<{ Params: { sessionId: string }; Body: StreamPaymentRequest }>(
+  app.post<{ Params: { sessionId: string }; Body: Partial<StreamPaymentRequest> | undefined }>(
     "/v1/sessions/:sessionId/payments",
     async (request, reply) => {
       const session = await ledger.getSession(request.params.sessionId);
@@ -358,7 +360,12 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       }
 
       const sequence = session.wordsDelivered;
-      const idempotencyKey = request.body.idempotencyKey ?? `${session.id}:${sequence}`;
+      const payment = paymentRequestFromHttp(request.body, (name) => request.headers[name.toLowerCase()]);
+      if (!payment.paymentPayload) {
+        return sendPaymentRequired(reply, session.paymentRequired);
+      }
+      const streamPayment = payment as StreamPaymentRequest;
+      const idempotencyKey = payment.idempotencyKey ?? idempotencyKeyFromPaymentPayload(payment.paymentPayload) ?? `${session.id}:${sequence}`;
 
       // Idempotency: a retried payment must not release or charge a word twice.
       // Checked before state guards so retries of the final word stay idempotent.
@@ -422,8 +429,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         return reply.code(402).send({ error: "budget_exhausted" });
       }
 
-      const verification = await paymentVerifier.verify({ session, wordPaymentAtomic, payment: request.body });
-      logPaymentAttempt(reply, session, sequence, idempotencyKey, request.body, verification);
+      const verification = await paymentVerifier.verify({ session, wordPaymentAtomic, payment: streamPayment });
+      logPaymentAttempt(reply, session, sequence, idempotencyKey, streamPayment, verification);
       if (!verification.accepted || !verification.amountAtomic) {
         // A failed payment releases no word and does not advance the session.
         return reply.code(402).send({ error: verification.reason ?? "payment_rejected" });
@@ -740,6 +747,44 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   function firstAccept(paymentRequired: unknown): { network?: string } | undefined {
     const accepts = (paymentRequired as { accepts?: Array<{ network?: string }> } | undefined)?.accepts;
     return Array.isArray(accepts) ? accepts[0] : undefined;
+  }
+
+  function paymentRequestFromHttp(
+    body: Partial<StreamPaymentRequest> | undefined,
+    getHeader: (name: string) => string | string[] | undefined,
+  ): Partial<StreamPaymentRequest> {
+    if (body?.paymentPayload !== undefined) {
+      return body;
+    }
+    const header = firstHeader(getHeader("payment-signature") ?? getHeader("PAYMENT-SIGNATURE") ?? getHeader("x-payment"));
+    if (!header) {
+      return body ?? {};
+    }
+    try {
+      return {
+        ...body,
+        paymentPayload: decodePaymentSignatureHeader(header),
+      };
+    } catch {
+      return body ?? {};
+    }
+  }
+
+  function firstHeader(value: string | string[] | undefined): string | undefined {
+    return Array.isArray(value) ? value[0] : value;
+  }
+
+  function idempotencyKeyFromPaymentPayload(paymentPayload: unknown): string | undefined {
+    const key = (paymentPayload as PaymentPayload | undefined)?.accepted?.extra?.idempotencyKey;
+    return typeof key === "string" ? key : undefined;
+  }
+
+  function sendPaymentRequired(reply: FastifyReply, paymentRequired: unknown) {
+    if (!paymentRequired) {
+      return reply.code(402).send({ error: "payment_required" });
+    }
+    reply.header("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired as PaymentRequired));
+    return reply.code(402).send(paymentRequired);
   }
 
   function buildPaymentResponse(

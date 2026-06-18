@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { FastifyInstance } from "fastify";
 import { createGateway } from "./server.js";
+import { encodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 import {
   InMemoryLedgerRepository,
   InMemoryPublishedArticleRepository,
@@ -355,6 +356,56 @@ test("session returns exactly one next-word x402 requirement with ARC-TESTNET te
   const res = await pay(app, session.sessionId, { key: `${session.sessionId}:0` });
   assert.equal(res.statusCode, 200);
   assert.equal((res.json() as StreamPaymentResponse).wordsDelivered, 1);
+  await app.close();
+});
+
+test("payment endpoint returns a standard x402 challenge before a payment is supplied", async () => {
+  const { app } = setup();
+  const session = await startSession(app);
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/payments`,
+  });
+
+  assert.equal(res.statusCode, 402);
+  assert.equal(res.headers["payment-required"], encodePaymentRequiredHeader(session.paymentRequired as never));
+  assert.deepEqual(res.json(), session.paymentRequired);
+  await app.close();
+});
+
+test("payment endpoint accepts a standard x402 payment signature header", async () => {
+  const { app, ledger } = setup();
+  const session = await startSession(app);
+  const paymentRequired = session.paymentRequired as {
+    accepts: Array<{
+      scheme: string;
+      network: string;
+      amount: string;
+      asset: string;
+      payTo: string;
+      maxTimeoutSeconds: number;
+      extra: Record<string, unknown>;
+    }>;
+  };
+  const paymentPayload = {
+    x402Version: 2,
+    accepted: paymentRequired.accepts[0]!,
+    payload: {},
+  };
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/payments`,
+    headers: {
+      "PAYMENT-SIGNATURE": encodePaymentSignatureHeader(paymentPayload as never),
+    },
+  });
+
+  assert.equal(res.statusCode, 200, res.body);
+  const body = res.json() as StreamPaymentResponse;
+  assert.equal(body.wordsDelivered, 1);
+  assert.equal(body.word, PLAIN_WORDS[0]);
+  assert.equal((await ledger.listDeliveries(session.sessionId)).length, 1);
   await app.close();
 });
 
