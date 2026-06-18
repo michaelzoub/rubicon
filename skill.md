@@ -81,7 +81,7 @@ const rubicon = new Rubicon({
     ? `Bearer ${process.env.RUBICON_AGENT_API_KEY}`
     : undefined,
   paymentEngine: new CircleCliGatewayPaymentEngine({
-    walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
+    agentWalletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
     chain: "ARC-TESTNET",
   }),
 });
@@ -106,15 +106,21 @@ Before spending, verify:
 Rubicon's Arc Testnet network string is `eip155:5042002`; Circle CLI calls the
 same chain `ARC-TESTNET`.
 
-Gateway/Nanopayments settlement ids can look like UUIDs rather than EVM
-transaction hashes. A successful nanopayment may not appear as a direct ERC-20
-transfer to the seller on Arcscan. Verify paid reads with the Rubicon receipt,
-`word.payment_accepted` events, and the Circle Gateway balance before and after
-the read.
+`CircleCliGatewayPaymentEngine` keeps the Circle Agent Wallet and Gateway
+backing EOA separate. `agentWalletAddress` is passed to
+`circle wallet sign typed-data --address`; `buyerWalletAddress` / `backingEOA`
+is used as the x402 `TransferWithAuthorization.from` address. If only the Agent
+Wallet is configured, the SDK discovers `data.backingEOA` with
+`circle gateway balance --address <agent-wallet-address> --chain ARC-TESTNET --output json`.
 
-The receipt's `buyerWalletAddress` may be the Circle backing EOA recovered from
-the payment signature, while Circle Gateway balance checks use the Agent Wallet
-address. Keep both addresses clear when debugging.
+Gateway/Nanopayments settlement ids can look like UUIDs rather than EVM
+transaction hashes, and `transactionHashes` may be empty. Treat
+`settlementIds` as the primary proof of payment. A successful nanopayment may
+not appear as a direct ERC-20 transfer to the seller on Arcscan. Seller
+dashboards must count Rubicon backend payment receipts / Circle Gateway
+settlement IDs, not direct on-chain transfers. Verify paid reads with the
+Rubicon receipt, `word.payment_accepted` events, and Circle Gateway balance
+before and after the read.
 
 ## SDK Surface
 

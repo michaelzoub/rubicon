@@ -15,8 +15,24 @@ export interface CircleCliGatewayPaymentEngineOptions {
   /**
    * Agent Wallet address controlled by Circle CLI. When omitted, the engine
    * resolves the sole agent wallet returned by `circle wallet list`.
+   *
+   * @deprecated Use `agentWalletAddress`. This alias is kept for existing SDK
+   * callers and is treated as the Circle CLI signing wallet, not the x402
+   * authorization `from` address.
    */
   walletAddress?: `0x${string}`;
+  /**
+   * Agent Wallet address controlled by Circle CLI. This is passed to
+   * `circle wallet sign typed-data --address`.
+   */
+  agentWalletAddress?: `0x${string}`;
+  /**
+   * Gateway backing EOA used as the x402 authorization `from` address. When
+   * omitted, the engine resolves it from `circle gateway balance`.
+   */
+  buyerWalletAddress?: `0x${string}`;
+  /** Alias for `buyerWalletAddress`. */
+  backingEOA?: `0x${string}`;
   /** Circle CLI chain name. Rubicon real reads settle on Arc Testnet by default. */
   chain?: string;
   /** Circle CLI binary name or path. */
@@ -44,7 +60,8 @@ export class CircleCliGatewayPaymentEngine implements AgentPaymentEngine {
 
   constructor(options: CircleCliGatewayPaymentEngineOptions = {}) {
     this.signer = new CircleCliGatewaySigner({
-      walletAddress: options.walletAddress,
+      agentWalletAddress: options.agentWalletAddress ?? options.walletAddress,
+      buyerWalletAddress: options.buyerWalletAddress ?? options.backingEOA,
       chain: options.chain ?? "ARC-TESTNET",
       command: options.command ?? "circle",
       runner: options.runner ?? runCircleCli,
@@ -66,21 +83,28 @@ export class CircleCliGatewayPaymentEngine implements AgentPaymentEngine {
   }
 }
 
-class CircleCliGatewaySigner {
+export class CircleCliGatewaySigner {
+  agentWalletAddress: `0x${string}` = "0x0000000000000000000000000000000000000000";
   address: `0x${string}` = "0x0000000000000000000000000000000000000000";
   private resolved = false;
   private resolving?: Promise<void>;
 
   constructor(
     private readonly options: {
-      walletAddress?: `0x${string}`;
+      agentWalletAddress?: `0x${string}`;
+      buyerWalletAddress?: `0x${string}`;
       chain: string;
       command: string;
       runner: CircleCliRunner;
     },
   ) {
-    if (options.walletAddress) {
-      this.address = options.walletAddress;
+    if (options.agentWalletAddress) {
+      this.agentWalletAddress = options.agentWalletAddress;
+    }
+    if (options.buyerWalletAddress) {
+      this.address = options.buyerWalletAddress;
+    }
+    if (options.agentWalletAddress && options.buyerWalletAddress) {
       this.resolved = true;
     }
   }
@@ -101,7 +125,7 @@ class CircleCliGatewaySigner {
       "typed-data",
       serializeTypedData(toEip712Payload(typed)),
       "--address",
-      this.address,
+      this.agentWalletAddress,
       "--chain",
       this.options.chain,
       "--quiet",
@@ -110,6 +134,15 @@ class CircleCliGatewaySigner {
   }
 
   private async resolveAddress(): Promise<void> {
+    const agentWalletAddress =
+      this.options.agentWalletAddress ?? (await this.resolveAgentWalletAddress());
+    this.agentWalletAddress = agentWalletAddress;
+    this.address =
+      this.options.buyerWalletAddress ?? (await this.resolveBackingEOA(agentWalletAddress));
+    this.resolved = true;
+  }
+
+  private async resolveAgentWalletAddress(): Promise<`0x${string}`> {
     const output = await this.options.runner(this.options.command, [
       "wallet",
       "list",
@@ -120,9 +153,21 @@ class CircleCliGatewaySigner {
       "--output",
       "json",
     ]);
-    const address = parseCircleCliWalletAddress(output);
-    this.address = address;
-    this.resolved = true;
+    return parseCircleCliWalletAddress(output);
+  }
+
+  private async resolveBackingEOA(agentWalletAddress: `0x${string}`): Promise<`0x${string}`> {
+    const output = await this.options.runner(this.options.command, [
+      "gateway",
+      "balance",
+      "--address",
+      agentWalletAddress,
+      "--chain",
+      this.options.chain,
+      "--output",
+      "json",
+    ]);
+    return parseCircleGatewayBackingEOA(output);
   }
 }
 
@@ -173,7 +218,16 @@ export function parseCircleCliWalletAddress(output: string): `0x${string}` {
   if (unique.length === 0) {
     throw new Error("Circle CLI did not return an Agent Wallet address");
   }
-  throw new Error("Multiple Circle Agent Wallets found; pass walletAddress explicitly");
+  throw new Error("Multiple Circle Agent Wallets found; pass agentWalletAddress explicitly");
+}
+
+export function parseCircleGatewayBackingEOA(output: string): `0x${string}` {
+  const parsed = parseJson(output);
+  const backingEOA = findString(parsed, ["data.backingEOA", "backingEOA"]);
+  if (backingEOA && isAddress(backingEOA)) {
+    return backingEOA;
+  }
+  throw new Error("Circle Gateway balance did not return a backingEOA address");
 }
 
 function collectWalletCandidates(value: unknown): Record<string, unknown>[] {

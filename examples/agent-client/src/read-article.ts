@@ -36,7 +36,7 @@ let paymentEngine: AgentPaymentEngine;
 let mode: string;
 if (process.env.CIRCLE_CLI_PAYMENT === "1" || (agentWalletAddress && !circleApiKey)) {
   paymentEngine = new CircleCliGatewayPaymentEngine({
-    walletAddress: agentWalletAddress,
+    agentWalletAddress,
     chain: process.env.CIRCLE_CLI_CHAIN ?? "ARC-TESTNET",
   });
   mode = "circle-cli-gateway";

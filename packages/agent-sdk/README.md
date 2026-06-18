@@ -20,7 +20,7 @@ const hasCircleCliWallet = process.env.CIRCLE_AGENT_WALLET_ADDRESS;
 const rubicon = new Rubicon({
   paymentEngine: hasCircleCliWallet
     ? new CircleCliGatewayPaymentEngine({
-        walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}`,
+        agentWalletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}`,
       })
     : new StaticPaymentEngine(),
 });
@@ -88,16 +88,32 @@ import Rubicon, { CircleCliGatewayPaymentEngine } from "@rubicon-caliga/agent-sd
 const rubicon = new Rubicon({
   baseUrl: process.env.RUBICON_GATEWAY_URL,
   paymentEngine: new CircleCliGatewayPaymentEngine({
-    walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
+    agentWalletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
     chain: "ARC-TESTNET",
   }),
 });
 ```
 
-When `walletAddress` is omitted, the engine runs
+`CircleCliGatewayPaymentEngine` keeps two addresses distinct:
+
+- `agentWalletAddress` is the Circle Agent Wallet passed to
+  `circle wallet sign typed-data --address`.
+- `buyerWalletAddress` / `backingEOA` is the Gateway backing EOA used as the
+  x402 `TransferWithAuthorization.from` address.
+
+When only `agentWalletAddress` is provided, the engine discovers the backing EOA
+with `circle gateway balance --address <agentWalletAddress> --chain ARC-TESTNET --output json`.
+When no address is provided, the engine first runs
 `circle wallet list --chain ARC-TESTNET --type agent --output json` and uses the
-sole Agent Wallet it finds. If multiple wallets are present, pass the address
-explicitly.
+sole Agent Wallet it finds, then discovers its backing EOA with Gateway balance.
+The older `walletAddress` option remains as an alias for `agentWalletAddress`.
+If multiple Agent Wallets are present, pass the agent wallet explicitly.
+
+Gateway/Nanopayments receipts may have empty `transactionHashes`. Treat
+`settlementIds` as the primary proof of payment; scanner visibility is not
+guaranteed because a successful nanopayment may not appear as a direct ERC-20
+transfer to the seller. Seller dashboards should count Rubicon backend payment
+receipts and Circle Gateway settlement IDs, not direct on-chain transfers.
 
 The lower-level API-backed custody path is also available:
 

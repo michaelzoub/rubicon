@@ -101,8 +101,13 @@ receipt with the word-level `paymentId`, `sequence`, `amountAtomic`, `currency`,
 `network`, destination `payTo`, `transactionHash`, `transactionHashes`, and
 Gateway/facilitator `settlementId`/`transferId`, and `settledAt`. Circle Gateway
 x402 returns a transfer UUID in its `transaction` field; Rubicon records that as
-`transferId`/`settlementId`, not as an on-chain `transactionHash`. A failed
-payment releases no word. A retried payment with the same
+`transferId`/`settlementId`, not as an on-chain `transactionHash`.
+`transactionHashes` may be empty for Gateway nanopayments. Treat
+`settlementIds` as the primary proof of payment; scanner visibility is not
+guaranteed, and a successful nanopayment may not appear as a direct seller
+ERC-20 transfer. Seller dashboards must count backend payment receipts and
+Gateway settlement IDs rather than direct on-chain transfers. A failed payment
+releases no word. A retried payment with the same
 `idempotencyKey` returns the same word and same payment receipt, and never
 charges twice.
 
