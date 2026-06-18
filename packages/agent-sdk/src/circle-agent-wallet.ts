@@ -158,7 +158,12 @@ export function toEip712Payload(typed: TypedDataRequest) {
   if (!types.EIP712Domain) {
     types.EIP712Domain = eip712DomainFields(domain);
   }
-  return { domain, types, primaryType: typed.primaryType, message: typed.message };
+  return {
+    domain,
+    types,
+    primaryType: typed.primaryType,
+    message: eip712PrimaryMessage(typed.message, types, typed.primaryType),
+  };
 }
 
 function eip712DomainFields(domain: Record<string, unknown>): Array<{ name: string; type: string }> {
@@ -172,4 +177,35 @@ function eip712DomainFields(domain: Record<string, unknown>): Array<{ name: stri
   return candidates
     .filter(([field]) => domain[field] !== undefined)
     .map(([name, type]) => ({ name, type }));
+}
+
+function eip712PrimaryMessage(
+  message: Record<string, unknown>,
+  types: Record<string, unknown>,
+  primaryType: string,
+): Record<string, unknown> {
+  const fields = types[primaryType];
+  if (!Array.isArray(fields)) {
+    return message;
+  }
+
+  const allowed = new Set(
+    fields
+      .map((field) => (isEip712Field(field) ? field.name : undefined))
+      .filter((name): name is string => Boolean(name)),
+  );
+  if (allowed.size === 0) {
+    return message;
+  }
+
+  return Object.fromEntries(Object.entries(message).filter(([key]) => allowed.has(key)));
+}
+
+function isEip712Field(field: unknown): field is { name: string; type: string } {
+  return (
+    typeof field === "object" &&
+    field !== null &&
+    typeof (field as { name?: unknown }).name === "string" &&
+    typeof (field as { type?: unknown }).type === "string"
+  );
 }

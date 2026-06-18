@@ -13,6 +13,17 @@ const TRANSFER_TYPES = {
   ],
 };
 
+const EIP3009_TRANSFER_TYPES = {
+  TransferWithAuthorization: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "validAfter", type: "uint256" },
+    { name: "validBefore", type: "uint256" },
+    { name: "nonce", type: "bytes32" },
+  ],
+};
+
 test("injects EIP712Domain derived from the domain fields present", () => {
   const payload = toEip712Payload({
     domain: {
@@ -68,9 +79,16 @@ test("serializes bigint authorization fields (exact fallback) as decimal strings
   // plain JSON.stringify would throw, so they must be coerced to strings.
   const payload = toEip712Payload({
     domain: { name: "USD Coin", chainId: 5042002 },
-    types: TRANSFER_TYPES,
+    types: EIP3009_TRANSFER_TYPES,
     primaryType: "TransferWithAuthorization",
-    message: { from: "0x1", to: "0x2", value: 5n, validAfter: 0n, validBefore: 1893456000n },
+    message: {
+      from: "0x1",
+      to: "0x2",
+      value: 5n,
+      validAfter: 0n,
+      validBefore: 1893456000n,
+      nonce: "0xabc",
+    },
   });
 
   const json = serializeTypedData(payload);
@@ -78,4 +96,23 @@ test("serializes bigint authorization fields (exact fallback) as decimal strings
   assert.equal(parsed.message.value, "5");
   assert.equal(parsed.message.validAfter, "0");
   assert.equal(parsed.message.validBefore, "1893456000");
+});
+
+test("removes message fields that are not declared by the primary type", () => {
+  const payload = toEip712Payload({
+    domain: { name: "USD Coin", chainId: 5042002 },
+    types: TRANSFER_TYPES,
+    primaryType: "TransferWithAuthorization",
+    message: {
+      from: "0x1",
+      to: "0x2",
+      value: "5",
+      validAfter: "0",
+      validBefore: "1893456000",
+      nonce: "0xabc",
+      authorization: { unexpected: true },
+    },
+  });
+
+  assert.deepEqual(payload.message, { from: "0x1", to: "0x2", value: "5" });
 });
