@@ -1,6 +1,5 @@
 import {
   CircleAgentWalletEngine,
-  CircleGatewayPaymentEngine,
   RubiconClient,
   StaticPaymentEngine,
   type AgentPaymentEngine,
@@ -13,12 +12,10 @@ import {
 // Payment engine is chosen from the environment, most accessible last:
 //   1. A Circle Agent Wallet (CIRCLE_API_KEY + CIRCLE_ENTITY_SECRET +
 //      CIRCLE_AGENT_WALLET_ID) signs each word custodially — no raw key.
-//   2. A raw EOA key (CIRCLE_PRIVATE_KEY) signs locally.
-//   3. Otherwise the no-money StaticPaymentEngine, for a dev-mode gateway.
+//   2. Otherwise the no-money StaticPaymentEngine, for a dev-mode gateway.
 // Both Circle paths settle real testnet USDC to the creator's verified wallet.
 // The buyer stops as soon as it has enough.
 
-const privateKey = process.env.CIRCLE_PRIVATE_KEY as `0x${string}` | undefined;
 const baseUrl = process.env.GATEWAY_BASE_URL ?? "http://localhost:8787";
 const articleId = process.env.CONSUME_ARTICLE_ID;
 const goal = process.env.CONSUME_GOAL ?? "Understand how Rubicon meters and charges per word";
@@ -37,20 +34,13 @@ let paymentEngine: AgentPaymentEngine;
 let mode: string;
 if (agentWalletId && circleApiKey && circleEntitySecret) {
   paymentEngine = new CircleAgentWalletEngine({
-    apiKey: circleApiKey,
-    entitySecret: circleEntitySecret,
-    walletId: agentWalletId,
+    apiKey: circleApiKey!,
+    entitySecret: circleEntitySecret!,
+    walletId: agentWalletId!,
     walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
     baseUrl: process.env.CIRCLE_API_BASE_URL,
   });
   mode = "circle-agent-wallet";
-} else if (privateKey) {
-  paymentEngine = new CircleGatewayPaymentEngine({
-    chain: (process.env.CIRCLE_CHAIN ?? "arcTestnet") as never,
-    privateKey,
-    rpcUrl: process.env.CIRCLE_RPC_URL,
-  });
-  mode = "real-x402";
 } else {
   paymentEngine = new StaticPaymentEngine();
   mode = "static-dev-shim";

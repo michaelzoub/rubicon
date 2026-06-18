@@ -110,14 +110,14 @@ Only articles with `state = live` are consumable by buyer agents.
 
 ## Real x402 word payments
 
-1. Fund the buyer wallet's Circle Gateway balance.
-2. Set `CIRCLE_PRIVATE_KEY` for the buyer and `RUBICON_PAYMENTS=circle`.
+1. Create and fund a Circle Agent Wallet with the Circle Agent Stack.
+2. Set `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET`, `CIRCLE_AGENT_WALLET_ID`, and `RUBICON_PAYMENTS=circle`.
 3. Ensure each live article resolves to a verified creator wallet.
 4. Set `CIRCLE_FACILITATOR_URL` for the target network.
 
-Each word is verified and settled to the creator's wallet before the next word is
-emitted. The gateway returns the per-word receipt in the JSON response and in
-the `PAYMENT-RESPONSE` header.
+Each word is authorized by the Circle Agent Wallet and verified before the next
+word is emitted. The gateway returns the per-word receipt in the JSON response
+and in the `PAYMENT-RESPONSE` header.
 
 ## Railway deployment
 

@@ -93,7 +93,7 @@ class CircleAgentWalletSigner {
 /**
  * Circle Agent Wallet engine. Signs the gateway's one-word x402 terms with a
  * custodial Circle Agent Wallet — the recommended buyer setup — so the agent
- * never handles a raw EOA private key. Settlement may be batched by Circle, but
+ * never handles a local signing key. Settlement may be batched by Circle, but
  * each signed payload still corresponds to exactly one word.
  */
 export class CircleAgentWalletEngine implements AgentPaymentEngine {
@@ -109,9 +109,8 @@ export class CircleAgentWalletEngine implements AgentPaymentEngine {
         ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
       });
     this.signer = new CircleAgentWalletSigner(client, options.walletId, options.walletAddress);
-    // Same buyer wiring as CircleGatewayPaymentEngine: gasless Gateway batching
-    // with an `exact` EIP-3009 fallback. The only difference is the signer —
-    // here a custodial wallet rather than a local private key.
+    // Gasless Gateway batching with an `exact` EIP-3009 fallback. The signer is
+    // a custodial Circle Agent Wallet, not a local private key.
     registerBatchScheme(this.x402, {
       signer: this.signer,
       fallbackScheme: new ExactEvmScheme(this.signer),
