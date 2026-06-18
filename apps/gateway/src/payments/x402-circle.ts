@@ -89,9 +89,9 @@ export interface CircleX402PaymentVerifierOptions {
 }
 
 /**
- * Circle/x402 one-word payment verifier. Each accepted payment authorizes
- * exactly one word's price. The application contract stays one word per payment;
- * settlement is what gets batched.
+ * Circle/x402 compatibility verifier. It supports the legacy one-word payment
+ * route and should be treated as the chunk/word fallback beneath Rubicon's
+ * session-authorization protocol.
  *
  * Streaming path (default): every word is gated on a cheap remote
  * `verifyPayment` — Circle confirms the signed EIP-3009/Gateway authorization is
@@ -156,7 +156,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     });
     const response = await this.resourceServer.createPaymentRequiredResponse(requirements, {
       url: `${input.gatewayBaseUrl}/v1/sessions/${input.session.id}/payments`,
-      description: `Rubicon one-word payment for ${input.article.title}`,
+      description: `Rubicon reading authorization for ${input.article.title}`,
       serviceName: "rubicon-article-stream",
       mimeType: "application/json",
     });
@@ -380,7 +380,8 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
         payTo: input.sellerWallet,
         // Circle's GatewayEvmScheme registers a USDC money parser that turns a
         // dollar amount into the correct on-chain USDC asset. Price must be USDC
-        // dollars (6 decimals). One word === one payment.
+        // dollars (6 decimals). Legacy compatibility mode uses one word per
+        // payment payload.
         price: usdcDollarsFromAtomic(`${input.wordPaymentAtomic}`),
         maxTimeoutSeconds: this.maxTimeoutSeconds,
         extra: {

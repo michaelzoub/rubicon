@@ -8,6 +8,8 @@ export interface Budget {
   maxAmountAtomic: AtomicAmount;
 }
 
+export type AuthorizationMode = "session" | "chunk" | "word";
+
 /** Safe public article metadata. Never includes unpaid body text. */
 export interface ArticleSummary {
   articleId: string;
@@ -117,7 +119,26 @@ export interface StartSessionRequest {
   conversationId?: string;
   sectionId?: string;
   budget: Budget;
+  /** Optional buyer estimate used to size a session or chunk authorization. */
+  predictedWords?: number;
   metadata?: Record<string, unknown>;
+}
+
+export interface SessionAuthorizationRequired {
+  sessionId: string;
+  authorizationMode: AuthorizationMode;
+  meteringUnit: "word";
+  asset: "USDC";
+  network?: string;
+  payTo?: `0x${string}`;
+  pricePerWordAtomic: AtomicAmount;
+  /** Maximum USDC the buyer is willing to authorize for this session/chunk. */
+  maxAuthorizedAtomic: AtomicAmount;
+  /** Number of words covered by the current authorization cap. */
+  maxAuthorizedWords: number;
+  settlement: "actual_usage_on_close" | "actual_usage_per_chunk" | "per_word_compatibility";
+  resource: string;
+  expiresAt: string;
 }
 
 export interface StartSessionResponse {
@@ -133,21 +154,37 @@ export interface StartSessionResponse {
   /** Exact amount the buyer pays to release one additional word. */
   wordPaymentAtomic: AtomicAmount;
   gatewayFeeBps: number;
-  /** x402 payment requirement for one word (when Circle/x402 is enabled). */
+  /** Circle / Arc payment requirement for a session or chunk authorization. */
+  authorizationRequired?: SessionAuthorizationRequired;
+  /** @deprecated Compatibility challenge for legacy one-word x402 clients. */
   paymentRequired?: unknown;
   expiresAt: string;
+  authorizationMode?: AuthorizationMode;
+  wordsAuthorized?: number;
   wordsPaid: number;
   wordsDelivered: number;
   paidAtomic: AtomicAmount;
 }
 
 /**
- * One word-level payment. `idempotencyKey` ties a payment to a specific next
- * word sequence so retries never release or charge for a word twice.
+ * Authorization for a session stream. The gateway meters delivered words against
+ * the authorized cap and settles actual usage when the session closes.
+ */
+export interface StreamAuthorizationRequest {
+  authorizationPayload: unknown;
+  idempotencyKey?: string;
+  maxWords?: number;
+}
+
+/**
+ * Chunk or legacy word-level payment. `idempotencyKey` ties the authorization to
+ * a specific stream position so retries never release or charge words twice.
  */
 export interface StreamPaymentRequest {
   paymentPayload: unknown;
   idempotencyKey?: string;
+  /** Multi-word fallback cap. Omitted or 1 preserves legacy one-word behavior. */
+  maxWords?: number;
 }
 
 export interface StreamPaymentResponse {
@@ -161,6 +198,8 @@ export interface StreamPaymentResponse {
   completed: boolean;
   /** Canonical, per-word settlement receipt. Present whenever a word is released. */
   payment?: WordPaymentReceipt;
+  authorizationMode?: AuthorizationMode;
+  remainingAuthorizedAtomic?: AtomicAmount;
   /** On-chain settlement transaction hash, when the payment facilitator returns one. */
   transactionHash?: string;
   /** All on-chain settlement transaction hashes for this payment, when available. */
@@ -204,6 +243,9 @@ export interface PaymentVerification {
   transferId?: string;
   network?: string;
   payTo?: `0x${string}`;
+  authorizationMode?: AuthorizationMode;
+  maxAuthorizedAtomic?: AtomicAmount;
+  maxAuthorizedWords?: number;
   amountAtomic?: AtomicAmount;
   reason?: string;
 }
@@ -229,6 +271,15 @@ export type GatewayEvent =
       role: "seller";
       message: string;
       recommendedSectionId?: string;
+    }
+  | {
+      type: "authorization.accepted";
+      sessionId: string;
+      authorizationMode: AuthorizationMode;
+      maxAuthorizedAtomic: AtomicAmount;
+      maxAuthorizedWords: number;
+      network?: string;
+      payTo?: `0x${string}`;
     }
   | {
       type: "word.payment_accepted";

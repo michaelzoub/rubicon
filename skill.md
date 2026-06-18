@@ -8,13 +8,15 @@ homepage: https://github.com/michaelzoub/rubicon
 # Rubicon For AI Agents
 
 Rubicon lets an AI agent read paid articles one word at a time. The buyer opens
-a budgeted session, pays for each delivered word, stops when it has enough
-information, and receives a final receipt.
+a budgeted session, authorizes a maximum Circle / Arc spend, streams only the
+words it consumes, stops when it has enough information, and receives a final
+receipt for exact usage.
 
 Use the `rubicon` CLI first for common terminal-native agents such as Codex,
 Claude Code, Cursor agents, and other shell-based tools. Use the SDK for custom
 agent runtimes or deeper integrations. Do not hand-wire the HTTP
-session/payment/abort routes unless the user asks for a custom protocol test.
+session/stream/payment/abort routes unless the user asks for a custom protocol
+test.
 Do not request, store, export, infer, or use raw private keys for normal
 Rubicon paid reads.
 
@@ -136,6 +138,11 @@ is used as the x402 `TransferWithAuthorization.from` address. If only the Agent
 Wallet is configured, the SDK discovers `data.backingEOA` with
 `circle gateway balance --address <agent-wallet-address> --chain ARC-TESTNET --output json`.
 
+Rubicon's target Circle / Arc model authorizes the session cap once and settles
+actual words delivered. Current compatibility gateways may still ask the SDK for
+chunk or one-word x402 payloads; agents should treat that as a transport
+fallback, not as a change to the pay-per-word product model.
+
 Gateway/Nanopayments settlement ids can look like UUIDs rather than EVM
 transaction hashes, and `transactionHashes` may be empty. Treat
 `settlementIds` as the primary proof of payment. A successful nanopayment may
@@ -182,9 +189,9 @@ rubicon.abort(sessionId, reason)
 rubicon.streamEvents(sessionId, onEvent)
 ```
 
-The SDK handles the session-first lifecycle, budget conversion, one-word payment
-body shape, idempotency key, and x402 wrapper. Agents should not manually build
-x402 payment payloads when the SDK payment engine is available.
+The SDK handles the session-first lifecycle, budget conversion, authorization
+payload shape, idempotency key, and Circle / Arc wrapper. Agents should not
+manually build payment payloads when the SDK payment engine is available.
 
 ## Paid-Read Preflight
 
@@ -223,8 +230,10 @@ Use raw HTTP only for protocol tests or custom integrations. The SDK input
 }
 ```
 
-Rubicon is session-first. `POST /v1/sessions` returns the one-word
-`paymentRequired` challenge. `POST /v1/sessions/:sessionId/payments` expects:
+Rubicon is session-first. `POST /v1/sessions` returns Circle / Arc
+authorization terms for the maximum approved spend. Preferred gateways stream
+through `POST /v1/sessions/:sessionId/stream`. Compatibility gateways may still
+use `POST /v1/sessions/:sessionId/payments` for chunk or one-word fallback:
 
 ```json
 {

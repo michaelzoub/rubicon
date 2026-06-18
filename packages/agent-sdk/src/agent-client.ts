@@ -92,8 +92,8 @@ export interface RunOptions extends ReadOptions {
 
 /**
  * High-level buyer-agent client for Rubicon. `read()` runs the entire
- * pay -> word -> usage loop one word at a time until a stop condition is met,
- * so application developers never send a payment for every word themselves.
+ * authorize -> word -> usage loop until a stop condition is met, so application
+ * developers never drive a payment flow for every word themselves.
  */
 export class RubiconClient {
   private readonly fetcher: typeof fetch;
@@ -222,8 +222,8 @@ export class RubiconClient {
   }
 
   /**
-   * Read an article one paid word at a time. Yields seller messages, paid words,
-   * running usage, and a final completion event carrying the receipt.
+   * Read an article with word-level metering. Yields seller messages, paid
+   * words, running usage, and a final completion event carrying the receipt.
    */
   async *read(options: ReadOptions): AsyncGenerator<RubiconReadEvent, ReadReceipt> {
     const budget: Budget =

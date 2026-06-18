@@ -1,16 +1,19 @@
 # Rubicon — Pay-Per-Word Content for AI Agents
 
 Rubicon is the backend infrastructure for pay-per-word content consumption by AI
-agents. A **buyer agent** opens a budgeted reading session and pays for **every
-individual word** it receives; a server-side **seller agent** represents the
+agents. A **buyer agent** opens a budgeted reading session, authorizes a maximum
+USDC spend, and pays for the **exact words** it actually receives; a server-side
+**seller agent** represents the
 article, helps the buyer find the right section without leaking unpaid content,
 and controls the paid stream one word at a time. The buyer can stop the instant
 it has enough information and pays for exactly the words it received.
 
-Rubicon meters and charges every word individually. Circle may batch settlement
-internally, but creators earn according to the exact number of words delivered.
-There are no payment chunks. Each released word returns a word-level receipt
-with amount, network, destination, and transaction hash details.
+Rubicon is still pay per word. The change is where payment work happens:
+Circle/Arc authorization is session-level by default, chunk-level as a fallback,
+and never one network/payment round trip per word. The gateway meters delivered
+words exactly, withholds content beyond the authorized budget, and settles the
+final charge from actual usage. Creators earn according to the exact number of
+words delivered.
 
 ## Packages
 
@@ -60,9 +63,11 @@ curl -s -X POST http://localhost:8787/v1/seller-agent/conversations \
   -d '{"articleId":"<live-article-id>","goal":"how billing works","message":"where do you explain pricing?"}'
 ```
 
-Open a session with `POST /v1/sessions`, then send one `POST
-/v1/sessions/:id/payments` per word. Each accepted payment releases exactly one
-word.
+Open a session with `POST /v1/sessions`, authorize the session cap with Circle /
+Arc, then consume the stream until the buyer stops, the article ends, or the
+authorized budget is exhausted. The legacy `POST /v1/sessions/:id/payments`
+route remains the chunk fallback for environments that cannot yet hold a
+session-level authorization.
 
 ## Buyer SDK
 
@@ -86,10 +91,10 @@ const receipt = await rubicon.run({
 console.log("\nreceipt:", receipt);
 ```
 
-The SDK runs the entire seller conversation → session → one-word payment → word →
-usage loop until a stop condition is met, with retry idempotency, budget
-enforcement, early stopping, abort, and a final receipt. Developers never send a
-payment per word by hand.
+The SDK runs the entire seller conversation → session authorization → metered
+word stream → final usage settlement loop until a stop condition is met, with
+budget enforcement, early stopping, abort, and a final receipt. Developers never
+drive a payment flow per word by hand.
 
 ## CLI
 
@@ -124,16 +129,19 @@ DATABASE_URL=postgres://... pnpm --filter @rubicon-caliga/gateway migrate
 
 Only articles with `state = live` are consumable by buyer agents.
 
-## Real x402 word payments
+## Real Circle / Arc payments
 
 1. Create and fund a Circle Agent Wallet with the Circle Agent Stack.
 2. Set `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET`, `CIRCLE_AGENT_WALLET_ID`, and `RUBICON_PAYMENTS=circle`.
 3. Ensure each live article resolves to a verified creator wallet.
 4. Set `CIRCLE_FACILITATOR_URL` for the target network.
 
-Each word is authorized by the Circle Agent Wallet and verified before the next
-word is emitted. The gateway returns the per-word receipt in the JSON response
-and in the `PAYMENT-RESPONSE` header.
+The target path creates one Circle / Arc-compatible authorization for the
+session's maximum spend, streams only words covered by the remaining authorized
+cap, and settles the final amount from actual words delivered. If the wallet or
+facilitator cannot support a session cap yet, Rubicon falls back to chunk
+authorizations so the network/payment layer still runs once per chunk, not once
+per word.
 
 ## Railway deployment
 

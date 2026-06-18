@@ -60,7 +60,7 @@ const STOP_CONDITIONS: StreamStopCondition[] = [
   { kind: "max_payments", description: "Stop after a buyer-selected number of word payments." },
   { kind: "max_spend_atomic", description: "Stop before exceeding the buyer-selected atomic USDC spend limit." },
   { kind: "article_completed", description: "Stop automatically when the selected section or article is complete." },
-  { kind: "payment_rejected", description: "Stop if a one-word payment fails verification or settlement." },
+  { kind: "payment_rejected", description: "Stop if authorization verification or settlement fails." },
 ];
 
 const ENDPOINTS = [
@@ -70,8 +70,9 @@ const ENDPOINTS = [
   { method: "GET", path: "/v1/articles/:articleId/navigation", description: "Safe seller-agent navigation; no unpaid body text." },
   { method: "POST", path: "/v1/seller-agent/conversations", description: "Opens a conversation with an article's seller agent." },
   { method: "POST", path: "/v1/seller-agent/conversations/:conversationId/messages", description: "Sends a message to the seller agent." },
-  { method: "POST", path: "/v1/sessions", description: "Opens a budgeted reading session and returns the one-word payment requirement." },
-  { method: "POST", path: "/v1/sessions/:sessionId/payments", description: "Verifies one word payment and releases exactly one word." },
+  { method: "POST", path: "/v1/sessions", description: "Opens a budgeted reading session and returns Circle / Arc authorization terms." },
+  { method: "POST", path: "/v1/sessions/:sessionId/stream", description: "Preferred path: streams words against a session-level authorization." },
+  { method: "POST", path: "/v1/sessions/:sessionId/payments", description: "Compatibility path: verifies a chunk or legacy one-word payment and releases authorized words." },
   { method: "GET", path: "/v1/sessions/:sessionId/events", description: "Server-sent word-level events." },
   { method: "POST", path: "/v1/sessions/:sessionId/abort", description: "Aborts a session." },
 ];
@@ -327,6 +328,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     streamStates.set(session.id, { article, words: slice.words, sectionId });
 
     const summary = await articleSummaryWithPaymentTerms(article);
+    const wordsAuthorized = authorizedWordCount(request.body.budget.maxAmountAtomic, quote.wordPaymentAtomic);
     events.publish({
       type: "session.started",
       sessionId: session.id,
@@ -348,6 +350,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       wordPaymentAtomic: quote.wordPaymentAtomic,
       gatewayFeeBps,
       paymentRequired,
+      authorizationMode: "word",
+      wordsAuthorized,
       expiresAt: session.expiresAt.toISOString(),
       wordsPaid: 0,
       wordsDelivered: 0,
@@ -566,6 +570,21 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     },
   );
 
+  app.post<{ Params: { sessionId: string }; Body: { authorizationPayload?: unknown; maxWords?: number } | undefined }>(
+    "/v1/sessions/:sessionId/stream",
+    async (request, reply) => {
+      const session = await ledger.getSession(request.params.sessionId);
+      if (!session) {
+        return reply.code(404).send({ error: "session_not_found" });
+      }
+      return reply.code(501).send({
+        error: "session_authorization_stream_not_enabled",
+        message:
+          "This gateway build documents the Circle / Arc session-authorization protocol, but still uses the /payments chunk-compatibility path at runtime.",
+      });
+    },
+  );
+
   app.get<{ Params: { sessionId: string } }>(
     "/v1/sessions/:sessionId/payments",
     async (request, reply) => {
@@ -745,7 +764,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         nonce: `${session.id}:${session.wordsDelivered}`,
         expiresAt: session.expiresAt.toISOString(),
       },
-      "issued one-word payment requirement",
+      "issued payment authorization requirement",
     );
   }
 
@@ -772,13 +791,19 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         network: verification.network,
         payTo: verification.payTo ?? session.sellerWallet,
       },
-      "processed one-word payment attempt",
+      "processed payment authorization attempt",
     );
   }
 
   function firstAccept(paymentRequired: unknown): { network?: string } | undefined {
     const accepts = (paymentRequired as { accepts?: Array<{ network?: string }> } | undefined)?.accepts;
     return Array.isArray(accepts) ? accepts[0] : undefined;
+  }
+
+  function authorizedWordCount(maxAmountAtomic: `${bigint}`, wordPaymentAtomic: `${bigint}`): number {
+    const count = BigInt(maxAmountAtomic) / BigInt(wordPaymentAtomic);
+    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+    return Number(count > maxSafe ? maxSafe : count);
   }
 
   function paymentRequestFromHttp(

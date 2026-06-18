@@ -36,9 +36,11 @@ shared by both apps.
 - **Article states**: `draft | live | paused | archived | deleted`. Only `live`
   articles are consumable by buyer agents or visible in the public repository.
 - **Pricing units**: atomic USDC, `1 USDC = 1_000_000`, stored as exact strings.
-- **Payment granularity**: one accepted word payment releases one word. Each
-  delivered word has a durable `PaymentActivity` / `settlement_receipts` record
-  with network, destination, transaction hash(es), and amount.
+- **Payment granularity**: one delivered word remains the billing unit. Payment
+  authorization is session-level by default and chunk-level as a fallback; each
+  delivered word still has durable `PaymentActivity` / `settlement_receipts`
+  accounting with network, destination, settlement id or transaction hash(es),
+  and amount.
 - **Word counting**: a word is a maximal run of non-whitespace characters
   (`content.trim().split(/\s+/)`). `articles.total_words` uses this rule.
 - **Wallet format**: `0x`-prefixed address plus a CAIP-2 `network` string. Only
@@ -81,6 +83,7 @@ tables (`word_payments`, `word_deliveries`, `settlement_receipts`,
 per-word subtotal; the Rubicon fee is always zero.
 
 For granular audit views, `word_payments` and `settlement_receipts` include
-`network`, `pay_to`, `transaction_hash`, `transaction_hashes`, and legacy
-`transfer_id`. Prefer `transaction_hash` / `transaction_hashes` for new UI and
-API work.
+`network`, `pay_to`, `settlement_id`, `settlement_ids`, `transaction_hash`,
+`transaction_hashes`, and legacy `transfer_id`. Prefer settlement ids when the
+Circle Gateway path returns UUID-style transfer identifiers instead of visible
+on-chain hashes.

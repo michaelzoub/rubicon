@@ -1,11 +1,12 @@
 # @rubicon-caliga/agent-sdk
 
-Buyer-agent SDK for Rubicon. The agent opens a budgeted reading session and pays
-for **every individual word** it receives via x402. A high-level `read()` loop
-runs the whole seller conversation → session → one-word payment → word → usage
-cycle until a stop condition is met, so you never send a payment per word by
-hand. The buyer can stop the moment it has enough information and pays for
-exactly the words it received.
+Buyer-agent SDK for Rubicon. The agent opens a budgeted reading session,
+authorizes a maximum Circle / Arc spend, then pays for the **exact words** it
+actually receives. A high-level `read()` loop runs the whole seller conversation
+→ session authorization → metered word stream → final receipt cycle until a stop
+condition is met, so you never run a payment flow per word by hand. The buyer
+can stop the moment it has enough information and pays for exactly the words it
+received.
 
 ## Quick Start
 
@@ -45,9 +46,9 @@ gateway. For real Arc Testnet settlement without raw private keys, pass
 
 ## `run(options)`
 
-Runs the whole seller conversation → session → one-word payment → word → usage
-cycle and returns a final receipt. Use `onWord` or `onEvent` when you want live
-progress.
+Runs the whole seller conversation → session authorization → word-level metering
+→ final receipt cycle and returns a final receipt. Use `onWord` or `onEvent`
+when you want live progress.
 
 ## `read(options)`
 
@@ -55,7 +56,7 @@ Yields `session.started`, `seller.message`, `article.word`, `article.usage`,
 `article.completed` (with a final receipt), and `article.error`. It handles:
 
 - seller-agent conversation and starting-section selection
-- session creation and one-word payment creation/submission
+- session authorization, with chunk or one-word fallback for older gateways
 - word receipt and running usage
 - retry idempotency (per-word idempotency keys)
 - budget enforcement (`maxSpendAtomic` / `budget`)
@@ -71,16 +72,16 @@ for custom flows.
 ## Payment engines
 
 - `StaticPaymentEngine` — no-money development engine for a dev-mode gateway.
-- `CircleCliGatewayPaymentEngine` — **Circle CLI / Agent Wallet custody.** Each
-  word's x402 authorization is signed by `circle wallet sign typed-data`, so the
-  SDK never holds a private key and callers never manually assemble x402 payment
-  payloads. The Circle CLI must be installed, logged in, and backed by a funded
-  Agent Wallet Gateway/Nanopayments balance on Arc Testnet.
-- `CircleAgentWalletEngine` — **custodial, Circle-native.** Each word's
-  authorization is signed by a Circle Agent / Developer-Controlled Wallet through
-  Circle's API, so the SDK never holds a private key. The wallet controller
-  provisions, funds, and sets spending policies on the wallet beforehand; the SDK
-  only consumes it and keeps enforcing the confirmed budget.
+- `CircleCliGatewayPaymentEngine` — **Circle CLI / Agent Wallet custody.**
+  Signs Circle / Arc authorization payloads through `circle wallet sign
+  typed-data`, so the SDK never holds a private key and callers never manually
+  assemble payment payloads. The target mode is one session authorization with
+  chunk fallback.
+- `CircleAgentWalletEngine` — **custodial, Circle-native.** Signs authorization
+  payloads with a Circle Agent / Developer-Controlled Wallet through Circle's
+  API. The wallet controller provisions, funds, and sets spending policies on the
+  wallet beforehand; the SDK only consumes it and keeps enforcing the confirmed
+  budget.
 
 ```ts
 import Rubicon, { CircleCliGatewayPaymentEngine } from "@rubicon-caliga/agent-sdk";

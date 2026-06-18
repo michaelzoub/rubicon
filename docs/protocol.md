@@ -1,18 +1,48 @@
 # Rubicon Public Agent API
 
-Rubicon meters and charges **every word individually**. The atomic content unit
-is one word. Circle/x402 may batch settlement internally, but creators earn
-according to the exact number of words delivered. There are no payment chunks.
-This means a buyer agent may make a nanopayment for every word when the marginal
-value of each next word matters. The gateway keeps the application contract
-word-granular even if the payment facilitator optimizes settlement behind the
-scenes.
+Rubicon charges by the word, but the payment network does not run once per
+word. The atomic metering unit is still exactly one delivered word: every word
+has a sequence, price, usage record, and creator earning. Circle / Arc payment
+authorization is scoped to a reading session by default, or to a multi-word
+chunk when the buyer wallet cannot support a full-session cap.
 
 Amounts are atomic USDC where `1 USDC = 1_000_000`.
 
+## Protocol Shape
+
+1. The buyer agent discovers safe article metadata and asks the seller agent
+   where to start. No unpaid body text is returned.
+2. The buyer opens a session with a budget or predicted word count.
+3. Rubicon creates Circle / Arc authorization terms for the maximum amount the
+   buyer is willing to spend.
+4. The buyer signs the authorization once for the session, or once per chunk in
+   fallback mode.
+5. The gateway streams words one at a time while decrementing the authorized
+   budget at the per-word price.
+6. The buyer stops as soon as it has enough information, or the gateway stops at
+   article completion or budget exhaustion.
+7. Settlement uses actual words delivered, not the full authorized cap.
+
+The product promise remains pay per word. The implementation promise is
+word-level metering with session-level or chunk-level Circle / Arc
+authorization.
+
+## Authorization Modes
+
+- `session`: preferred Circle / Arc path. The buyer authorizes up to
+  `budget.maxAmountAtomic` or an equivalent predicted word cap. Rubicon streams
+  against that cap and settles actual usage when the session closes.
+- `chunk`: fallback path. The buyer authorizes a small batch such as 25, 50, or
+  100 words. Rubicon streams within that chunk, then asks for another chunk only
+  if the buyer still wants more.
+- `word`: compatibility only. The existing `/payments` route can still accept a
+  one-word authorization for old x402 clients, tests, and demos, but it is not
+  the target Circle / Arc reading experience.
+
 ## Endpoint Index
 
-`GET /v1/endpoints` — lists the routes below.
+`GET /v1/endpoints` lists the routes below. Implementations should advertise the
+active authorization mode in this response and in the session response.
 
 ## Article Repository
 
@@ -52,7 +82,7 @@ content.
 Continues the conversation; returns the buyer/seller messages and an optional
 `recommendedSectionId`.
 
-## Start a Reading Session
+## Start A Reading Session
 
 `POST /v1/sessions`
 
@@ -62,110 +92,119 @@ Continues the conversation; returns the buyer/seller messages and an optional
   "goal": "Find the resale-fee clause",
   "conversationId": "<optional, from a seller conversation>",
   "sectionId": "<optional starting section>",
-  "budget": { "currency": "USDC", "maxAmountAtomic": "20000" }
+  "budget": { "currency": "USDC", "maxAmountAtomic": "20000" },
+  "predictedWords": 120
 }
 ```
 
 Opens a budgeted session. The response includes article metadata, safe section
 navigation, `pricePerWordAtomic`, `maxArticlePriceAtomic`, the seller
-`conversationId`, the one-word `wordPaymentAtomic`, `gatewayFeeBps` (0), the
-session `expiresAt`, and the live counters `wordsPaid`, `wordsDelivered`,
-`paidAtomic`. When Circle/x402 is enabled, `paymentRequired` carries the x402
-terms for **one word**.
+`conversationId`, `gatewayFeeBps` (0), the session `expiresAt`, and live
+counters `wordsAuthorized`, `wordsDelivered`, and `paidAtomic`.
 
-All trusted values — price, creator wallet, creator identity, article ownership,
-word sequence, amount owed, settlement recipient — are loaded from persistent
-storage. Buyer-supplied values are never trusted.
-
-## Pay For One Word
-
-`POST /v1/sessions/:sessionId/payments`
-
-```json
-{ "paymentPayload": { /* signed one-word x402 payload */ }, "idempotencyKey": "<session>:<sequence>" }
-```
-
-Each accepted payment releases **exactly one** word:
-
-1. The buyer authorizes/sends the price of one word.
-2. The gateway verifies the word-level payment.
-3. The gateway releases exactly one additional word.
-4. The ledger records that exact word and payment.
-5. The gateway returns a per-word payment receipt in the response body and
-   mirrors it in the `PAYMENT-RESPONSE` header.
-6. The gateway emits updated word count and cost information.
-
-The response contains the released `word`, its `sequence`, `priceAtomic`,
-`wordsPaid`, `wordsDelivered`, `paidAtomic`, `completed`, and a `payment`
-receipt with the word-level `paymentId`, `sequence`, `amountAtomic`, `currency`,
-`network`, destination `payTo`, `transactionHash`, `transactionHashes`, and
-Gateway/facilitator `settlementId`/`transferId`, and `settledAt`. Circle Gateway
-x402 returns a transfer UUID in its `transaction` field; Rubicon records that as
-`transferId`/`settlementId`, not as an on-chain `transactionHash`.
-`transactionHashes` may be empty for Gateway nanopayments. Treat
-`settlementIds` as the primary proof of payment; scanner visibility is not
-guaranteed, and a successful nanopayment may not appear as a direct seller
-ERC-20 transfer. Seller dashboards must count backend payment receipts and
-Gateway settlement IDs rather than direct on-chain transfers. A failed payment
-releases no word. A retried payment with the same
-`idempotencyKey` returns the same word and same payment receipt, and never
-charges twice.
-
-### Batched settlement
-
-By default the Circle path **gates each word on a fast `verify`** — Circle
-confirms the signed EIP-3009/Gateway authorization is valid and funded — and
-**defers `settle` into a batch that runs behind the stream**. This keeps the
-contract one-word-per-payment and keeps an agent from obtaining a word without a
-real, funded authorization, while letting words stream at verify speed instead
-of waiting on settlement finality. As a consequence, the `settlementId` /
-`transferId` for a word may be **absent from the immediate payment response and
-backfilled onto the persisted receipt** shortly after, once its batch settles.
-If any batched settlement fails, the session is halted (`prior_settlement_failed`)
-so no further words are released; the only exposure is the in-flight batch of
-nanopayments. Tunable via `CIRCLE_SETTLEMENT_BATCH_SIZE` /
-`CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS`; set `CIRCLE_SYNCHRONOUS_SETTLEMENT=true`
-to settle inline on the request path (the previous behavior).
-
-Example successful word response:
+When Circle / Arc is enabled, the response includes `authorizationRequired`.
+This object describes a maximum authorization, not a one-word charge:
 
 ```json
 {
-  "accepted": true,
-  "sequence": 0,
-  "word": "Rubicon",
-  "priceAtomic": "1",
-  "wordsPaid": 1,
-  "wordsDelivered": 1,
-  "paidAtomic": "1",
-  "completed": false,
-  "payment": {
-    "paymentId": "8ed8f6c4-...",
-    "sessionId": "session_...",
-    "articleId": "live-article-id-from-repository",
-    "sequence": 0,
-    "meteringUnit": "word",
-    "amountAtomic": "1",
-    "currency": "USDC",
-    "network": "eip155:5042002",
-    "payTo": "0x...",
-    "settlementId": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
-    "settlementIds": ["3c90c3cc-0d44-4b50-8888-8dd25736052a"],
-    "transferId": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
-    "settledAt": "2026-06-17T12:00:00.000Z"
-  },
-  "settlementId": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
-  "settlementIds": ["3c90c3cc-0d44-4b50-8888-8dd25736052a"],
-  "transferId": "3c90c3cc-0d44-4b50-8888-8dd25736052a"
+  "sessionId": "session_...",
+  "authorizationMode": "session",
+  "meteringUnit": "word",
+  "asset": "USDC",
+  "network": "eip155:5042002",
+  "payTo": "0x...",
+  "pricePerWordAtomic": "100",
+  "maxAuthorizedAtomic": "20000",
+  "maxAuthorizedWords": 200,
+  "settlement": "actual_usage_on_close",
+  "resource": "https://gateway.example/v1/sessions/session_.../stream"
 }
 ```
 
-## Stream Events
+All trusted values - price, creator wallet, creator identity, article ownership,
+word sequence, amount owed, settlement recipient - are loaded from persistent
+storage. Buyer-supplied values are never trusted.
 
-`GET /v1/sessions/:sessionId/events` — Server-Sent Events:
+## Authorize And Stream
+
+`POST /v1/sessions/:sessionId/stream`
+
+```json
+{
+  "authorizationPayload": { "...": "signed Circle / Arc authorization" },
+  "maxWords": 120
+}
+```
+
+The gateway verifies that the authorization matches the session terms, covers at
+least one more word, and cannot be replayed against another session, article,
+seller wallet, network, or price. Then it streams `article.word` and
+`article.usage` events. Each word decrements remaining authorized capacity by
+`wordPaymentAtomic`.
+
+The gateway must stop before releasing a word when:
+
+- the next word would exceed `maxAuthorizedAtomic`;
+- the next word would exceed the buyer's requested `maxWords`;
+- the session expires, is aborted, or is already completed;
+- the article section is exhausted;
+- settlement risk or authorization verification fails.
+
+The gateway never reveals or emits unpaid future words. It may inspect private
+article text internally through the seller agent, but unpaid outputs remain safe
+navigation only.
+
+## Finalize Or Abort
+
+`POST /v1/sessions/:sessionId/finalize`
+
+Finalizes the session and settles the exact amount owed:
+
+```json
+{
+  "sessionId": "session_...",
+  "wordsDelivered": 73,
+  "amountPaidAtomic": "7300",
+  "authorizedAtomic": "20000",
+  "unusedAuthorizedAtomic": "12700",
+  "settlementIds": ["3c90c3cc-0d44-4b50-8888-8dd25736052a"]
+}
+```
+
+`POST /v1/sessions/:sessionId/abort`
+
+Stops the session early. The buyer may stop at any moment once it has enough
+information. Abort still finalizes actual usage for words already delivered and
+releases the unused authorized budget.
+
+## Chunk Fallback
+
+`POST /v1/sessions/:sessionId/payments`
+
+The existing route becomes the compatibility and fallback path. A payment
+request should authorize a chunk, not necessarily one word:
+
+```json
+{
+  "paymentPayload": { "...": "signed chunk authorization" },
+  "idempotencyKey": "<session>:<chunk-start-sequence>",
+  "maxWords": 50
+}
+```
+
+The gateway may then stream up to `maxWords` words or up to the authorized
+amount, whichever is lower. Old clients that submit a one-word authorization
+still receive one word, but SDKs should prefer session authorization and only
+drop to chunk mode when Circle / Arc support, wallet policy, or risk controls
+require smaller caps.
+
+## Events
+
+`GET /v1/sessions/:sessionId/events` - Server-Sent Events:
 
 - `session.started`
 - `seller.message`
+- `authorization.accepted`
 - `word.payment_accepted`
 - `article.word`
 - `article.usage`
@@ -173,6 +212,7 @@ Example successful word response:
 - `article.error`
 - `session.aborted`
 - `session.closed`
+- `settlement.completed`
 
 An `article.word` event:
 
@@ -183,22 +223,31 @@ An `article.word` event:
   "articleId": "...",
   "sequence": 0,
   "word": "Rubicon",
-  "priceAtomic": "1",
+  "priceAtomic": "100",
   "totalWordsStreamed": 1,
-  "totalPaidAtomic": "1"
+  "totalPaidAtomic": "100",
+  "remainingAuthorizedAtomic": "19900"
 }
 ```
 
-The gateway never reveals or emits unpaid future words.
+## Receipts
 
-## Abort
+A final receipt is the canonical proof of the read. It includes:
 
-`POST /v1/sessions/:sessionId/abort` — stops the session. The buyer may stop at
-any moment once it has enough information; it pays for exactly the words it
-received.
+- article id, session id, buyer wallet, seller wallet, and network;
+- authorization mode and maximum authorized amount;
+- exact `wordsDelivered`;
+- exact `amountPaidAtomic`;
+- per-word delivery records for creator accounting;
+- Circle / Arc settlement ids or transaction hashes when available.
 
-## Existing-Session Policy When an Article Is Paused
+Circle Gateway settlement ids can look like UUIDs rather than EVM transaction
+hashes, and `transactionHashes` may be empty. Seller dashboards must count
+Rubicon backend delivery and settlement records rather than relying only on a
+direct seller transfer visible in a block explorer.
 
-A paused, archived, or deleted article cannot start a **new** session. An
-already-open session continues against the article snapshot captured when the
-session started, up to its budget or completion.
+## Existing-Session Policy When An Article Is Paused
+
+A paused, archived, or deleted article cannot start a new session. An already
+open session continues against the article snapshot captured when the session
+started, up to its authorization, budget, or completion.

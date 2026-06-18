@@ -3,7 +3,7 @@ import type { ArticleRecord } from "../repositories/types.js";
 
 export interface PaymentVerifyInput {
   session: SessionRecord;
-  /** Exact amount required to release exactly one additional word. */
+  /** Exact amount consumed from authorization to release one additional word. */
   wordPaymentAtomic: bigint;
   payment: StreamPaymentRequest;
 }
@@ -18,9 +18,9 @@ export interface PaymentRequiredInput {
 }
 
 /**
- * Verifies a single one-word payment and, optionally, produces the x402 payment
- * requirement for one word. The transport may batch settlement internally, but
- * the application contract is always exactly one word per payment.
+ * Verifies authorization for metered word delivery. Preferred implementations
+ * authorize a session cap or chunk cap; legacy implementations may still accept
+ * one-word x402 payloads.
  */
 export interface PaymentVerifier {
   verify(input: PaymentVerifyInput): Promise<PaymentVerification>;
@@ -32,7 +32,7 @@ export interface PaymentVerifier {
 }
 
 /**
- * Development verifier. Accepts the declared one-word amount without settling
+ * Development verifier. Accepts the declared authorization amount without settling
  * real funds so the repo runs locally with no payment provider. NOT for
  * production — it performs no on-chain verification.
  */

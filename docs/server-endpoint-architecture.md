@@ -145,9 +145,10 @@ flowchart LR
 | `GET /v1/articles/:articleId/navigation` | Return article summary plus safe seller-agent navigation | Supabase article, sections, creator wallet | none | SellerAgent `navigate` |
 | `POST /v1/seller-agent/conversations` | Create a seller-agent conversation and optionally run the first turn | Supabase article and wallet | `seller_agent_conversations`, optional `seller_agent_messages` | SellerAgent `navigate` and optional `respond` |
 | `POST /v1/seller-agent/conversations/:conversationId/messages` | Continue an existing seller-agent conversation | Ledger conversation/messages, Supabase article | `seller_agent_messages` | SellerAgent `respond` |
-| `POST /v1/sessions` | Start a budgeted reading session and issue a one-word payment requirement | Supabase article, sections, verified creator wallet, optional ledger conversation | `stream_sessions`, optional `seller_agent_conversations` | PaymentVerifier `createPaymentRequired`, SellerAgent `navigate`, InMemoryEventBus |
+| `POST /v1/sessions` | Start a budgeted reading session and issue Circle / Arc authorization terms | Supabase article, sections, verified creator wallet, optional ledger conversation | `stream_sessions`, optional `seller_agent_conversations` | PaymentVerifier `createPaymentRequired`, SellerAgent `navigate`, InMemoryEventBus |
+| `POST /v1/sessions/:sessionId/stream` | Preferred target: stream words against a session-level authorization | `stream_sessions`, article stream state or repository fallback | `word_payments`, `word_deliveries`, `settlement_receipts`, updated `stream_sessions` | PaymentVerifier session authorization, SellerAgent `selectNextWord`, InMemoryEventBus |
 | `GET /v1/sessions/:sessionId/payments` | Inspect the current x402 payment challenge for a session | `stream_sessions` | may update session state to `expired` | Payment challenge response, InMemoryEventBus on expiry |
-| `POST /v1/sessions/:sessionId/payments` | Verify or settle one payment, release exactly one word, record receipt | `stream_sessions`, idempotency records, article stream state or repository fallback | `word_payments`, `word_deliveries`, `settlement_receipts`, updated `stream_sessions` | PaymentVerifier `verify`, SellerAgent `selectNextWord`, InMemoryEventBus |
+| `POST /v1/sessions/:sessionId/payments` | Compatibility fallback: verify a chunk or legacy one-word authorization and record metered words | `stream_sessions`, idempotency records, article stream state or repository fallback | `word_payments`, `word_deliveries`, `settlement_receipts`, updated `stream_sessions` | PaymentVerifier `verify`, SellerAgent `selectNextWord`, InMemoryEventBus |
 | `GET /v1/sessions/:sessionId/events` | Stream session events over SSE | `stream_sessions`, event history | none | InMemoryEventBus subscribe |
 | `POST /v1/sessions/:sessionId/abort` | Stop an active session | `stream_sessions` | updated `stream_sessions` | InMemoryEventBus |
 
@@ -162,38 +163,38 @@ sequenceDiagram
   participant L as Runtime ledger
   participant S as SellerAgent
   participant P as PaymentVerifier
-  participant C as Circle/x402
+  participant C as Circle / Arc
   participant E as InMemoryEventBus
 
   B->>G: POST /v1/sessions { articleId, budget, sectionId? }
   G->>A: getPublishedArticle(articleId)
   G->>A: getCreatorWallet(creatorId)
   G->>L: get/create conversation
-  G->>P: createPaymentRequired(session, article, wallet, one-word price)
-  P-->>G: x402 PaymentRequired for /payments
+  G->>P: createPaymentRequired(session, article, wallet, session cap)
+  P-->>G: Circle / Arc authorization terms
   G->>L: createSession(session)
   G->>E: publish session.started
   G->>S: navigate(article, goal)
   G-->>B: 201 StartSessionResponse
 
-  loop one word per accepted payment
-    B->>G: POST /v1/sessions/:sessionId/payments { paymentPayload, idempotencyKey }
+  loop one word per accepted authorization window
+    B->>G: POST /v1/sessions/:sessionId/stream or /payments fallback
     G->>L: getSession(sessionId)
     G->>L: getDeliveryByIdempotencyKey(idempotencyKey)
     alt duplicate idempotency key
       L-->>G: existing delivery and payment
       G-->>B: same StreamPaymentResponse, no new charge
-    else new payment
+    else new authorization window
       G->>S: selectNextWord(article slice, wordsDelivered)
       G->>P: verify(session, amount, payment)
-      alt Circle/x402 mode
-        P->>C: settlePayment(paymentPayload, matching requirements)
+      alt Circle / Arc mode
+        P->>C: verify authorization and settle actual usage
         C-->>P: settlement result, transaction/settlement IDs
       else development mode
         P-->>G: accepted synthetic transferId
       end
-      P-->>G: accepted payment verification
-      G->>L: recordWordDelivery(payment + word + settlement receipt)
+      P-->>G: accepted authorization verification
+      G->>L: recordWordDelivery(usage + word + settlement receipt)
       G->>L: saveSession(updated counters)
       G->>E: publish word.payment_accepted
       G->>E: publish article.word
@@ -212,8 +213,9 @@ sequenceDiagram
 - Repository and navigation endpoints never expose article body text. They only
   return safe metadata: title, author, headings, section ranges, pricing, and
   seller-agent hints.
-- `POST /v1/sessions/:sessionId/payments` decides the next word before
-  settlement but only emits it after payment verification succeeds.
+- `POST /v1/sessions/:sessionId/stream` and the `/payments` fallback decide the
+  next word before settlement but only emit it after authorization verification
+  succeeds.
 - Idempotency is enforced before state guards, so retried payment requests return
   the already released word instead of charging again.
 - The ledger records payment and word delivery atomically in Postgres. The main

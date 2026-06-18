@@ -10,8 +10,8 @@ gateway through the local SDK package, without publishing
 - The local, unpublished `packages/agent-sdk` package.
 - A real agent/script importing `@rubicon-caliga/agent-sdk` and calling
   `rubicon.run(...)`.
-- The full seller-agent conversation, session creation, one-word payment loop,
-  early stop/abort behavior, and final receipt.
+- The full seller-agent conversation, session creation, authorization fallback
+  loop, early stop/abort behavior, and final receipt.
 
 ## Start Rubicon Locally
 

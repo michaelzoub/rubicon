@@ -49,10 +49,10 @@ interface TypedDataRequest {
 }
 
 /**
- * Circle CLI / Agent Wallet payment engine. It creates the one-word x402
- * payment payload for Rubicon's session-first flow and delegates EIP-712
- * signing to `circle wallet sign typed-data`, so agents never need raw private
- * keys or hand-built x402 payloads.
+ * Circle CLI / Agent Wallet payment engine. It delegates EIP-712 signing to
+ * `circle wallet sign typed-data`, so agents never need raw private keys or
+ * hand-built Circle / Arc payloads. Current gateways may call the legacy
+ * one-word method as a chunk-compatibility path.
  */
 export class CircleCliGatewayPaymentEngine implements AgentPaymentEngine {
   private readonly x402 = new x402Client();
@@ -74,7 +74,7 @@ export class CircleCliGatewayPaymentEngine implements AgentPaymentEngine {
 
   async createWordPayment(session: StartSessionResponse): Promise<StreamPaymentRequest> {
     if (!session.paymentRequired) {
-      throw new Error("Session did not include an x402 one-word payment requirement");
+      throw new Error("Session did not include a legacy x402 payment requirement");
     }
     await this.signer.ensureAddress();
     return {

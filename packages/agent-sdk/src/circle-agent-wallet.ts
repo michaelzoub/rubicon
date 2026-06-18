@@ -11,7 +11,7 @@ export interface CircleAgentWalletEngineOptions {
   apiKey: string;
   /** Entity secret registered for the Circle developer account. */
   entitySecret: string;
-  /** The Agent Wallet that holds USDC and signs each one-word payment. */
+  /** The Agent Wallet that holds USDC and signs Circle / Arc authorizations. */
   walletId: string;
   /**
    * The wallet's on-chain address. Optional — when omitted it is resolved once
@@ -78,7 +78,7 @@ class CircleAgentWalletSigner {
     const res = await this.client.signTypedData({
       walletId: this.walletId,
       data: serializeTypedData(toEip712Payload(typed)),
-      memo: "Rubicon one-word payment",
+      memo: "Rubicon reading authorization",
     });
     const signature = res.data?.signature;
     if (!signature) {
@@ -89,10 +89,10 @@ class CircleAgentWalletSigner {
 }
 
 /**
- * Circle Agent Wallet engine. Signs the gateway's one-word x402 terms with a
- * custodial Circle Agent Wallet — the recommended buyer setup — so the agent
- * never handles a local signing key. Settlement may be batched by Circle, but
- * each signed payload still corresponds to exactly one word.
+ * Circle Agent Wallet engine. Signs gateway authorization terms with a
+ * custodial Circle Agent Wallet so the buyer agent never handles a local
+ * signing key. Current gateways may still call the legacy one-word method as a
+ * chunk-compatibility path.
  */
 export class CircleAgentWalletEngine implements AgentPaymentEngine {
   private readonly x402 = new x402Client();
@@ -117,7 +117,7 @@ export class CircleAgentWalletEngine implements AgentPaymentEngine {
 
   async createWordPayment(session: StartSessionResponse): Promise<StreamPaymentRequest> {
     if (!session.paymentRequired) {
-      throw new Error("Session did not include an x402 one-word payment requirement");
+      throw new Error("Session did not include a legacy x402 payment requirement");
     }
     // Resolve the wallet address up front so the synchronous `address` read
     // inside createPaymentPayload sees a real value.

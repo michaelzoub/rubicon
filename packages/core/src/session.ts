@@ -25,7 +25,7 @@ export interface SessionRecord {
   sellerWallet: `0x${string}`;
   metadata: Record<string, unknown>;
   state: SessionState;
-  /** Words the buyer has paid for (one payment === one word). */
+  /** Words covered by accepted metering/settlement, regardless of authorization scope. */
   wordsPaid: number;
   /** Words actually delivered to the buyer. */
   wordsDelivered: number;
@@ -75,12 +75,12 @@ export function createSession(input: {
   };
 }
 
-/** Whether one more word payment fits inside the session budget. */
+/** Whether one more delivered word fits inside the session budget. */
 export function canAffordNextWord(session: SessionRecord, wordPaymentAtomic: bigint): boolean {
   return session.paidAtomic + wordPaymentAtomic <= BigInt(session.budget.maxAmountAtomic);
 }
 
-/** Record that one word's payment has been accepted. */
+/** Record that one delivered word has been metered for payment. */
 export function recordWordPayment(session: SessionRecord, amountAtomic: AtomicAmount): SessionRecord {
   session.paidAtomic += BigInt(amountAtomic);
   session.wordsPaid += 1;
@@ -91,7 +91,7 @@ export function recordWordPayment(session: SessionRecord, amountAtomic: AtomicAm
   return session;
 }
 
-/** Record that one paid word has been delivered. */
+/** Record that one authorized word has been delivered. */
 export function recordWordDelivery(session: SessionRecord): SessionRecord {
   session.wordsDelivered += 1;
   session.updatedAt = new Date();

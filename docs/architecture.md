@@ -8,8 +8,9 @@ agents. It connects:
 - A **seller agent** representing a paywalled article. It lives server-side,
   understands the article's title, sections, body, author, and pricing, talks to
   buyer agents, recommends a starting section, and controls the paid stream.
-- The **x402 gateway** that meters words, verifies one-word payments, releases
-  one word per payment, and records the ledger.
+- The **Rubicon gateway** that creates a Circle / Arc session authorization,
+  meters words, releases only authorized content, settles actual usage, and
+  records the ledger.
 - The **creator wallet** that receives the full per-word price.
 
 ```mermaid
@@ -18,7 +19,7 @@ sequenceDiagram
   participant G as Rubicon gateway
   participant S as Seller agent
   participant D as Shared Postgres
-  participant C as Circle / x402
+  participant C as Circle / Arc
   participant W as Creator wallet
 
   B->>G: Open seller conversation (goal)
@@ -26,16 +27,18 @@ sequenceDiagram
   S-->>B: Recommended section, no unpaid content
   B->>G: Start session (budget)
   G->>D: Load live article, price/word, verified wallet
-  G-->>B: Session + one-word payment requirement
-  loop one word at a time
-    B->>G: Pay for one word (x402 auth)
-    G->>C: Verify/settle one-word payment
+  G-->>B: Session + max-spend authorization terms
+  B->>C: Sign session authorization
+  B->>G: Start authorized stream
+  loop while useful and authorized
+    G->>C: Verify remaining authorization
     C-->>W: Creator receives the full word price
     G->>S: selectNextWord
-    G->>D: Record word_delivery + word_payment (idempotent)
+    G->>D: Record word_delivery + usage ledger
     G-->>B: article.word + article.usage
   end
   B->>G: Stop / abort when satisfied
+  G->>C: Settle actual words delivered
 ```
 
 ## Components
@@ -61,11 +64,35 @@ with fixtures.
 
 ## Word-level integrity
 
-- One word is one paid unit; every delivered word has a payment record.
+- One word is one paid unit; every delivered word has a durable delivery and
+  payment/settlement record.
+- Payment authorization is session-level by default and chunk-level as a
+  fallback. The network/payment layer should not run once per word in the normal
+  Circle / Arc path.
 - `word_deliveries` has a unique `(session_id, sequence)` constraint and a unique
   `idempotency_key`, so a word is never delivered or charged twice.
 - Trusted values (price, wallet, creator, sequence, amount owed, recipient) are
   always loaded from persistent storage, never from buyer input.
+- The gateway never emits a word unless the remaining authorization covers that
+  word's price. Unused authorization is released when the buyer stops early or
+  the session closes.
+
+## Payment architecture
+
+Rubicon separates metering from authorization:
+
+- **Metering** remains word-level. This is the product contract, creator
+  accounting model, and receipt format.
+- **Authorization** is scoped to a session cap whenever possible. The cap comes
+  from the buyer's explicit budget or predicted word count.
+- **Settlement** is based on actual words delivered. A buyer can authorize
+  20,000 atomic USDC, consume 7,300 atomic USDC of words, and settle 7,300.
+- **Chunk fallback** authorizes multiple words at once when wallet policy,
+  facilitator behavior, or demo constraints make a full-session cap
+  unavailable. Chunk size is a risk knob, not the product unit.
+
+This keeps the reading experience fast: the buyer signs once, words stream
+smoothly, and the gateway enforces the authorized budget before every reveal.
 
 ## Seller agent
 

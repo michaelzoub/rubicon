@@ -4,11 +4,12 @@ export type MeteringUnit = "word";
 
 /**
  * The atomic content unit in Rubicon is exactly one word. A quote describes the
- * price the creator earns for a single word and the amount the buyer must pay to
- * release one additional word.
+ * price the creator earns for a single word and the amount deducted from the
+ * buyer's session or chunk authorization to release one additional word.
  *
- * Rubicon never bills in chunks. Circle/x402 may batch settlement internally,
- * but the application-level accounting is always one word = one paid unit.
+ * Rubicon never changes the product unit to chunks. Circle / Arc authorization
+ * may cover a whole session or multiple words, but application-level accounting
+ * is always one delivered word = one paid unit.
  */
 export interface WordPriceQuote {
   currency: "USDC";
@@ -17,13 +18,13 @@ export interface WordPriceQuote {
   pricePerWordAtomic: `${bigint}`;
   /** Rubicon gateway fee in basis points. Defaults to 0. */
   gatewayFeeBps: number;
-  /** Exact amount the buyer authorizes/sends to release one additional word. */
+  /** Exact amount consumed from the buyer authorization for one word. */
   wordPaymentAtomic: `${bigint}`;
 }
 
 export interface WordUsageReport {
   unit: MeteringUnit;
-  /** Number of individually delivered, individually paid words. */
+  /** Number of individually delivered, individually metered words. */
   wordsDelivered: number;
   /** Full word price accruing to the creator (no Rubicon fee deducted). */
   creatorAmountAtomic: `${bigint}`;
