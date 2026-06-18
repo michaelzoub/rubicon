@@ -85,9 +85,9 @@ export class SupabaseRepositoryError extends Error {
 }
 
 export function createSupabaseClientFromEnv(env: NodeJS.ProcessEnv = process.env): SupabaseReader {
-  const { url, anonKey } = resolveSupabaseConfigFromEnv(env);
+  const { url, key } = resolveSupabaseConfigFromEnv(env);
 
-  return createClient(url, anonKey, {
+  return createClient(url, key, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
@@ -98,28 +98,33 @@ export function createSupabaseClientFromEnv(env: NodeJS.ProcessEnv = process.env
   }) as unknown as SupabaseReader;
 }
 
-export function resolveSupabaseConfigFromEnv(env: NodeJS.ProcessEnv = process.env): { url: string; anonKey: string } {
+export function resolveSupabaseConfigFromEnv(env: NodeJS.ProcessEnv = process.env): { url: string; key: string } {
   const url = env.SUPABASE_URL;
-  const anonKey = env.SUPABASE_ANON_KEY ?? env.SUPABASE_PUBLISHABLE_KEY ?? env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  // The gateway is a trusted server-side process and is the only holder of this
+  // key, so SUPABASE_SERVICE_ROLE_KEY is accepted (and preferred when set) to
+  // read articles directly, bypassing RLS. An anon/publishable key still works
+  // when RLS policies grant the anon role access to live articles.
+  const key =
+    env.SUPABASE_SERVICE_ROLE_KEY ??
+    env.SUPABASE_ANON_KEY ??
+    env.SUPABASE_PUBLISHABLE_KEY ??
+    env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const missing: string[] = [];
   if (!url) {
     missing.push("SUPABASE_URL");
   }
-  if (!anonKey) {
-    missing.push("SUPABASE_ANON_KEY (or SUPABASE_PUBLISHABLE_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY)");
+  if (!key) {
+    missing.push("SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY / SUPABASE_PUBLISHABLE_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY)");
   }
   if (missing.length > 0) {
-    const serviceRoleHint = env.SUPABASE_SERVICE_ROLE_KEY
-      ? " SUPABASE_SERVICE_ROLE_KEY is present, but the gateway reads public articles as the anon role so Supabase RLS remains enforced."
-      : "";
     throw new Error(
-      `Missing required Supabase environment variable${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.${serviceRoleHint}`,
+      `Missing required Supabase environment variable${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`,
     );
   }
-  if (!url || !anonKey) {
+  if (!url || !key) {
     throw new Error("Missing required Supabase configuration.");
   }
-  return { url, anonKey };
+  return { url, key };
 }
 
 const ARTICLE_SUMMARY_SELECT = `

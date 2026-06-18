@@ -361,23 +361,30 @@ test("repository endpoint returns live article records from Supabase", async () 
   await app.close();
 });
 
-test("Supabase env config requires an anon key so public RLS remains enforced", () => {
+test("Supabase env config prefers the service-role key and falls back to anon", () => {
+  // Service-role key wins when present — the server-side gateway reads directly,
+  // bypassing RLS.
   assert.deepEqual(
     resolveSupabaseConfigFromEnv({
       SUPABASE_URL: "https://project.supabase.co",
       NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key",
       SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
     }),
-    { url: "https://project.supabase.co", anonKey: "anon-key" },
+    { url: "https://project.supabase.co", key: "service-role-key" },
+  );
+
+  // An anon/publishable key alone still works when RLS grants anon access.
+  assert.deepEqual(
+    resolveSupabaseConfigFromEnv({
+      SUPABASE_URL: "https://project.supabase.co",
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key",
+    }),
+    { url: "https://project.supabase.co", key: "anon-key" },
   );
 
   assert.throws(
-    () =>
-      resolveSupabaseConfigFromEnv({
-        SUPABASE_URL: "https://project.supabase.co",
-        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
-      }),
-    /SUPABASE_SERVICE_ROLE_KEY is present, but the gateway reads public articles as the anon role/,
+    () => resolveSupabaseConfigFromEnv({ SUPABASE_URL: "https://project.supabase.co" }),
+    /Missing required Supabase environment variable/,
   );
 });
 

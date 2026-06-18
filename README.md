@@ -93,11 +93,12 @@ payment per word by hand.
 
 ## Production storage
 
-Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` so the gateway can read `live`
-articles, creators, sections, and verified wallets through Supabase RLS. The
-gateway also accepts `SUPABASE_PUBLISHABLE_KEY` or
-`NEXT_PUBLIC_SUPABASE_ANON_KEY`. Do not use `SUPABASE_SERVICE_ROLE_KEY` here;
-the repository must read as the anon role for RLS to apply. Set
+Set `SUPABASE_URL` and a Supabase key so the gateway can read `live` articles,
+creators, sections, and verified wallets. The gateway is a trusted server-side
+process, so it accepts `SUPABASE_SERVICE_ROLE_KEY` (preferred when set — it reads
+directly, bypassing RLS). An anon/publishable key
+(`SUPABASE_ANON_KEY` / `SUPABASE_PUBLISHABLE_KEY` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
+also works when RLS policies grant the anon role access to live articles. Set
 `DATABASE_URL` when you also want runtime sessions, word deliveries, payments,
 and earnings persisted in Postgres. Apply migrations:
 
