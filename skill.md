@@ -266,6 +266,25 @@ reinstall it in the agent project:
 pnpm --filter @rubicon-caliga/agent-sdk build
 ```
 
+If a hosted Circle/x402 read opens sessions but every
+`POST /v1/sessions/:sessionId/payments` returns `402`, treat it as a payment
+settlement problem, not an article-navigation problem. Public request logs may
+only show the 402 status and an abort; no article body or transaction hash is
+available until at least one word payment settles. Check the gateway application
+logs for the verifier reason from Circle (`settlement.errorReason` or
+`settlement.errorMessage`), then confirm:
+
+- the buyer signer address is the address with the Circle Gateway balance;
+- the creator `payTo` wallet is verified and allowed by wallet policies;
+- hosted env uses `RUBICON_PAYMENTS=circle`,
+  `CIRCLE_FACILITATOR_URL=https://gateway-api-testnet.circle.com`, and
+  `CIRCLE_X402_NETWORKS=eip155:5042002`;
+- `CIRCLE_X402_MAX_TIMEOUT_SECONDS` is unset or at least 604800.
+
+Do not retry with arbitrary payment amounts. A probe such as one atomic USDC
+will correctly fail with `payment_does_not_match_session_terms` unless the
+session's issued one-word payment requirement is exactly for that amount.
+
 If the request is about the raw HTTP protocol, see the gateway endpoints:
 
 - `GET /v1/repository`
