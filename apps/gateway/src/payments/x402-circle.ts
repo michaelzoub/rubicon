@@ -126,18 +126,16 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       settlement,
     });
 
-    const transactionHashes = settlement.transaction ? [settlement.transaction] : undefined;
+    const transferId = transferIdFromSettlement(settlement);
     return {
       accepted: true,
       amountAtomic: (settlement.amount ?? requirements.amount) as `${bigint}`,
       network: requirements.network,
       payTo: requirements.payTo as `0x${string}`,
-      transactionHash: settlement.transaction,
-      transactionHashes,
       settlementId: settlementId(settlement),
       settlementIds: settlementIds(settlement),
       buyerWalletAddress: settlement.payer as `0x${string}` | undefined,
-      transferId: settlement.transaction,
+      transferId,
     };
   }
 
@@ -188,6 +186,11 @@ function settlementId(settlement: Record<string, unknown>): string | undefined {
     settlement.settlementId ??
     settlement.transferId ??
     settlement.transaction;
+  return typeof value === "string" ? value : undefined;
+}
+
+function transferIdFromSettlement(settlement: Record<string, unknown>): string | undefined {
+  const value = settlement.transferId ?? settlement.transaction;
   return typeof value === "string" ? value : undefined;
 }
 

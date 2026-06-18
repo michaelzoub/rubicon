@@ -379,7 +379,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
             cached.delivery.sequence,
             BigInt(cached.delivery.priceAtomic),
             session.state === "completed",
-            cached.payment.transactionHash ?? cached.payment.transferId,
+            cached.payment.transactionHash,
             cached.payment.transactionHashes,
             cached.payment.paymentId,
             cached.payment.network,
@@ -388,6 +388,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
             cached.payment.settlementId,
             cached.payment.settlementIds,
             cached.payment.buyerWalletAddress,
+            cached.payment.transferId,
           ),
         );
       }
@@ -460,8 +461,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         paymentId: randomUUID(),
         network: verification.network,
         payTo: verification.payTo ?? session.sellerWallet,
-        transactionHash: verification.transactionHash ?? verification.transferId,
-        transactionHashes: paymentTransactionHashes(verification.transactionHash, verification.transactionHashes, verification.transferId),
+        transactionHash: verification.transactionHash,
+        transactionHashes: verification.transactionHashes,
         settlementId: verification.settlementId,
         settlementIds: verification.settlementIds,
         buyerWalletAddress: verification.buyerWalletAddress,
@@ -479,7 +480,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
             record.delivery.sequence,
             wordPaymentAtomic,
             false,
-            record.payment.transactionHash ?? record.payment.transferId,
+            record.payment.transactionHash,
             record.payment.transactionHashes,
             record.payment.paymentId,
             record.payment.network,
@@ -488,6 +489,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
             record.payment.settlementId,
             record.payment.settlementIds,
             record.payment.buyerWalletAddress,
+            record.payment.transferId,
           ),
         );
       }
@@ -504,8 +506,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         amountAtomic: `${wordPaymentAtomic}`,
         network: record.payment.network,
         payTo: record.payment.payTo,
-        transactionHash: verification.transactionHash ?? verification.transferId,
-        transactionHashes: paymentTransactionHashes(verification.transactionHash, verification.transactionHashes, verification.transferId),
+        transactionHash: verification.transactionHash,
+        transactionHashes: verification.transactionHashes,
         transferId: verification.transferId,
       });
       events.publish({
@@ -544,8 +546,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           sequence,
           wordPaymentAtomic,
           completed,
-          verification.transactionHash ?? verification.transferId,
-          paymentTransactionHashes(verification.transactionHash, verification.transactionHashes, verification.transferId),
+          verification.transactionHash,
+          verification.transactionHashes,
           record.payment.paymentId,
           record.payment.network,
           record.payment.payTo,
@@ -553,6 +555,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           verification.settlementId,
           verification.settlementIds,
           verification.buyerWalletAddress,
+          verification.transferId,
         ),
       );
     },
@@ -822,6 +825,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     settlementId?: string,
     settlementIds?: string[],
     buyerWalletAddress?: `0x${string}`,
+    transferId?: string,
   ): StreamPaymentResponse {
     const hashes = transactionHashes ?? (transactionHash ? [transactionHash] : undefined);
     const payment: WordPaymentReceipt | undefined = paymentId
@@ -840,7 +844,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           settlementId,
           settlementIds,
           buyerWalletAddress,
-          transferId: transactionHash,
+          transferId,
           settledAt,
         }
       : undefined;
@@ -859,16 +863,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       settlementId,
       settlementIds,
       buyerWalletAddress,
-      transferId: transactionHash,
+      transferId,
     };
-  }
-
-  function paymentTransactionHashes(
-    transactionHash?: string,
-    transactionHashes?: string[],
-    transferId?: string,
-  ): string[] | undefined {
-    return transactionHashes ?? (transactionHash || transferId ? [transactionHash ?? transferId!] : undefined);
   }
 
   function sendPaymentResponse(reply: FastifyReply, response: StreamPaymentResponse) {

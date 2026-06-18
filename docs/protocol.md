@@ -99,7 +99,10 @@ The response contains the released `word`, its `sequence`, `priceAtomic`,
 `wordsPaid`, `wordsDelivered`, `paidAtomic`, `completed`, and a `payment`
 receipt with the word-level `paymentId`, `sequence`, `amountAtomic`, `currency`,
 `network`, destination `payTo`, `transactionHash`, `transactionHashes`, and
-`settledAt`. A failed payment releases no word. A retried payment with the same
+Gateway/facilitator `settlementId`/`transferId`, and `settledAt`. Circle Gateway
+x402 returns a transfer UUID in its `transaction` field; Rubicon records that as
+`transferId`/`settlementId`, not as an on-chain `transactionHash`. A failed
+payment releases no word. A retried payment with the same
 `idempotencyKey` returns the same word and same payment receipt, and never
 charges twice.
 
@@ -125,14 +128,14 @@ Example successful word response:
     "currency": "USDC",
     "network": "eip155:5042002",
     "payTo": "0x...",
-    "transactionHash": "0xabc123",
-    "transactionHashes": ["0xabc123"],
-    "transferId": "0xabc123",
+    "settlementId": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
+    "settlementIds": ["3c90c3cc-0d44-4b50-8888-8dd25736052a"],
+    "transferId": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
     "settledAt": "2026-06-17T12:00:00.000Z"
   },
-  "transactionHash": "0xabc123",
-  "transactionHashes": ["0xabc123"],
-  "transferId": "0xabc123"
+  "settlementId": "3c90c3cc-0d44-4b50-8888-8dd25736052a",
+  "settlementIds": ["3c90c3cc-0d44-4b50-8888-8dd25736052a"],
+  "transferId": "3c90c3cc-0d44-4b50-8888-8dd25736052a"
 }
 ```
 

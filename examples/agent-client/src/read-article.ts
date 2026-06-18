@@ -1,5 +1,6 @@
 import {
   CircleAgentWalletEngine,
+  CircleCliGatewayPaymentEngine,
   RubiconClient,
   StaticPaymentEngine,
   type AgentPaymentEngine,
@@ -9,10 +10,10 @@ import {
 //
 //   pnpm --filter @rubicon-caliga/agent-example consume
 //
-// Payment engine is chosen from the environment, most accessible last:
-//   1. A Circle Agent Wallet (CIRCLE_API_KEY + CIRCLE_ENTITY_SECRET +
-//      CIRCLE_AGENT_WALLET_ID) signs each word custodially — no raw key.
-//   2. Otherwise the no-money StaticPaymentEngine, for a dev-mode gateway.
+// Payment engine is chosen from the environment:
+//   1. Circle CLI + Agent Wallet signs each word custodially — no raw key.
+//   2. Circle API-backed Agent Wallet custody for server-side integrations.
+//   3. Otherwise the no-money StaticPaymentEngine, for a dev-mode gateway.
 // Both Circle paths settle real testnet USDC to the creator's verified wallet.
 // The buyer stops as soon as it has enough.
 
@@ -27,17 +28,24 @@ if (!articleId) {
 }
 
 const agentWalletId = process.env.CIRCLE_AGENT_WALLET_ID;
+const agentWalletAddress = process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined;
 const circleApiKey = process.env.CIRCLE_API_KEY;
 const circleEntitySecret = process.env.CIRCLE_ENTITY_SECRET;
 
 let paymentEngine: AgentPaymentEngine;
 let mode: string;
-if (agentWalletId && circleApiKey && circleEntitySecret) {
+if (process.env.CIRCLE_CLI_PAYMENT === "1" || (agentWalletAddress && !circleApiKey)) {
+  paymentEngine = new CircleCliGatewayPaymentEngine({
+    walletAddress: agentWalletAddress,
+    chain: process.env.CIRCLE_CLI_CHAIN ?? "ARC-TESTNET",
+  });
+  mode = "circle-cli-gateway";
+} else if (agentWalletId && circleApiKey && circleEntitySecret) {
   paymentEngine = new CircleAgentWalletEngine({
     apiKey: circleApiKey!,
     entitySecret: circleEntitySecret!,
     walletId: agentWalletId!,
-    walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
+    walletAddress: agentWalletAddress,
     baseUrl: process.env.CIRCLE_API_BASE_URL,
   });
   mode = "circle-agent-wallet";

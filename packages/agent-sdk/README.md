@@ -10,20 +10,17 @@ exactly the words it received.
 ## Quick Start
 
 ```ts
-import Rubicon, { CircleAgentWalletEngine, StaticPaymentEngine } from "@rubicon-caliga/agent-sdk";
+import Rubicon, {
+  CircleCliGatewayPaymentEngine,
+  StaticPaymentEngine,
+} from "@rubicon-caliga/agent-sdk";
 
-const hasAgentWallet =
-  process.env.CIRCLE_API_KEY &&
-  process.env.CIRCLE_ENTITY_SECRET &&
-  process.env.CIRCLE_AGENT_WALLET_ID;
+const hasCircleCliWallet = process.env.CIRCLE_AGENT_WALLET_ADDRESS;
 
 const rubicon = new Rubicon({
-  paymentEngine: hasAgentWallet
-    ? new CircleAgentWalletEngine({
-        apiKey: process.env.CIRCLE_API_KEY!,
-        entitySecret: process.env.CIRCLE_ENTITY_SECRET!,
-        walletId: process.env.CIRCLE_AGENT_WALLET_ID!,
-        walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
+  paymentEngine: hasCircleCliWallet
+    ? new CircleCliGatewayPaymentEngine({
+        walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}`,
       })
     : new StaticPaymentEngine(),
 });
@@ -43,7 +40,8 @@ console.log("\nreceipt:", receipt);
 
 `baseUrl` defaults to `http://localhost:8787`. In development, omitting
 `paymentEngine` uses `StaticPaymentEngine`, which works against a dev-mode
-gateway. For real settlement, pass `CircleAgentWalletEngine`.
+gateway. For real Arc Testnet settlement without raw private keys, pass
+`CircleCliGatewayPaymentEngine`.
 
 ## `run(options)`
 
@@ -73,6 +71,11 @@ for custom flows.
 ## Payment engines
 
 - `StaticPaymentEngine` — no-money development engine for a dev-mode gateway.
+- `CircleCliGatewayPaymentEngine` — **Circle CLI / Agent Wallet custody.** Each
+  word's x402 authorization is signed by `circle wallet sign typed-data`, so the
+  SDK never holds a private key and callers never manually assemble x402 payment
+  payloads. The Circle CLI must be installed, logged in, and backed by a funded
+  Agent Wallet Gateway/Nanopayments balance on Arc Testnet.
 - `CircleAgentWalletEngine` — **custodial, Circle-native.** Each word's
   authorization is signed by a Circle Agent / Developer-Controlled Wallet through
   Circle's API, so the SDK never holds a private key. The wallet controller
@@ -80,23 +83,27 @@ for custom flows.
   only consumes it and keeps enforcing the confirmed budget.
 
 ```ts
-import Rubicon, { CircleAgentWalletEngine } from "@rubicon-caliga/agent-sdk";
+import Rubicon, { CircleCliGatewayPaymentEngine } from "@rubicon-caliga/agent-sdk";
 
 const rubicon = new Rubicon({
   baseUrl: process.env.RUBICON_GATEWAY_URL,
-  paymentEngine: new CircleAgentWalletEngine({
-    apiKey: process.env.CIRCLE_API_KEY!,
-    entitySecret: process.env.CIRCLE_ENTITY_SECRET!,
-    walletId: process.env.CIRCLE_AGENT_WALLET_ID!,
+  paymentEngine: new CircleCliGatewayPaymentEngine({
     walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
+    chain: "ARC-TESTNET",
   }),
 });
 ```
 
-You can also pass an already-initiated Circle client instead of credentials:
+When `walletAddress` is omitted, the engine runs
+`circle wallet list --chain ARC-TESTNET --type agent --output json` and uses the
+sole Agent Wallet it finds. If multiple wallets are present, pass the address
+explicitly.
+
+The lower-level API-backed custody path is also available:
 
 ```ts
 import { initiateDeveloperControlledWalletsClient } from "@circle-fin/developer-controlled-wallets";
+import { CircleAgentWalletEngine } from "@rubicon-caliga/agent-sdk";
 
 const client = initiateDeveloperControlledWalletsClient({ apiKey, entitySecret });
 new CircleAgentWalletEngine({ client, walletId });

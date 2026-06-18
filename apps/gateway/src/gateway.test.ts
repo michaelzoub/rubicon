@@ -476,7 +476,7 @@ test("payment verifier receives the exact requirement snapshot issued at session
   await app.close();
 });
 
-test("payment responses include Circle transaction hashes when settlement returns them", async () => {
+test("payment responses include transaction hashes when verifier returns them", async () => {
   const transactionHash = "0xabc123";
   const network = "eip155:5042002";
   const payTo = "0x1111111111111111111111111111111111111111";
@@ -516,6 +516,39 @@ test("payment responses include Circle transaction hashes when settlement return
   assert.deepEqual(body.payment?.settlementIds, ["gw-settle-1"]);
   assert.equal(body.payment?.buyerWalletAddress, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
   assert.deepEqual(JSON.parse(String(res.headers["payment-response"])), body.payment);
+  await app.close();
+});
+
+test("payment responses do not label Gateway transfer ids as transaction hashes", async () => {
+  const transferId = "3c90c3cc-0d44-4b50-8888-8dd25736052a";
+  const { app } = setup({
+    paymentVerifier: {
+      async verify() {
+        return {
+          accepted: true,
+          amountAtomic: `${PRICE}`,
+          network: "eip155:5042002",
+          payTo: "0x1111111111111111111111111111111111111111",
+          settlementId: transferId,
+          settlementIds: [transferId],
+          buyerWalletAddress: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          transferId,
+        };
+      },
+    },
+  });
+  const session = await startSession(app);
+  const res = await pay(app, session.sessionId);
+  const body = res.json() as StreamPaymentResponse;
+
+  assert.equal(body.transactionHash, undefined);
+  assert.equal(body.transactionHashes, undefined);
+  assert.equal(body.transferId, transferId);
+  assert.equal(body.settlementId, transferId);
+  assert.deepEqual(body.settlementIds, [transferId]);
+  assert.equal(body.payment?.transactionHash, undefined);
+  assert.equal(body.payment?.transferId, transferId);
+  assert.equal(body.payment?.settlementId, transferId);
   await app.close();
 });
 

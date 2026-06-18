@@ -161,14 +161,15 @@ export interface StreamPaymentResponse {
   completed: boolean;
   /** Canonical, per-word settlement receipt. Present whenever a word is released. */
   payment?: WordPaymentReceipt;
-  /** On-chain settlement transaction hash returned by the payment facilitator. */
+  /** On-chain settlement transaction hash, when the payment facilitator returns one. */
   transactionHash?: string;
   /** All on-chain settlement transaction hashes for this payment, when available. */
   transactionHashes?: string[];
+  /** Gateway/facilitator settlement identifier, such as a Circle x402 transfer UUID. */
   settlementId?: string;
   settlementIds?: string[];
   buyerWalletAddress?: `0x${string}`;
-  /** Backwards-compatible alias for transactionHash. */
+  /** Gateway/facilitator transfer identifier, when distinct from an on-chain hash. */
   transferId?: string;
 }
 
@@ -184,10 +185,11 @@ export interface WordPaymentReceipt {
   payTo?: `0x${string}`;
   transactionHash?: string;
   transactionHashes?: string[];
+  /** Gateway/facilitator settlement identifier, such as a Circle x402 transfer UUID. */
   settlementId?: string;
   settlementIds?: string[];
   buyerWalletAddress?: `0x${string}`;
-  /** Backwards-compatible alias for transactionHash. */
+  /** Gateway/facilitator transfer identifier, when distinct from an on-chain hash. */
   transferId?: string;
   settledAt: string;
 }
