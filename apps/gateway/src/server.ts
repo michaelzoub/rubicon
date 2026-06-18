@@ -13,6 +13,7 @@ import {
   type ConversationMessage,
   type GatewayEvent,
   type SellerAgentMessageRecord,
+  type SellerPaymentTerms,
   type SendConversationMessageRequest,
   type SendConversationMessageResponse,
   type SessionRecord,
@@ -31,6 +32,7 @@ import type { ArticleRecord, LedgerRepository, PublishedArticleRepository } from
 import { DefaultSellerAgent, type SellerAgent } from "./seller-agent/seller-agent.js";
 import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
 import { wordsForSection } from "./words.js";
+import { RECEIVING_NETWORK_LABEL } from "./chain.js";
 
 export interface GatewayOptions {
   articleRepository: PublishedArticleRepository;
@@ -111,6 +113,48 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     };
   }
 
+  async function withPaymentTerms(summaries: ArticleSummary[]): Promise<ArticleSummary[]> {
+    return Promise.all(
+      summaries.map(async (summary) => {
+        const wallet = await articles.getCreatorWallet(summary.creatorId);
+        if (!wallet?.verified) {
+          return summary;
+        }
+        return {
+          ...summary,
+          paymentTerms: paymentTerms(summary.pricePerWordAtomic, wallet.address, wallet.network),
+        };
+      }),
+    );
+  }
+
+  async function articleSummaryWithPaymentTerms(article: ArticleRecord): Promise<ArticleSummary> {
+    const summary = summarizeArticle(article);
+    const wallet = await articles.getCreatorWallet(article.creatorId);
+    if (!wallet?.verified) {
+      return summary;
+    }
+    return {
+      ...summary,
+      paymentTerms: paymentTerms(summary.pricePerWordAtomic, wallet.address, wallet.network),
+    };
+  }
+
+  function paymentTerms(
+    pricePerWordAtomic: `${bigint}`,
+    payTo: `0x${string}`,
+    network: string,
+  ): SellerPaymentTerms {
+    return {
+      asset: "USDC",
+      network,
+      networkLabel: RECEIVING_NETWORK_LABEL,
+      payTo,
+      pricePerWordAtomic,
+      meteringUnit: "word",
+    };
+  }
+
   app.get("/health", async () => ({ ok: true }));
 
   app.get("/v1/endpoints", async () => ({ endpoints: ENDPOINTS }));
@@ -123,7 +167,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     try {
       return {
         repository: "articles",
-        articles: await articles.listPublishedArticles(),
+        articles: await withPaymentTerms(await articles.listPublishedArticles()),
       };
     } catch (error) {
       requestLogStorageFailure(reply, error);
@@ -143,7 +187,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         return reply.code(404).send({ error: "article_not_available" });
       }
       return {
-        article: summarizeArticle(article),
+        article: await articleSummaryWithPaymentTerms(article),
         navigation: await buildNavigation(article, request.query.goal),
       };
     },
@@ -172,7 +216,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     const response: StartConversationResponse = {
       conversationId,
       articleId: article.id,
-      article: summarizeArticle(article),
+      article: await articleSummaryWithPaymentTerms(article),
       navigation: await buildNavigation(article, request.body.goal),
       messages,
     };
@@ -270,11 +314,12 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       gatewayBaseUrl,
     });
     session.paymentRequired = paymentRequired;
+    logPaymentRequirementIssued(reply, session, paymentRequired, quote.wordPaymentAtomic, wallet.address);
 
     await ledger.createSession(session);
     streamStates.set(session.id, { article, words: slice.words, sectionId });
 
-    const summary = summarizeArticle(article);
+    const summary = await articleSummaryWithPaymentTerms(article);
     events.publish({
       type: "session.started",
       sessionId: session.id,
@@ -333,6 +378,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
             cached.payment.network,
             cached.payment.payTo,
             cached.payment.createdAt,
+            cached.payment.settlementId,
+            cached.payment.settlementIds,
+            cached.payment.buyerWalletAddress,
           ),
         );
       }
@@ -375,6 +423,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       }
 
       const verification = await paymentVerifier.verify({ session, wordPaymentAtomic, payment: request.body });
+      logPaymentAttempt(reply, session, sequence, idempotencyKey, request.body, verification);
       if (!verification.accepted || !verification.amountAtomic) {
         // A failed payment releases no word and does not advance the session.
         return reply.code(402).send({ error: verification.reason ?? "payment_rejected" });
@@ -406,6 +455,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         payTo: verification.payTo ?? session.sellerWallet,
         transactionHash: verification.transactionHash ?? verification.transferId,
         transactionHashes: paymentTransactionHashes(verification.transactionHash, verification.transactionHashes, verification.transferId),
+        settlementId: verification.settlementId,
+        settlementIds: verification.settlementIds,
+        buyerWalletAddress: verification.buyerWalletAddress,
         transferId: verification.transferId,
         idempotencyKey,
       });
@@ -426,6 +478,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
             record.payment.network,
             record.payment.payTo,
             record.payment.createdAt,
+            record.payment.settlementId,
+            record.payment.settlementIds,
+            record.payment.buyerWalletAddress,
           ),
         );
       }
@@ -488,6 +543,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           record.payment.network,
           record.payment.payTo,
           record.payment.createdAt,
+          verification.settlementId,
+          verification.settlementIds,
+          verification.buyerWalletAddress,
         ),
       );
     },
@@ -624,6 +682,66 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     events.publish({ type: "session.aborted", sessionId: session.id, reason });
   }
 
+  function logPaymentRequirementIssued(
+    reply: FastifyReply,
+    session: SessionRecord,
+    paymentRequired: unknown,
+    amountAtomic: `${bigint}`,
+    payTo: `0x${string}`,
+  ): void {
+    const requirement = firstAccept(paymentRequired);
+    reply.log.info(
+      {
+        event: "rubicon.payment_requirement_issued",
+        timestamp: new Date().toISOString(),
+        sessionId: session.id,
+        articleId: session.articleId,
+        sequence: session.wordsDelivered,
+        meteringUnit: "word",
+        amountAtomic,
+        asset: "USDC",
+        network: requirement?.network,
+        payTo,
+        idempotencyKey: `${session.id}:${session.wordsDelivered}`,
+        nonce: `${session.id}:${session.wordsDelivered}`,
+        expiresAt: session.expiresAt.toISOString(),
+      },
+      "issued one-word payment requirement",
+    );
+  }
+
+  function logPaymentAttempt(
+    reply: FastifyReply,
+    session: SessionRecord,
+    sequence: number,
+    idempotencyKey: string,
+    payment: StreamPaymentRequest,
+    verification: { accepted: boolean; reason?: string; network?: string; payTo?: `0x${string}`; amountAtomic?: `${bigint}` },
+  ): void {
+    reply.log.info(
+      {
+        event: "rubicon.payment_attempt",
+        timestamp: new Date().toISOString(),
+        sessionId: session.id,
+        articleId: session.articleId,
+        sequence,
+        idempotencyKey,
+        hasPaymentPayload: payment.paymentPayload !== undefined,
+        accepted: verification.accepted,
+        reason: verification.reason,
+        amountAtomic: verification.amountAtomic,
+        network: verification.network,
+        payTo: verification.payTo ?? session.sellerWallet,
+      },
+      "processed one-word payment attempt",
+    );
+  }
+
+  function firstAccept(paymentRequired: unknown): { network?: string } | undefined {
+    const accepts = (paymentRequired as { accepts?: Array<{ network?: string }> } | undefined)?.accepts;
+    return Array.isArray(accepts) ? accepts[0] : undefined;
+  }
+
   function buildPaymentResponse(
     session: SessionRecord,
     word: string,
@@ -636,6 +754,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     network?: string,
     payTo?: `0x${string}`,
     settledAt = new Date().toISOString(),
+    settlementId?: string,
+    settlementIds?: string[],
+    buyerWalletAddress?: `0x${string}`,
   ): StreamPaymentResponse {
     const hashes = transactionHashes ?? (transactionHash ? [transactionHash] : undefined);
     const payment: WordPaymentReceipt | undefined = paymentId
@@ -651,6 +772,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           payTo,
           transactionHash,
           transactionHashes: hashes,
+          settlementId,
+          settlementIds,
+          buyerWalletAddress,
           transferId: transactionHash,
           settledAt,
         }
@@ -667,6 +791,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       payment,
       transactionHash,
       transactionHashes: hashes,
+      settlementId,
+      settlementIds,
+      buyerWalletAddress,
       transferId: transactionHash,
     };
   }

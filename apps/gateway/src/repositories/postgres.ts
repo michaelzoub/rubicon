@@ -379,13 +379,17 @@ export class PostgresLedgerRepository implements LedgerRepository {
       pay_to: `0x${string}` | null;
       transaction_hash: string | null;
       transaction_hashes: string[] | null;
+      settlement_id: string | null;
+      settlement_ids: string[] | null;
+      buyer_wallet_address: `0x${string}` | null;
       payment_id: string;
       transfer_id: string | null;
       created_at: string;
     }>(
       `SELECT d.session_id, d.article_id, d.sequence, d.word, d.price_atomic, d.payment_id, d.created_at,
               p.creator_id, p.creator_amount_atomic, p.rubicon_fee_atomic, p.network, p.pay_to,
-              p.transaction_hash, p.transaction_hashes, p.transfer_id
+              p.transaction_hash, p.transaction_hashes, p.settlement_id, p.settlement_ids,
+              p.buyer_wallet_address, p.transfer_id
        FROM word_deliveries d JOIN word_payments p ON p.payment_id = d.payment_id
        WHERE d.idempotency_key = $1`,
       [key],
@@ -417,6 +421,9 @@ export class PostgresLedgerRepository implements LedgerRepository {
         payTo: row.pay_to ?? undefined,
         transactionHash: row.transaction_hash ?? row.transfer_id ?? undefined,
         transactionHashes: row.transaction_hashes ?? (row.transaction_hash || row.transfer_id ? [row.transaction_hash ?? row.transfer_id!] : undefined),
+        settlementId: row.settlement_id ?? row.transfer_id ?? row.transaction_hash ?? undefined,
+        settlementIds: row.settlement_ids ?? (row.settlement_id || row.transfer_id || row.transaction_hash ? [row.settlement_id ?? row.transfer_id ?? row.transaction_hash!] : undefined),
+        buyerWalletAddress: row.buyer_wallet_address ?? undefined,
         transferId: row.transfer_id ?? undefined,
         createdAt: row.created_at,
       },
@@ -431,8 +438,9 @@ export class PostgresLedgerRepository implements LedgerRepository {
         `INSERT INTO word_payments
            (id, payment_id, session_id, article_id, creator_id, sequence, amount_atomic,
             creator_amount_atomic, rubicon_fee_atomic, network, pay_to, transaction_hash,
-            transaction_hashes, transfer_id, idempotency_key)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            transaction_hashes, settlement_id, settlement_ids, buyer_wallet_address, transfer_id,
+            idempotency_key)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          ON CONFLICT (idempotency_key) DO NOTHING
          RETURNING payment_id`,
         [
@@ -449,6 +457,9 @@ export class PostgresLedgerRepository implements LedgerRepository {
           input.payTo ?? null,
           input.transactionHash ?? input.transferId ?? null,
           input.transactionHashes ? JSON.stringify(input.transactionHashes) : null,
+          input.settlementId ?? input.transferId ?? input.transactionHash ?? null,
+          input.settlementIds ? JSON.stringify(input.settlementIds) : null,
+          input.buyerWalletAddress ?? null,
           input.transferId ?? null,
           input.idempotencyKey,
         ],
@@ -478,8 +489,9 @@ export class PostgresLedgerRepository implements LedgerRepository {
       await client.query(
         `INSERT INTO settlement_receipts
            (id, payment_id, network, pay_to, transaction_hash, transaction_hashes, transfer_id,
-            amount_atomic, creator_amount_atomic, rubicon_fee_atomic)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            settlement_id, settlement_ids, buyer_wallet_address, amount_atomic, creator_amount_atomic,
+            rubicon_fee_atomic)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [
           randomUUID(),
           input.paymentId,
@@ -488,6 +500,9 @@ export class PostgresLedgerRepository implements LedgerRepository {
           input.transactionHash ?? input.transferId ?? null,
           input.transactionHashes ? JSON.stringify(input.transactionHashes) : null,
           input.transferId ?? null,
+          input.settlementId ?? input.transferId ?? input.transactionHash ?? null,
+          input.settlementIds ? JSON.stringify(input.settlementIds) : null,
+          input.buyerWalletAddress ?? null,
           `${input.priceAtomic}`,
           `${input.creatorAmountAtomic}`,
           `${input.rubiconFeeAtomic}`,
@@ -525,6 +540,9 @@ export class PostgresLedgerRepository implements LedgerRepository {
         payTo: input.payTo,
         transactionHash: input.transactionHash ?? input.transferId,
         transactionHashes: input.transactionHashes ?? (input.transactionHash || input.transferId ? [input.transactionHash ?? input.transferId!] : undefined),
+        settlementId: input.settlementId ?? input.transferId ?? input.transactionHash,
+        settlementIds: input.settlementIds,
+        buyerWalletAddress: input.buyerWalletAddress,
         transferId: input.transferId,
         createdAt,
       },
@@ -565,6 +583,9 @@ export class PostgresLedgerRepository implements LedgerRepository {
       pay_to: `0x${string}` | null;
       transaction_hash: string | null;
       transaction_hashes: string[] | null;
+      settlement_id: string | null;
+      settlement_ids: string[] | null;
+      buyer_wallet_address: `0x${string}` | null;
       transfer_id: string | null;
       created_at: string;
     }>("SELECT * FROM word_payments WHERE session_id = $1 ORDER BY sequence", [sessionId]);
@@ -580,6 +601,9 @@ export class PostgresLedgerRepository implements LedgerRepository {
       payTo: row.pay_to ?? undefined,
       transactionHash: row.transaction_hash ?? row.transfer_id ?? undefined,
       transactionHashes: row.transaction_hashes ?? (row.transaction_hash || row.transfer_id ? [row.transaction_hash ?? row.transfer_id!] : undefined),
+      settlementId: row.settlement_id ?? row.transfer_id ?? row.transaction_hash ?? undefined,
+      settlementIds: row.settlement_ids ?? (row.settlement_id || row.transfer_id || row.transaction_hash ? [row.settlement_id ?? row.transfer_id ?? row.transaction_hash!] : undefined),
+      buyerWalletAddress: row.buyer_wallet_address ?? undefined,
       transferId: row.transfer_id ?? undefined,
       createdAt: row.created_at,
     }));

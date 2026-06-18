@@ -3,7 +3,7 @@ import { x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, SchemeNetworkServer } from "@x402/core/types";
 import type { PaymentVerification, SessionRecord } from "@rubicon-caliga/core";
 import type { PaymentRequiredInput, PaymentVerifier, PaymentVerifyInput } from "./types.js";
-import { USDC_DECIMALS as ARC_USDC_DECIMALS } from "../chain.js";
+import { ACTIVE_X402_NETWORK, USDC_DECIMALS as ARC_USDC_DECIMALS } from "../chain.js";
 
 export interface CircleX402PaymentVerifierOptions {
   facilitatorUrl?: string;
@@ -51,12 +51,33 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       articleId: input.article.id,
       author: input.article.author,
     });
-    return this.resourceServer.createPaymentRequiredResponse(requirements, {
+    const response = await this.resourceServer.createPaymentRequiredResponse(requirements, {
       url: `${input.gatewayBaseUrl}/v1/sessions/${input.session.id}/payments`,
       description: `Rubicon one-word payment for ${input.article.title}`,
       serviceName: "rubicon-article-stream",
       mimeType: "application/json",
     });
+    const requirement = requirements[0];
+    if (!requirement) {
+      throw new Error("Circle x402 verifier did not create a payment requirement");
+    }
+    const sequence = input.session.wordsDelivered;
+    return {
+      ...response,
+      rubicon: {
+        sessionId: input.session.id,
+        articleId: input.article.id,
+        sequence,
+        meteringUnit: "word",
+        amountAtomic: `${input.wordPaymentAtomic}`,
+        asset: "USDC",
+        network: requirement.network,
+        payTo: input.sellerWallet,
+        expiresAt: input.session.expiresAt.toISOString(),
+        nonce: `${input.session.id}:${sequence}`,
+        idempotencyKey: `${input.session.id}:${sequence}`,
+      },
+    } as PaymentRequired;
   }
 
   async verify(input: PaymentVerifyInput): Promise<PaymentVerification> {
@@ -105,13 +126,17 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       settlement,
     });
 
+    const transactionHashes = settlement.transaction ? [settlement.transaction] : undefined;
     return {
       accepted: true,
       amountAtomic: (settlement.amount ?? requirements.amount) as `${bigint}`,
       network: requirements.network,
       payTo: requirements.payTo as `0x${string}`,
       transactionHash: settlement.transaction,
-      transactionHashes: [settlement.transaction],
+      transactionHashes,
+      settlementId: settlementId(settlement),
+      settlementIds: settlementIds(settlement),
+      buyerWalletAddress: settlement.payer as `0x${string}` | undefined,
       transferId: settlement.transaction,
     };
   }
@@ -124,8 +149,11 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     articleId: string;
     author: string;
   }): Promise<PaymentRequirements[]> {
+    const sequence = input.session.wordsDelivered;
+    const network = this.networks[0] ?? (ACTIVE_X402_NETWORK as Network);
     return this.resourceServer.buildPaymentRequirementsFromOptions(
-      this.networks.map((network) => ({
+      [
+        {
         scheme: "exact",
         network,
         payTo: input.sellerWallet,
@@ -137,13 +165,39 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
         extra: {
           sessionId: input.session.id,
           articleId: input.articleId,
+          sequence,
           author: input.author,
           meteringUnit: "word",
+          amountAtomic: `${input.wordPaymentAtomic}`,
+          asset: "USDC",
+          payTo: input.sellerWallet,
+          expiresAt: input.session.expiresAt.toISOString(),
+          nonce: `${input.session.id}:${sequence}`,
+          idempotencyKey: `${input.session.id}:${sequence}`,
         },
-      })),
+        },
+      ],
       { sessionId: input.session.id, url: `${input.gatewayBaseUrl}/v1/sessions/${input.session.id}/payments` },
     );
   }
+}
+
+function settlementId(settlement: Record<string, unknown>): string | undefined {
+  const value =
+    settlement.gatewaySettlementId ??
+    settlement.settlementId ??
+    settlement.transferId ??
+    settlement.transaction;
+  return typeof value === "string" ? value : undefined;
+}
+
+function settlementIds(settlement: Record<string, unknown>): string[] | undefined {
+  const values = settlement.gatewaySettlementIds ?? settlement.settlementIds;
+  if (Array.isArray(values)) {
+    return values.filter((value): value is string => typeof value === "string");
+  }
+  const single = settlementId(settlement);
+  return single ? [single] : undefined;
 }
 
 const USDC_DECIMALS = BigInt(ARC_USDC_DECIMALS);
@@ -196,6 +250,10 @@ function pickSettlementFields(settlement: Record<string, unknown>): Record<strin
     "payer",
     "payTo",
     "transaction",
+    "gatewaySettlementId",
+    "gatewaySettlementIds",
+    "settlementId",
+    "settlementIds",
     "transferId",
     "error",
     "errorCode",

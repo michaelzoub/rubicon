@@ -103,6 +103,9 @@ export interface PaymentActivity {
   payTo?: `0x${string}`;
   transactionHash?: string;
   transactionHashes?: string[];
+  settlementId?: string;
+  settlementIds?: string[];
+  buyerWalletAddress?: `0x${string}`;
   transferId?: string;
   createdAt: string;
 }

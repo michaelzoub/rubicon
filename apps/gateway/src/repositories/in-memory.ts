@@ -245,6 +245,9 @@ export class InMemoryLedgerRepository implements LedgerRepository {
       payTo: input.payTo,
       transactionHash: input.transactionHash ?? input.transferId,
       transactionHashes: input.transactionHashes ?? (input.transactionHash || input.transferId ? [input.transactionHash ?? input.transferId!] : undefined),
+      settlementId: input.settlementId,
+      settlementIds: input.settlementIds,
+      buyerWalletAddress: input.buyerWalletAddress,
       transferId: input.transferId,
       createdAt,
     };

@@ -34,7 +34,7 @@
   "dependencies": {
     "@circle-fin/developer-controlled-wallets": "^10.6.0",
     "@circle-fin/x402-batching": "^3.1.2",
-    "@rubicon-caliga/core": "^0.1.0",
+    "@rubicon-caliga/core": "workspace:*",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "eventsource": "^4.0.0",

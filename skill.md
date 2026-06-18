@@ -69,7 +69,8 @@ console.log("\nreceipt:", receipt);
 
 Expected result: words stream to stdout, followed by a receipt containing
 `sessionId`, `articleId`, `wordsRead`, `amountPaidAtomic`, `payments`,
-`transactionHashes`, `text`, `completed`, and `stopReason`.
+`transactionHashes` or Gateway settlement ids, `buyerWalletAddress`,
+`sellerPayTo`, `network`, `text`, `completed`, and `stopReason`.
 
 ## Quick Start: Published SDK
 
@@ -143,8 +144,9 @@ Development mode uses `StaticPaymentEngine` and settles no real funds. This is
 the default when no payment engine is passed.
 
 Production/testnet settlement uses `CircleAgentWalletEngine` (custodial
-signing, no raw key — see Circle Agent Wallets below). Do not configure buyer
-agents with raw private keys.
+signing, no raw key — see Circle Agent Wallets below). This is the default and
+only recommended real-payment path. Do not configure buyer agents with raw
+private keys, and do not ask a wallet controller to export one.
 
 ```ts
 import Rubicon, { CircleAgentWalletEngine } from "@rubicon-caliga/agent-sdk";
@@ -164,13 +166,14 @@ const rubicon = new Rubicon({
 });
 ```
 
-### Circle Agent Wallets
+### Circle Agent Wallets + Gateway Nanopayments
 
 Circle Agent Wallets are the recommended buyer setup path because the agent
 never handles a raw private key — payments are signed custodially through
 Circle's API. The person controlling the wallet/funds should create the Agent
-Wallet, fund it, and set spending policies such as transfer limits, recipient
-allowlists, and contract blocklists before the agent starts a paid read. See
+Wallet, fund its Gateway/Nanopayments balance, and set spending policies such
+as transfer limits, recipient allowlists, and contract blocklists before the
+agent starts a paid read. See
 Circle's Agent Wallets guide: https://developers.circle.com/agent-stack/agent-wallets
 
 Once that wallet exists, use `CircleAgentWalletEngine`. It signs each one-word
@@ -204,6 +207,110 @@ The SDK consumes an already configured wallet-backed payment capability and
 keeps enforcing the user's confirmed Rubicon budget. Do not create wallets,
 fund wallets, change wallet policies, or use a user's personal key unless the
 wallet controller has explicitly asked for that setup action.
+
+Legacy/raw-EOA adapters that accept a local private key are unsupported for
+normal Rubicon paid reads. Use them only if the user explicitly requests raw
+private-key custody for a custom test and accepts that custody model.
+
+### Paid-Read Preflight
+
+Before spending real testnet or production funds, run this preflight and stop
+at the first failure:
+
+1. Confirm the exact user budget for this read. Example: `$0.02` equals
+   `20000` atomic USDC.
+2. Discover live articles from the gateway:
+
+   ```bash
+   curl -s "$RUBICON_GATEWAY_URL/v1/articles?status=published"
+   ```
+
+   The current gateway exposes live published articles at `/v1/articles`; the
+   `status=published` query is safe and may be ignored by older gateways.
+3. Choose `articleId` from the live response, and confirm the article exposes
+   public seller payment terms: `paymentTerms.asset = "USDC"`,
+   `paymentTerms.network = "eip155:5042002"` / `ARC-TESTNET`, and
+   `paymentTerms.payTo` is present.
+4. Check Arc Testnet support in Circle CLI:
+
+   ```bash
+   circle blockchain list
+   ```
+
+5. Check Circle CLI wallet login and find the Agent Wallet address:
+
+   ```bash
+   circle wallet list --chain ARC-TESTNET --type agent --output json
+   ```
+
+   If Circle CLI is not logged in, stop and ask the wallet controller to log in.
+   Do not work around CLI auth.
+6. Check the Gateway/Nanopayments balance for the Agent Wallet:
+
+   ```bash
+   circle gateway balance --address <agent-wallet-address> --chain ARC-TESTNET --output json
+   ```
+
+   The Gateway balance must cover `maxSpendAtomic`. If it is missing or too
+   low, stop and ask the wallet controller to deposit. Do not substitute the
+   on-chain wallet balance.
+7. Verify the seller `payTo` is public, ARC-TESTNET-compatible, and allowed by
+   the Agent Wallet policy or recipient allowlist.
+
+### Controlled Paid Attempt
+
+Only after preflight passes, run one controlled paid attempt:
+
+```ts
+import Rubicon, { CircleAgentWalletEngine } from "@rubicon-caliga/agent-sdk";
+
+const rubicon = new Rubicon({
+  baseUrl: process.env.RUBICON_GATEWAY_URL!,
+  authorization: process.env.RUBICON_AGENT_API_KEY
+    ? `Bearer ${process.env.RUBICON_AGENT_API_KEY}`
+    : undefined,
+  paymentEngine: new CircleAgentWalletEngine({
+    apiKey: process.env.CIRCLE_API_KEY!,
+    entitySecret: process.env.CIRCLE_ENTITY_SECRET!,
+    walletId: process.env.CIRCLE_AGENT_WALLET_ID!,
+    walletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
+  }),
+});
+
+const repository = await rubicon.getRepository();
+const articleId = repository.articles.find((article) => article.state === "live")?.articleId;
+if (!articleId) throw new Error("No live Rubicon article found");
+
+const receipt = await rubicon.run({
+  articleId,
+  goal: "find info related to central risks",
+  maxSpendAtomic: "20000",
+  maxWords: 1,
+});
+
+console.log({
+  sessionId: receipt.sessionId,
+  amountPaidAtomic: receipt.amountPaidAtomic,
+  wordsRead: receipt.wordsRead,
+  transactionHashes: receipt.transactionHashes,
+  settlementIds: receipt.settlementIds,
+  buyerWalletAddress: receipt.buyerWalletAddress,
+  sellerPayTo: receipt.sellerPayTo,
+  network: receipt.network,
+});
+```
+
+This must create one session, receive one payment requirement, make one payment
+attempt, and read at most one word. After the attempt, inspect gateway logs by
+timestamp and `sessionId`; the server logs
+`rubicon.payment_requirement_issued` and `rubicon.payment_attempt` for this
+flow.
+
+Rubicon's current architecture is session-first: `POST /v1/sessions` returns
+the one-word x402-style payment requirement, and the SDK pays
+`POST /v1/sessions/:sessionId/payments`. `circle services pay` expects a
+standard HTTP 402 challenge from the protected endpoint itself, so use it only
+against gateways that explicitly implement that standard 402 challenge flow.
 
 ## Hosted Gateway Environment
 
@@ -271,10 +378,11 @@ If a hosted Circle/x402 read opens sessions but every
 settlement problem, not an article-navigation problem. Public request logs may
 only show the 402 status and an abort; no article body or transaction hash is
 available until at least one word payment settles. Check the gateway application
-logs for the verifier reason from Circle (`settlement.errorReason` or
-`settlement.errorMessage`), then confirm:
+logs by timestamp and `sessionId` for `rubicon.payment_requirement_issued`,
+`rubicon.payment_attempt`, and the verifier reason from Circle
+(`settlement.errorReason` or `settlement.errorMessage`), then confirm:
 
-- the buyer signer address is the address with the Circle Gateway balance;
+- the buyer Agent Wallet address is the address with the Circle Gateway balance;
 - the creator `payTo` wallet is verified and allowed by wallet policies;
 - hosted env uses `RUBICON_PAYMENTS=circle`,
   `CIRCLE_FACILITATOR_URL=https://gateway-api-testnet.circle.com`, and
@@ -284,6 +392,12 @@ logs for the verifier reason from Circle (`settlement.errorReason` or
 Do not retry with arbitrary payment amounts. A probe such as one atomic USDC
 will correctly fail with `payment_does_not_match_session_terms` unless the
 session's issued one-word payment requirement is exactly for that amount.
+
+If the hosted gateway is not compatible with Circle CLI / Agent Wallet
+nanopayments, ask the server owner to implement either standard x402 402
+challenge compatibility or the SDK-supported Circle Agent Wallet-backed payment
+adapter for Rubicon's session-first challenge. Do not work around this by
+requesting, storing, exporting, inferring, or using raw private keys.
 
 If the request is about the raw HTTP protocol, see the gateway endpoints:
 

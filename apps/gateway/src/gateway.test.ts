@@ -253,6 +253,111 @@ test("1: one accepted word payment releases exactly one word", async () => {
   await app.close();
 });
 
+test("public articles expose seller payment terms", async () => {
+  const { app } = setup();
+  const res = await app.inject({ method: "GET", url: "/v1/repository" });
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as { articles: Array<{ paymentTerms?: Record<string, unknown> }> };
+  assert.equal(body.articles[0]?.paymentTerms?.asset, "USDC");
+  assert.equal(body.articles[0]?.paymentTerms?.network, "eip155:5042002");
+  assert.equal(body.articles[0]?.paymentTerms?.payTo, "0x000000000000000000000000000000000000aaaa");
+  assert.equal(body.articles[0]?.paymentTerms?.meteringUnit, "word");
+  await app.close();
+});
+
+test("session returns exactly one next-word x402 requirement with ARC-TESTNET terms", async () => {
+  const payTo = "0x000000000000000000000000000000000000aaaa";
+  const { app } = setup({
+    paymentVerifier: {
+      async createPaymentRequired(input) {
+        const sequence = input.session.wordsDelivered;
+        return {
+          x402Version: 2,
+          accepts: [
+            {
+              scheme: "exact",
+              network: "eip155:5042002",
+              amount: `${PRICE}`,
+              asset: "USDC",
+              payTo,
+              extra: {
+                sessionId: input.session.id,
+                articleId: input.article.id,
+                sequence,
+                meteringUnit: "word",
+                amountAtomic: `${input.wordPaymentAtomic}`,
+                asset: "USDC",
+                network: "eip155:5042002",
+                payTo,
+                expiresAt: input.session.expiresAt.toISOString(),
+                nonce: `${input.session.id}:${sequence}`,
+                idempotencyKey: `${input.session.id}:${sequence}`,
+              },
+            },
+          ],
+          rubicon: {
+            sessionId: input.session.id,
+            articleId: input.article.id,
+            sequence,
+            meteringUnit: "word",
+            amountAtomic: `${input.wordPaymentAtomic}`,
+            asset: "USDC",
+            network: "eip155:5042002",
+            payTo,
+            expiresAt: input.session.expiresAt.toISOString(),
+            nonce: `${input.session.id}:${sequence}`,
+            idempotencyKey: `${input.session.id}:${sequence}`,
+          },
+        };
+      },
+      async verify(input) {
+        return {
+          accepted: true,
+          amountAtomic: `${PRICE}`,
+          network: "eip155:5042002",
+          payTo,
+          transferId: `test_${input.session.id}`,
+        };
+      },
+    },
+  });
+  const session = await startSession(app, "art-plain", "20000");
+  const required = session.paymentRequired as {
+    accepts: unknown[];
+    rubicon: {
+      sessionId: string;
+      articleId: string;
+      sequence: number;
+      meteringUnit: string;
+      amountAtomic: string;
+      asset: string;
+      network: string;
+      payTo: string;
+      expiresAt: string;
+      nonce: string;
+      idempotencyKey: string;
+    };
+  };
+  assert.equal(required.accepts.length, 1);
+  assert.deepEqual(required.rubicon, {
+    sessionId: session.sessionId,
+    articleId: "art-plain",
+    sequence: 0,
+    meteringUnit: "word",
+    amountAtomic: `${PRICE}`,
+    asset: "USDC",
+    network: "eip155:5042002",
+    payTo,
+    expiresAt: session.expiresAt,
+    nonce: `${session.sessionId}:0`,
+    idempotencyKey: `${session.sessionId}:0`,
+  });
+  const res = await pay(app, session.sessionId, { key: `${session.sessionId}:0` });
+  assert.equal(res.statusCode, 200);
+  assert.equal((res.json() as StreamPaymentResponse).wordsDelivered, 1);
+  await app.close();
+});
+
 test("payment verifier receives the exact requirement snapshot issued at session start", async () => {
   const issuedRequirement = {
     x402Version: 2,
@@ -308,6 +413,9 @@ test("payment responses include Circle transaction hashes when settlement return
           payTo,
           transactionHash,
           transactionHashes: [transactionHash],
+          settlementId: "gw-settle-1",
+          settlementIds: ["gw-settle-1"],
+          buyerWalletAddress: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           transferId: transactionHash,
         };
       },
@@ -327,6 +435,9 @@ test("payment responses include Circle transaction hashes when settlement return
   assert.equal(body.payment?.payTo, payTo);
   assert.equal(body.payment?.transactionHash, transactionHash);
   assert.deepEqual(body.payment?.transactionHashes, [transactionHash]);
+  assert.equal(body.payment?.settlementId, "gw-settle-1");
+  assert.deepEqual(body.payment?.settlementIds, ["gw-settle-1"]);
+  assert.equal(body.payment?.buyerWalletAddress, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
   assert.deepEqual(JSON.parse(String(res.headers["payment-response"])), body.payment);
   await app.close();
 });
@@ -392,6 +503,14 @@ test("repository endpoint returns live article records from Supabase", async () 
         totalWords: 6,
         pricePerWordAtomic: "7",
         maxArticlePriceAtomic: "42",
+        paymentTerms: {
+          asset: "USDC",
+          network: "eip155:5042002",
+          networkLabel: "Arc Testnet",
+          payTo: "0x0000000000000000000000000000000000000db0",
+          pricePerWordAtomic: "7",
+          meteringUnit: "word",
+        },
         sections: [
           { sectionId: "start", heading: "Start", level: 1, wordStart: 0, wordCount: 3 },
           { sectionId: "later", heading: "Later", level: 2, wordStart: 3, wordCount: 3 },

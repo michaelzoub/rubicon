@@ -39,6 +39,10 @@ export interface ReadReceipt {
   amountPaidAtomic: `${bigint}`;
   payments: WordPaymentReceipt[];
   transactionHashes: string[];
+  settlementIds: string[];
+  buyerWalletAddress?: `0x${string}`;
+  sellerPayTo?: `0x${string}`;
+  network?: string;
   text: string;
   completed: boolean;
   stopReason: "article_completed" | "stop_condition" | "budget_reached" | "max_words" | "aborted";
@@ -268,6 +272,7 @@ export class RubiconClient {
     let wordsRead = 0;
     let amountPaid = 0n;
     const transactionHashes: string[] = [];
+    const settlementIds: string[] = [];
     const payments: WordPaymentReceipt[] = [];
     let stopReason: ReadReceipt["stopReason"] = "article_completed";
     let completed = false;
@@ -280,6 +285,10 @@ export class RubiconClient {
       amountPaidAtomic: `${amountPaid}`,
       payments: [...payments],
       transactionHashes: [...transactionHashes],
+      settlementIds: [...settlementIds],
+      buyerWalletAddress: [...payments].reverse().find((payment) => payment.buyerWalletAddress)?.buyerWalletAddress,
+      sellerPayTo: [...payments].reverse().find((payment) => payment.payTo)?.payTo,
+      network: [...payments].reverse().find((payment) => payment.network)?.network,
       text,
       completed,
       stopReason,
@@ -326,6 +335,7 @@ export class RubiconClient {
         payments.push(result.payment);
       }
       transactionHashes.push(...(result.transactionHashes ?? (result.transactionHash ? [result.transactionHash] : [])));
+      settlementIds.push(...(result.settlementIds ?? (result.settlementId ? [result.settlementId] : [])));
       text = text ? `${text} ${result.word}` : result.word;
 
       yield {

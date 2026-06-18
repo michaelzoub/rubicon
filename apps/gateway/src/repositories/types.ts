@@ -64,6 +64,9 @@ export interface RecordWordDeliveryInput {
   payTo?: `0x${string}`;
   transactionHash?: string;
   transactionHashes?: string[];
+  settlementId?: string;
+  settlementIds?: string[];
+  buyerWalletAddress?: `0x${string}`;
   transferId?: string;
   /** Ties this payment+delivery to one specific next word; retries are no-ops. */
   idempotencyKey: string;

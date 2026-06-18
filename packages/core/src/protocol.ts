@@ -20,7 +20,18 @@ export interface ArticleSummary {
   pricePerWordAtomic: AtomicAmount;
   /** Maximum possible total price to read the whole article. */
   maxArticlePriceAtomic: AtomicAmount;
+  /** Public seller settlement terms for paid reads. Present when a verified wallet exists. */
+  paymentTerms?: SellerPaymentTerms;
   sections: ArticleSectionSummary[];
+}
+
+export interface SellerPaymentTerms {
+  asset: "USDC";
+  network: string;
+  networkLabel?: string;
+  payTo: `0x${string}`;
+  pricePerWordAtomic: AtomicAmount;
+  meteringUnit: "word";
 }
 
 /** Safe per-section navigation metadata. Headings only, no body content. */
@@ -154,6 +165,9 @@ export interface StreamPaymentResponse {
   transactionHash?: string;
   /** All on-chain settlement transaction hashes for this payment, when available. */
   transactionHashes?: string[];
+  settlementId?: string;
+  settlementIds?: string[];
+  buyerWalletAddress?: `0x${string}`;
   /** Backwards-compatible alias for transactionHash. */
   transferId?: string;
 }
@@ -170,6 +184,9 @@ export interface WordPaymentReceipt {
   payTo?: `0x${string}`;
   transactionHash?: string;
   transactionHashes?: string[];
+  settlementId?: string;
+  settlementIds?: string[];
+  buyerWalletAddress?: `0x${string}`;
   /** Backwards-compatible alias for transactionHash. */
   transferId?: string;
   settledAt: string;
@@ -179,6 +196,9 @@ export interface PaymentVerification {
   accepted: boolean;
   transactionHash?: string;
   transactionHashes?: string[];
+  settlementId?: string;
+  settlementIds?: string[];
+  buyerWalletAddress?: `0x${string}`;
   transferId?: string;
   network?: string;
   payTo?: `0x${string}`;
