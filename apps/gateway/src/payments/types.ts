@@ -25,6 +25,10 @@ export interface PaymentRequiredInput {
 export interface PaymentVerifier {
   verify(input: PaymentVerifyInput): Promise<PaymentVerification>;
   createPaymentRequired?(input: PaymentRequiredInput): Promise<unknown>;
+  /** Flush any settlements batched behind the stream (e.g. on session close). */
+  flush?(): Promise<void>;
+  /** Flush remaining settlements and stop background work (graceful shutdown). */
+  drain?(): Promise<void>;
 }
 
 /**

@@ -111,6 +111,22 @@ releases no word. A retried payment with the same
 `idempotencyKey` returns the same word and same payment receipt, and never
 charges twice.
 
+### Batched settlement
+
+By default the Circle path **gates each word on a fast `verify`** — Circle
+confirms the signed EIP-3009/Gateway authorization is valid and funded — and
+**defers `settle` into a batch that runs behind the stream**. This keeps the
+contract one-word-per-payment and keeps an agent from obtaining a word without a
+real, funded authorization, while letting words stream at verify speed instead
+of waiting on settlement finality. As a consequence, the `settlementId` /
+`transferId` for a word may be **absent from the immediate payment response and
+backfilled onto the persisted receipt** shortly after, once its batch settles.
+If any batched settlement fails, the session is halted (`prior_settlement_failed`)
+so no further words are released; the only exposure is the in-flight batch of
+nanopayments. Tunable via `CIRCLE_SETTLEMENT_BATCH_SIZE` /
+`CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS`; set `CIRCLE_SYNCHRONOUS_SETTLEMENT=true`
+to settle inline on the request path (the previous behavior).
+
 Example successful word response:
 
 ```json

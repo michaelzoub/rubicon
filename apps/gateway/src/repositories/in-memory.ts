@@ -19,6 +19,7 @@ import type {
   PublishedArticleRepository,
   RecordWordDeliveryInput,
   RecordWordDeliveryResult,
+  UpdatePaymentSettlementInput,
 } from "./types.js";
 
 export interface ArticleFixture {
@@ -263,6 +264,23 @@ export class InMemoryLedgerRepository implements LedgerRepository {
       payment,
     ]);
     return result;
+  }
+
+  async updatePaymentSettlement(input: UpdatePaymentSettlementInput): Promise<void> {
+    const payment = (this.paymentsBySession.get(input.sessionId) ?? []).find(
+      (entry) => entry.sequence === input.sequence,
+    );
+    if (!payment) {
+      return;
+    }
+    // Stored payment objects are shared by reference with the idempotency/sequence
+    // caches, so mutating in place backfills every view of this receipt at once.
+    if (input.settlementId !== undefined) payment.settlementId = input.settlementId;
+    if (input.settlementIds !== undefined) payment.settlementIds = input.settlementIds;
+    if (input.transferId !== undefined) payment.transferId = input.transferId;
+    if (input.transactionHash !== undefined) payment.transactionHash = input.transactionHash;
+    if (input.transactionHashes !== undefined) payment.transactionHashes = input.transactionHashes;
+    if (input.buyerWalletAddress !== undefined) payment.buyerWalletAddress = input.buyerWalletAddress;
   }
 
   async listDeliveries(sessionId: string): Promise<WordDeliveryRecord[]> {

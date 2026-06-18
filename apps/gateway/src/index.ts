@@ -7,11 +7,17 @@ import { createSupabaseClientFromEnv, SupabasePublishedArticleRepository } from 
 import type { LedgerRepository, PublishedArticleRepository } from "./repositories/types.js";
 import { DefaultSellerAgent } from "./seller-agent/seller-agent.js";
 import { TextCompletionSellerModelProvider } from "./seller-agent/model-provider.js";
+import { installKeepAliveDispatcher } from "./http-agent.js";
 
 const port = Number(process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787);
 const gatewayBaseUrl = process.env.GATEWAY_BASE_URL ?? `http://localhost:${port}`;
 const gatewayFeeBps = Number(process.env.GATEWAY_FEE_BPS ?? 0);
 const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 15 * 60_000);
+
+// Reuse warm TLS connections for outbound Circle settlement calls.
+if (await installKeepAliveDispatcher()) {
+  console.log("[gateway] installed keep-alive HTTP dispatcher");
+}
 
 let articleRepository: PublishedArticleRepository;
 let ledger: LedgerRepository;
@@ -46,6 +52,34 @@ const paymentVerifier: PaymentVerifier =
           ? Number(process.env.CIRCLE_X402_MAX_TIMEOUT_SECONDS)
           : undefined,
         gatewayBaseUrl,
+        synchronousSettlement: process.env.CIRCLE_SYNCHRONOUS_SETTLEMENT === "true",
+        settlementBatchSize: process.env.CIRCLE_SETTLEMENT_BATCH_SIZE
+          ? Number(process.env.CIRCLE_SETTLEMENT_BATCH_SIZE)
+          : undefined,
+        settlementBatchIntervalMs: process.env.CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS
+          ? Number(process.env.CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS)
+          : undefined,
+        // Backfill the persisted receipt with Circle's transfer UUID once the
+        // batched settlement clears behind the stream.
+        onSettled: async (outcome) => {
+          if (!outcome.success || !ledger.updatePaymentSettlement) {
+            return;
+          }
+          try {
+            await ledger.updatePaymentSettlement({
+              sessionId: outcome.sessionId,
+              sequence: outcome.sequence,
+              settlementId: outcome.settlementId,
+              settlementIds: outcome.settlementIds,
+              transferId: outcome.transferId,
+              transactionHash: outcome.transactionHash,
+              transactionHashes: outcome.transactionHashes,
+              buyerWalletAddress: outcome.buyerWalletAddress,
+            });
+          } catch (error) {
+            console.error("[gateway] failed to backfill settlement", error);
+          }
+        },
       })
     : new DevelopmentPaymentVerifier();
 

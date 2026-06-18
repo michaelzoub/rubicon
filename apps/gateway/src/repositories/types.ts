@@ -112,4 +112,26 @@ export interface LedgerRepository {
   listPayments(sessionId: string): Promise<PaymentActivity[]>;
   earningsForArticle(articleId: string): Promise<EarningsSummary>;
   earningsForCreator(creatorId: string): Promise<EarningsSummary>;
+
+  /**
+   * Backfill a word payment's settlement identifiers once Circle's batched
+   * settlement clears behind the stream. The word is delivered (and its receipt
+   * persisted) the instant the authorization is verified, so the Circle transfer
+   * UUID lands slightly later — this fills it in, keyed by (sessionId, sequence).
+   *
+   * Optional: a ledger that does not implement it simply leaves the settlement
+   * IDs lagging, which the protocol already permits.
+   */
+  updatePaymentSettlement?(input: UpdatePaymentSettlementInput): Promise<void>;
+}
+
+export interface UpdatePaymentSettlementInput {
+  sessionId: string;
+  sequence: number;
+  settlementId?: string;
+  settlementIds?: string[];
+  transferId?: string;
+  transactionHash?: string;
+  transactionHashes?: string[];
+  buyerWalletAddress?: `0x${string}`;
 }
