@@ -463,7 +463,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
           input.transactionHash ?? null,
           input.transactionHashes ? JSON.stringify(input.transactionHashes) : null,
           input.settlementId ?? input.transferId ?? input.transactionHash ?? null,
-          input.settlementIds ? JSON.stringify(input.settlementIds) : null,
+          input.settlementIds ?? null,
           input.buyerWalletAddress ?? null,
           input.transferId ?? null,
           input.idempotencyKey,
@@ -506,7 +506,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
           input.transactionHashes ? JSON.stringify(input.transactionHashes) : null,
           input.transferId ?? null,
           input.settlementId ?? input.transferId ?? input.transactionHash ?? null,
-          input.settlementIds ? JSON.stringify(input.settlementIds) : null,
+          input.settlementIds ?? null,
           input.buyerWalletAddress ?? null,
           `${input.priceAtomic}`,
           `${input.creatorAmountAtomic}`,
@@ -557,7 +557,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
   async updatePaymentSettlement(input: UpdatePaymentSettlementInput): Promise<void> {
     const transferId = input.transferId ?? input.settlementId ?? input.transactionHash ?? null;
     const settlementId = input.settlementId ?? input.transferId ?? input.transactionHash ?? null;
-    const settlementIds = input.settlementIds ? JSON.stringify(input.settlementIds) : null;
+    const settlementIds = input.settlementIds ?? null;
     const transactionHashes = input.transactionHashes ? JSON.stringify(input.transactionHashes) : null;
     const buyerWalletAddress = input.buyerWalletAddress ?? null;
     const transactionHash = input.transactionHash ?? null;
