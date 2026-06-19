@@ -20,7 +20,9 @@ import {
   receiptSummaryJson,
 } from "./format.js";
 import { selectPaymentEngine, type PaymentMode } from "./payments.js";
+import { runDoctor, runQuickstartRead } from "./quickstart.js";
 import { listReceipts, loadReceipt, saveReceipt } from "./receipts.js";
+import packageJson from "../package.json" with { type: "json" };
 
 interface Runtime {
   parsed: ParsedArgs;
@@ -70,11 +72,24 @@ async function main(): Promise<void> {
 async function dispatch(runtime: Runtime): Promise<void> {
   const [command, subcommand, ...rest] = runtime.parsed.positionals;
 
+  if (booleanFlag(runtime.parsed.flags, "version") || command === "version") {
+    process.stdout.write(`${packageJson.version}\n`);
+    return;
+  }
+
   if (!command || command === "help" || booleanFlag(runtime.parsed.flags, "help")) {
     showHelp(runtime.json);
     return;
   }
 
+  if (command === "doctor") {
+    printJson(await runDoctor(runtime, { cliVersion: packageJson.version }));
+    return;
+  }
+  if (command === "quickstart-read") {
+    printJson(await runQuickstartRead(runtime));
+    return;
+  }
   if (command === "repository") {
     await repository(runtime);
     return;
@@ -596,6 +611,8 @@ function matchesQuery(article: ArticleSummary, query: string): boolean {
 function showHelp(json: boolean): void {
   const usage = [
     "rubicon repository",
+    "rubicon doctor --json",
+    "rubicon quickstart-read --first --goal \"<goal>\" --max-usdc 0.10 --json",
     "rubicon search \"<query>\"",
     "rubicon article show <article-id>",
     "rubicon article navigation <article-id> --goal \"<goal>\"",
