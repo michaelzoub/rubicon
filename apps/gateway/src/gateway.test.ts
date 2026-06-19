@@ -9,7 +9,7 @@ import {
   type ArticleFixture,
 } from "./repositories/in-memory.js";
 import { resolveSupabaseConfigFromEnv, SupabasePublishedArticleRepository, type SupabaseReader } from "./repositories/supabase.js";
-import { assertRailwayCompatibleDatabaseUrl } from "./repositories/postgres.js";
+import { assertRailwayCompatibleDatabaseUrl, resolvePgPoolConfig } from "./repositories/postgres.js";
 import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
 import type { PaymentVerifier } from "./payments/types.js";
 
@@ -702,7 +702,7 @@ test("Railway DATABASE_URL rejects Supabase direct Postgres hosts", () => {
   assert.throws(
     () =>
       assertRailwayCompatibleDatabaseUrl(
-        "postgresql://postgres:secret@db.project-ref.supabase.co:5432/postgres?sslmode=require",
+        "postgresql://postgres:secret@db.project-ref.supabase.co:5432/postgres?sslmode=no-verify",
         { RAILWAY_ENVIRONMENT: "production" },
       ),
     /connection pooler URL/,
@@ -710,7 +710,7 @@ test("Railway DATABASE_URL rejects Supabase direct Postgres hosts", () => {
 
   assert.doesNotThrow(() =>
     assertRailwayCompatibleDatabaseUrl(
-      "postgresql://postgres.project-ref:secret@aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require",
+      "postgresql://postgres.project-ref:secret@aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=no-verify",
       { RAILWAY_ENVIRONMENT: "production" },
     ),
   );
@@ -720,6 +720,26 @@ test("Railway DATABASE_URL rejects Supabase direct Postgres hosts", () => {
       "postgresql://postgres:secret@db.project-ref.supabase.co:5432/postgres?sslmode=require",
       {},
     ),
+  );
+});
+
+test("Supabase pooler DATABASE_URL disables pg certificate chain verification", () => {
+  assert.deepEqual(
+    resolvePgPoolConfig(
+      "postgresql://postgres.project-ref:secret@aws-0-ca-central-1.pooler.supabase.com:5432/postgres?sslmode=require",
+    ),
+    {
+      connectionString:
+        "postgresql://postgres.project-ref:secret@aws-0-ca-central-1.pooler.supabase.com:5432/postgres?sslmode=require",
+      ssl: { rejectUnauthorized: false },
+    },
+  );
+
+  assert.deepEqual(
+    resolvePgPoolConfig("postgresql://postgres:secret@localhost:5432/postgres?sslmode=require"),
+    {
+      connectionString: "postgresql://postgres:secret@localhost:5432/postgres?sslmode=require",
+    },
   );
 });
 

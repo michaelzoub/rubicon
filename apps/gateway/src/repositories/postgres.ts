@@ -27,8 +27,30 @@ import type {
   UpdatePaymentSettlementInput,
 } from "./types.js";
 
+interface PgPoolConfig {
+  connectionString: string;
+  ssl?: { rejectUnauthorized: boolean };
+}
+
 export function createPgPool(databaseUrl: string): Pool {
-  return new Pool({ connectionString: databaseUrl });
+  return new Pool(resolvePgPoolConfig(databaseUrl));
+}
+
+export function resolvePgPoolConfig(databaseUrl: string): PgPoolConfig {
+  const config: PgPoolConfig = { connectionString: databaseUrl };
+  const parsed = parseDatabaseUrl(databaseUrl);
+  if (!parsed) {
+    return config;
+  }
+
+  const sslMode = parsed.searchParams.get("sslmode");
+  if (isSupabasePoolerHost(parsed.hostname) && sslMode !== "disable") {
+    config.ssl = { rejectUnauthorized: false };
+  }
+  if (sslMode === "no-verify") {
+    config.ssl = { rejectUnauthorized: false };
+  }
+  return config;
 }
 
 export function assertRailwayCompatibleDatabaseUrl(
@@ -39,19 +61,17 @@ export function assertRailwayCompatibleDatabaseUrl(
     return;
   }
 
-  let hostname: string;
-  try {
-    hostname = new URL(databaseUrl).hostname;
-  } catch {
+  const parsed = parseDatabaseUrl(databaseUrl);
+  if (!parsed) {
     return;
   }
 
-  if (/^db\.[^.]+\.supabase\.co$/i.test(hostname)) {
+  if (/^db\.[^.]+\.supabase\.co$/i.test(parsed.hostname)) {
     throw new Error(
       [
         "DATABASE_URL points at Supabase's direct Postgres host, which is IPv6-only and often unreachable from Railway.",
         "Use the Supabase connection pooler URL instead, for example:",
-        "postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require",
+        "postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=no-verify",
       ].join(" "),
     );
   }
@@ -59,6 +79,18 @@ export function assertRailwayCompatibleDatabaseUrl(
 
 function isRailwayRuntime(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID || env.RAILWAY_SERVICE_ID);
+}
+
+function isSupabasePoolerHost(hostname: string): boolean {
+  return /^aws-\d+-[a-z0-9-]+\.pooler\.supabase\.com$/i.test(hostname);
+}
+
+function parseDatabaseUrl(databaseUrl: string): URL | null {
+  try {
+    return new URL(databaseUrl);
+  } catch {
+    return null;
+  }
 }
 
 /** Run all SQL migration files in apps/gateway/migrations in lexical order. */

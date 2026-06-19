@@ -154,10 +154,12 @@ For runtime persistence on Railway, set `DATABASE_URL` to the Supabase connectio
 pooler string, not the direct `db.<project-ref>.supabase.co:5432` string. The
 direct host is IPv6-only and commonly fails from Railway with `ENETUNREACH` on
 port 5432, which prevents sessions, word payments, and settlement receipts from
-being persisted. Use the Supabase Dashboard connection-pooling URL, for example:
+being persisted. Use the Supabase Dashboard connection-pooling URL. If Node
+rejects the pooler certificate chain with `SELF_SIGNED_CERT_IN_CHAIN`, use
+`sslmode=no-verify` unless you also configure the Supabase CA certificate:
 
 ```bash
-DATABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
+DATABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=no-verify
 ```
 
 ## Docs

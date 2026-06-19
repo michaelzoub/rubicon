@@ -11,7 +11,7 @@ declare module "pg" {
     release(): void;
   }
   export class Pool {
-    constructor(config?: { connectionString?: string; max?: number });
+    constructor(config?: { connectionString?: string; max?: number; ssl?: { rejectUnauthorized?: boolean } });
     query<R = Record<string, unknown>>(text: string, params?: unknown[]): Promise<QueryResult<R>>;
     connect(): Promise<PoolClient>;
     end(): Promise<void>;
