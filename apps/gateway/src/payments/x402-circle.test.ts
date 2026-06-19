@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import type { SessionRecord } from "@rubicon-caliga/core";
 import type { PaymentRequirements } from "@x402/core/types";
 import { SettlementQueue } from "./settlement-queue.js";
@@ -205,4 +206,99 @@ test("synchronousSettlement settles inline and returns the transfer id immediate
   assert.equal(settleCalls, 1);
   assert.equal(result.transferId, "inline-uuid");
   assert.equal(result.settlementId, "inline-uuid");
+});
+
+// ---------------------------------------------------------------------------
+// Chunk/bundle requirement matching (regression for
+// payment_does_not_match_session_terms on the default bundled stream mode)
+// ---------------------------------------------------------------------------
+
+// Faithful re-implementation of @x402/core's `paymentRequirementsMatchAccepted`:
+// requirement core must deep-equal the signed payload's accepted core, and the
+// requirement's `extra` must be a subset of the signed `extra`. The default test
+// double returns `available[0]`, which masks the real matching behavior.
+function matchesAccepted(required: Record<string, unknown>, accepted: Record<string, unknown>): boolean {
+  const { extra: requiredExtra, ...requiredCore } = required;
+  const { extra: acceptedExtra, ...acceptedCore } = accepted;
+  if (!isDeepStrictEqual(requiredCore, acceptedCore)) return false;
+  if (requiredExtra === undefined) return true;
+  return objectContainsSubset(requiredExtra, acceptedExtra);
+}
+
+function objectContainsSubset(expected: unknown, actual: unknown): boolean {
+  if (expected === null || typeof expected !== "object" || Array.isArray(expected)) {
+    return isDeepStrictEqual(expected, actual);
+  }
+  if (actual === null || typeof actual !== "object" || Array.isArray(actual)) {
+    return false;
+  }
+  const actualRecord = actual as Record<string, unknown>;
+  return Object.entries(expected as Record<string, unknown>).every(([key, value]) => {
+    if (!Object.prototype.hasOwnProperty.call(actualRecord, key)) return value === undefined;
+    return objectContainsSubset(value, actualRecord[key]);
+  });
+}
+
+const faithfulMatcher: ResourceServerLike["findMatchingRequirements"] = (available, payload) =>
+  available.find((requirement) =>
+    matchesAccepted(
+      requirement as unknown as Record<string, unknown>,
+      (payload as unknown as { accepted: Record<string, unknown> }).accepted,
+    ),
+  );
+
+const PER_WORD_REQUIREMENT = {
+  scheme: "exact",
+  network: "eip155:5042002",
+  asset: "USDC",
+  amount: "1",
+  payTo: "0x000000000000000000000000000000000000aaaa",
+  maxTimeoutSeconds: 604_900,
+  extra: {
+    sessionId: "session_1",
+    articleId: "art-1",
+    sequence: 0,
+    meteringUnit: "word",
+    amountAtomic: "1",
+    asset: "USDC",
+    payTo: "0x000000000000000000000000000000000000aaaa",
+    nonce: "session_1:0",
+    idempotencyKey: "session_1:0",
+  },
+} as unknown as PaymentRequirements;
+
+test("verify accepts a chunk authorization whose signed extra is chunk-scoped", async () => {
+  const verifier = new CircleX402PaymentVerifier({
+    resourceServer: makeResourceServer({ findMatchingRequirements: faithfulMatcher }),
+  });
+
+  // The buyer signs a 5-word chunk: amount and extra are overridden the way the
+  // agent SDK's `withChunkRequirement` does, including chunk-scoped nonce/key.
+  const chunkAccepted = {
+    ...PER_WORD_REQUIREMENT,
+    amount: "5",
+    extra: {
+      ...(PER_WORD_REQUIREMENT.extra as Record<string, unknown>),
+      amountAtomic: "5",
+      maxWords: 5,
+      sequence: 0,
+      authorizationMode: "chunk",
+      nonce: "session_1:0:5",
+      idempotencyKey: "session_1:0:5",
+    },
+  };
+  const chunkPayment = {
+    paymentPayload: { x402Version: 2, accepted: chunkAccepted, payload: {} },
+  } as never;
+
+  const session = makeSession({
+    paymentRequired: { accepts: [PER_WORD_REQUIREMENT] },
+    pricePerWordAtomic: 1n,
+    gatewayFeeBps: 0,
+  } as Partial<SessionRecord>);
+
+  // Server passes the whole-chunk amount (wordPaymentAtomic * maxWords) as `wordPaymentAtomic`.
+  const result = await verifier.verify({ session, wordPaymentAtomic: 5n, payment: chunkPayment });
+  assert.equal(result.accepted, true, result.accepted ? "" : `rejected: ${result.reason}`);
+  assert.equal(result.amountAtomic, "5");
 });

@@ -447,6 +447,18 @@ function usdcDollarsFromAtomic(amountAtomic: string): string {
 function paymentRequirementsFromSession(session: SessionRecord, expectedAmountAtomic: bigint): PaymentRequirements[] {
   const paymentRequired = session.paymentRequired as { accepts?: PaymentRequirements[] } | undefined;
   if (!Array.isArray(paymentRequired?.accepts)) return [];
+  // The chunk authorization the buyer signs (see `withChunkRequirement` in the
+  // agent SDK) overrides the session's per-word `extra` with chunk-scoped
+  // nonce/idempotencyKey/maxWords/sequence. The x402 matcher requires the
+  // requirement's `extra` to be a subset of the signed payload's `extra`, so the
+  // synthesized chunk requirement MUST mirror those overrides exactly — keeping
+  // the per-word nonce here is what produced `payment_does_not_match_session_terms`.
+  const sequence = session.wordsDelivered;
+  const maxWords = wordsCoveredByAuthorization(
+    expectedAmountAtomic,
+    session.pricePerWordAtomic,
+    session.gatewayFeeBps,
+  );
   return paymentRequired.accepts.flatMap((requirement) => {
     const currentAmount = BigInt(requirement.amount as `${bigint}`);
     if (currentAmount === expectedAmountAtomic) return [requirement];
@@ -458,7 +470,11 @@ function paymentRequirementsFromSession(session: SessionRecord, expectedAmountAt
         extra: {
           ...((requirement.extra as Record<string, unknown> | undefined) ?? {}),
           amountAtomic: `${expectedAmountAtomic}`,
+          maxWords,
+          sequence,
           authorizationMode: "chunk",
+          nonce: `${session.id}:${sequence}:${maxWords}`,
+          idempotencyKey: `${session.id}:${sequence}:${maxWords}`,
         },
       },
     ];
