@@ -725,7 +725,7 @@ test("2: ten payments release exactly ten words", async () => {
   await app.close();
 });
 
-test("chunk stream releases several words from one authorization but records each word", async () => {
+test("chunk stream releases several words from one authorization and returns one bundle receipt", async () => {
   const { app, ledger } = setup();
   const session = await startSession(app);
   const res = await app.inject({
@@ -738,15 +738,87 @@ test("chunk stream releases several words from one authorization but records eac
     },
   });
   assert.equal(res.statusCode, 200, res.body);
-  const body = res.json() as { words: Array<{ word: string }>; wordsDelivered: number; paidAtomic: string };
+  const body = res.json() as {
+    words: Array<{ word: string }>;
+    wordsDelivered: number;
+    paidAtomic: string;
+    payment: { amountAtomic: string; wordsDelivered: number; pricePerWordAtomic: string; text: string };
+  };
   assert.deepEqual(body.words.map((entry) => entry.word), PLAIN_WORDS.slice(0, 5));
   assert.equal(body.wordsDelivered, 5);
   assert.equal(body.paidAtomic, `${PRICE * 5n}`);
+  assert.equal(body.payment.amountAtomic, `${PRICE * 5n}`);
+  assert.equal(body.payment.wordsDelivered, 5);
+  assert.equal(body.payment.pricePerWordAtomic, `${PRICE}`);
+  assert.equal(body.payment.text, PLAIN_WORDS.slice(0, 5).join(" "));
   const deliveries = await ledger.listDeliveries(session.sessionId);
   assert.equal(deliveries.length, 5);
   const payments = await ledger.listPayments(session.sessionId);
   assert.equal(payments.length, 5);
   assert.ok(payments.every((payment) => payment.amountAtomic === `${PRICE}`));
+  await app.close();
+});
+
+test("chunk stream clamps requested bundle to remaining article words before verification", async () => {
+  const shortBody = Array.from({ length: 15 }, (_, index) => `s${index + 1}`).join(" ");
+  const { app } = setup({ articles: [plainArticle({ body: shortBody })] });
+  const session = await startSession(app);
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/stream`,
+    payload: {
+      paymentPayload: { amountAtomic: `${PRICE * 15n}` },
+      maxWords: 32,
+      idempotencyKey: "short-bundle",
+    },
+  });
+  assert.equal(res.statusCode, 200, res.body);
+  const body = res.json() as { words: Array<{ word: string }>; payment: { amountAtomic: string; wordsDelivered: number }; completed: boolean };
+  assert.equal(body.words.length, 15);
+  assert.equal(body.payment.amountAtomic, `${PRICE * 15n}`);
+  assert.equal(body.payment.wordsDelivered, 15);
+  assert.equal(body.completed, true);
+  await app.close();
+});
+
+test("chunk stream clamps bundle to remaining session budget before verification", async () => {
+  const { app } = setup();
+  const session = await startSession(app, "art-plain", `${PRICE * 3n}`);
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/stream`,
+    payload: {
+      paymentPayload: { amountAtomic: `${PRICE * 3n}` },
+      maxWords: 32,
+      idempotencyKey: "budget-bundle",
+    },
+  });
+  assert.equal(res.statusCode, 200, res.body);
+  const body = res.json() as { words: Array<{ word: string }>; paidAtomic: string; payment: { amountAtomic: string; wordsDelivered: number } };
+  assert.equal(body.words.length, 3);
+  assert.equal(body.paidAtomic, `${PRICE * 3n}`);
+  assert.equal(body.payment.amountAtomic, `${PRICE * 3n}`);
+  assert.equal(body.payment.wordsDelivered, 3);
+  await app.close();
+});
+
+test("chunk stream clamps bundle to explicit maxWords", async () => {
+  const { app } = setup();
+  const session = await startSession(app);
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/stream`,
+    payload: {
+      paymentPayload: { amountAtomic: `${PRICE * 7n}` },
+      maxWords: 7,
+      idempotencyKey: "max-words-bundle",
+    },
+  });
+  assert.equal(res.statusCode, 200, res.body);
+  const body = res.json() as { words: Array<{ word: string }>; payment: { amountAtomic: string; wordsDelivered: number } };
+  assert.equal(body.words.length, 7);
+  assert.equal(body.payment.amountAtomic, `${PRICE * 7n}`);
+  assert.equal(body.payment.wordsDelivered, 7);
   await app.close();
 });
 

@@ -9,6 +9,7 @@ export interface Budget {
 }
 
 export type AuthorizationMode = "session" | "chunk" | "word";
+export type StreamMode = "bundled" | "word";
 
 /** Safe public article metadata. Never includes unpaid body text. */
 export interface ArticleSummary {
@@ -221,6 +222,7 @@ export interface StreamChunkResponse {
     sequence: number;
     word: string;
     priceAtomic: AtomicAmount;
+    /** @deprecated Bundled reads now report one payment on the chunk response. */
     payment?: WordPaymentReceipt;
   }>;
   text: string;
@@ -229,6 +231,8 @@ export interface StreamChunkResponse {
   paidAtomic: AtomicAmount;
   completed: boolean;
   authorizationMode?: AuthorizationMode;
+  /** Canonical receipt for the bundled authorization that released these words. */
+  payment?: WordPaymentReceipt;
   transactionHash?: string;
   transactionHashes?: string[];
   settlementId?: string;
@@ -244,6 +248,18 @@ export interface WordPaymentReceipt {
   sequence: number;
   meteringUnit: "word";
   amountAtomic: AtomicAmount;
+  /** Present when one payment authorized more than one delivered word. */
+  bundleSequence?: number;
+  /** Present for bundle receipts; first delivered word sequence in the bundle. */
+  startSequence?: number;
+  /** Present for bundle receipts; last delivered word sequence in the bundle. */
+  endSequence?: number;
+  /** Number of words released by this payment. Defaults to 1 for legacy receipts. */
+  wordsDelivered?: number;
+  /** Creator price for each delivered word before bundle multiplication. */
+  pricePerWordAtomic?: AtomicAmount;
+  /** Text released by this payment. */
+  text?: string;
   currency: "USDC";
   network?: string;
   payTo?: `0x${string}`;
@@ -325,6 +341,22 @@ export type GatewayEvent =
       sequence: number;
       word: string;
       priceAtomic: AtomicAmount;
+      totalWordsStreamed: number;
+      totalPaidAtomic: AtomicAmount;
+    }
+  | {
+      type: "article.bundle";
+      sessionId: string;
+      articleId: string;
+      bundleSequence: number;
+      startSequence: number;
+      endSequence: number;
+      words: Array<{ sequence: number; word: string; priceAtomic: AtomicAmount }>;
+      text: string;
+      wordCount: number;
+      pricePerWordAtomic: AtomicAmount;
+      amountAtomic: AtomicAmount;
+      paymentId?: string;
       totalWordsStreamed: number;
       totalPaidAtomic: AtomicAmount;
     }

@@ -126,6 +126,25 @@ export class CircleAgentWalletEngine implements AgentPaymentEngine {
       paymentPayload: await this.x402.createPaymentPayload(session.paymentRequired as never),
     };
   }
+
+  async createChunkPayment(session: StartSessionResponse, input: { nextSequence: number; maxWords: number }): Promise<StreamPaymentRequest> {
+    if (!session.paymentRequired) {
+      throw new Error("Session did not include an x402 payment requirement");
+    }
+    await this.signer.ensureAddress();
+    const amountAtomic = BigInt(session.wordPaymentAtomic) * BigInt(input.maxWords);
+    return {
+      paymentPayload: await this.x402.createPaymentPayload(
+        withChunkRequirement(session.paymentRequired, {
+          amountAtomic: `${amountAtomic}`,
+          maxWords: input.maxWords,
+          nextSequence: input.nextSequence,
+          sessionId: session.sessionId,
+        }) as never,
+      ),
+      maxWords: input.maxWords,
+    };
+  }
 }
 
 /**
@@ -205,4 +224,30 @@ function isEip712Field(field: unknown): field is { name: string; type: string } 
     typeof (field as { name?: unknown }).name === "string" &&
     typeof (field as { type?: unknown }).type === "string"
   );
+}
+
+function withChunkRequirement(
+  paymentRequired: unknown,
+  chunk: { amountAtomic: `${bigint}`; maxWords: number; nextSequence: number; sessionId: string },
+): unknown {
+  const source = paymentRequired as { accepts?: Array<Record<string, unknown>> };
+  if (!Array.isArray(source.accepts)) {
+    return paymentRequired;
+  }
+  return {
+    ...(paymentRequired as Record<string, unknown>),
+    accepts: source.accepts.map((accept) => ({
+      ...accept,
+      amount: chunk.amountAtomic,
+      extra: {
+        ...((accept.extra as Record<string, unknown> | undefined) ?? {}),
+        amountAtomic: chunk.amountAtomic,
+        maxWords: chunk.maxWords,
+        sequence: chunk.nextSequence,
+        authorizationMode: "chunk",
+        nonce: `${chunk.sessionId}:${chunk.nextSequence}:${chunk.maxWords}`,
+        idempotencyKey: `${chunk.sessionId}:${chunk.nextSequence}:${chunk.maxWords}`,
+      },
+    })),
+  };
 }

@@ -5,15 +5,15 @@ agents. A **buyer agent** opens a budgeted reading session, authorizes a maximum
 USDC spend, and pays for the **exact words** it actually receives; a server-side
 **seller agent** represents the
 article, helps the buyer find the right section without leaking unpaid content,
-and controls the paid stream one word at a time. The buyer can stop the instant
+and controls the paid stream in budget-safe word bundles. The buyer can stop the instant
 it has enough information and pays for exactly the words it received.
 
 Rubicon is still pay per word. The change is where payment work happens:
-Circle/Arc authorization is session-level by default, chunk-level as a fallback,
-and never one network/payment round trip per word. The gateway meters delivered
-words exactly, withholds content beyond the authorized budget, and settles the
-final charge from actual usage. Creators earn according to the exact number of
-words delivered.
+CLI/API reads authorize bundled words by default, with explicit one-word mode
+available for debugging or strict metering. The gateway meters delivered words
+exactly, withholds content beyond the authorized budget, article/section bounds,
+or stop conditions, and records bundled payment receipts with per-word detail.
+Creators earn according to the exact number of words delivered.
 
 ## Packages
 
@@ -136,12 +136,10 @@ Only articles with `state = live` are consumable by buyer agents.
 3. Ensure each live article resolves to a verified creator wallet.
 4. Set `CIRCLE_FACILITATOR_URL` for the target network.
 
-The target path creates one Circle / Arc-compatible authorization for the
-session's maximum spend, streams only words covered by the remaining authorized
-cap, and settles the final amount from actual words delivered. If the wallet or
-facilitator cannot support a session cap yet, Rubicon falls back to chunk
-authorizations so the network/payment layer still runs once per chunk, not once
-per word.
+The target path creates Circle / Arc-compatible bundled authorizations, streams
+only words covered by the remaining budget and selected article range, and
+records the final amount from actual words delivered. Explicit word mode remains
+available when a buyer needs one authorization per delivered word.
 
 ## Railway deployment
 

@@ -46,19 +46,22 @@ gateway. For real Arc Testnet settlement without raw private keys, pass
 
 ## `run(options)`
 
-Runs the whole seller conversation → session authorization → word-level metering
-→ final receipt cycle and returns a final receipt. Use `onWord` or `onEvent`
-when you want live progress.
+Runs the whole seller conversation → bundled authorization → metered delivery →
+final receipt cycle and returns a final receipt. Use `onWord` or `onEvent` when
+you want live progress.
 
 ## `read(options)`
 
-Yields `session.started`, `seller.message`, `article.word`, `article.usage`,
-`article.completed` (with a final receipt), and `article.error`. It handles:
+Yields `session.started`, `seller.message`, `article.bundle`, `article.usage`,
+`article.completed` (with a final receipt), and `article.error` by default.
+Use `streamMode: "word"` for legacy `article.word` events and one-word
+authorization/delivery. It handles:
 
 - seller-agent conversation and starting-section selection
-- session authorization, with chunk or one-word fallback for older gateways
-- word receipt and running usage
-- retry idempotency (per-word idempotency keys)
+- bundled authorization, with one-word fallback for older gateways or explicit
+  word mode
+- bundled receipt metadata and running usage
+- retry idempotency
 - budget enforcement (`maxSpendAtomic` / `budget`)
 - early stopping (`stopWhen`, `maxWords`)
 - stream abortion and a final receipt

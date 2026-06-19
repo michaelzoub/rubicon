@@ -156,9 +156,9 @@ Paid reads require an explicit budget:
 rubicon read <article-id> --max-usdc 0.10
 rubicon read <article-id> --max-usdc 0.10 --goal "find the pricing section"
 rubicon read <article-id> --max-usdc 0.10 --section section-22 --stop-after-section
+rubicon read <article-id> --max-usdc 0.10 --section section-22 --stream-mode bundled
 rubicon read <article-id> --max-usdc 0.10 --section section-22 --chunk-words 32
-rubicon read <article-id> --max-usdc 0.10 --section section-22 --fast
-rubicon read <article-id> --max-usdc 0.10 --section section-22 --mode batch
+rubicon read <article-id> --max-usdc 0.10 --section section-22 --per-word
 rubicon read <article-id> --max-usdc 0.10 --max-words 50
 rubicon read <article-id> --max-atomic 100000
 ```
@@ -168,12 +168,15 @@ streams only that selected section, so the read naturally ends at the section
 boundary. `--stop-after-section` documents that intent and requires either a
 section flag or a goal that lets the seller agent recommend one.
 
-Use `--chunk-words` to keep word-accurate accounting while reducing round trips.
-The buyer authorizes a small batch, the gateway releases the paid words together,
-and the receipt still records each delivered word separately. `--fast` is a
-shortcut for `--chunk-words 32`; `--mode batch` is the same batch-friendly
-default. Use `--mode word` when you explicitly want compatibility one-word
-delivery.
+Bundled reads are the default. The buyer authorizes a small word bundle, the
+gateway releases those paid words together, and the receipt records one bundled
+payment with the bundle sequence, word count, amount, per-word price, and text.
+The bundle is clamped to the remaining budget, selected section/article bounds,
+and `--max-words`. Use `--chunk-words` to choose the target bundle size; the
+default is 32 words. `--fast` and `--mode batch` remain compatibility aliases for
+batch-friendly reads. Use `--stream-mode word`, `--per-word`, or `--mode word`
+when you explicitly want the old one-word authorization and `article.word`
+events for debugging or strict metering.
 
 Without `--json`, words stream as they arrive. At the end, the CLI prints a
 compact receipt summary with session id, article id, words read, amount paid,
@@ -181,14 +184,15 @@ stop reason, buyer/seller wallet details, network/Circle chain, settlement ids,
 transaction hashes when present, and the saved receipt id.
 
 With `--json`, the CLI emits newline-delimited JSON events during the stream and
-a final `receipt.saved` event:
+a final `receipt.saved` event. Default reads emit `article.bundle` events;
+`article.word` events are only emitted in explicit word mode:
 
 ```bash
 rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --json
 ```
 
 For agent workflows that only need the useful result, add `--summary` or
-`--receipt-summary`. This suppresses per-word events and returns the article id,
+`--receipt-summary`. This suppresses stream events and returns the article id,
 session id, words read, spend, stop reason, completion flag, and paid text:
 
 ```bash

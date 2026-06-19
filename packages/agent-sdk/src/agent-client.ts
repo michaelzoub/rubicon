@@ -8,6 +8,7 @@ import type {
   StartSessionRequest,
   StartSessionResponse,
   StreamChunkResponse,
+  StreamMode,
   StreamPaymentRequest,
   StreamPaymentResponse,
   WordPaymentReceipt,
@@ -65,6 +66,20 @@ export type RubiconReadEvent =
       text: string;
     }
   | {
+      type: "article.bundle";
+      bundleSequence: number;
+      words: Array<{ sequence: number; word: string; priceAtomic: `${bigint}`; payment?: WordPaymentReceipt }>;
+      text: string;
+      bundleText: string;
+      wordCount: number;
+      amountAtomic: `${bigint}`;
+      payment?: WordPaymentReceipt;
+      wordsRead: number;
+      amountPaidAtomic: `${bigint}`;
+      completed: boolean;
+    }
+  /** @deprecated Use article.bundle. */
+  | {
       type: "article.chunk";
       words: Array<{ sequence: number; word: string; priceAtomic: `${bigint}`; payment?: WordPaymentReceipt }>;
       text: string;
@@ -87,6 +102,8 @@ export interface ReadOptions {
   maxWords?: number;
   /** Number of words to authorize and deliver per gateway round trip when supported. */
   chunkWords?: number;
+  /** Default is bundled. Use word for legacy one-word events/payments. */
+  streamMode?: StreamMode;
   /** Return true to stop reading once enough information has been collected. */
   stopWhen?: (state: {
     text: string;
@@ -233,6 +250,14 @@ export class RubiconClient {
           wordsRead: event.wordsRead,
           amountPaidAtomic: event.amountPaidAtomic,
         });
+      } else if (event.type === "article.bundle") {
+        for (const entry of event.words) {
+          await options.onWord?.(entry.word, {
+            text: event.text,
+            wordsRead: event.wordsRead,
+            amountPaidAtomic: event.amountPaidAtomic,
+          });
+        }
       }
       if (event.type === "article.completed") {
         receipt = event.receipt;
@@ -297,8 +322,11 @@ export class RubiconClient {
     const transactionHashes: string[] = [];
     const settlementIds: string[] = [];
     const payments: WordPaymentReceipt[] = [];
-    const chunkWords = normalizeChunkWords(options.chunkWords);
-    const useChunks = chunkWords > 1 && typeof this.paymentEngine.createChunkPayment === "function";
+    const streamMode = options.streamMode ?? "bundled";
+    const bundleWords = normalizeBundleWords(options.chunkWords);
+    const useBundles = streamMode === "bundled" && typeof this.paymentEngine.createChunkPayment === "function";
+    const selectedWordLimit = selectedRangeWordLimit(session, sectionId);
+    let bundleSequence = 0;
     let stopReason: ReadReceipt["stopReason"] = "article_completed";
     let completed = false;
 
@@ -333,10 +361,16 @@ export class RubiconClient {
         break;
       }
 
-      if (useChunks) {
-        const remainingWords = options.maxWords === undefined ? chunkWords : Math.max(0, options.maxWords - wordsRead);
+      if (useBundles) {
+        const remainingRequestedWords = options.maxWords === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, options.maxWords - wordsRead);
         const affordableWords = Number((budgetAtomic - amountPaid) / wordPaymentAtomic);
-        const maxWords = Math.max(1, Math.min(chunkWords, remainingWords || chunkWords, affordableWords));
+        const remainingArticleWords =
+          selectedWordLimit === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, selectedWordLimit - wordsRead);
+        const maxWords = Math.min(bundleWords, remainingRequestedWords, affordableWords, remainingArticleWords);
+        if (maxWords < 1) {
+          stopReason = selectedWordLimit !== undefined && wordsRead >= selectedWordLimit ? "article_completed" : "budget_reached";
+          break;
+        }
         const payment = await this.paymentEngine.createChunkPayment!(session, {
           nextSequence: wordsRead,
           maxWords,
@@ -357,10 +391,18 @@ export class RubiconClient {
           yield { type: "article.completed", receipt };
           return receipt;
         }
-        for (const entry of result.words) {
-          if (entry.payment) {
-            payments.push(entry.payment);
+        if (result.payment) {
+          payments.push(result.payment);
+        } else {
+          for (const entry of result.words) {
+            if (entry.payment) {
+              payments.push(entry.payment);
+            }
           }
+        }
+        const previousAmountPaid = amountPaid;
+        const bundleText = result.text || result.words.map((entry) => entry.word).join(" ");
+        for (const entry of result.words) {
           text = text ? `${text} ${entry.word}` : entry.word;
         }
         wordsRead = result.wordsDelivered;
@@ -368,13 +410,19 @@ export class RubiconClient {
         transactionHashes.push(...(result.transactionHashes ?? (result.transactionHash ? [result.transactionHash] : [])));
         settlementIds.push(...(result.settlementIds ?? (result.settlementId ? [result.settlementId] : [])));
         yield {
-          type: "article.chunk",
+          type: "article.bundle",
+          bundleSequence,
           words: result.words,
           text,
+          bundleText,
+          wordCount: result.words.length,
+          amountAtomic: result.payment?.amountAtomic ?? `${amountPaid - previousAmountPaid}`,
+          payment: result.payment,
           wordsRead,
           amountPaidAtomic: `${amountPaid}`,
           completed: result.completed,
         };
+        bundleSequence += 1;
         yield {
           type: "article.usage",
           wordsPaid: result.wordsPaid,
@@ -475,8 +523,15 @@ export class RubiconClient {
 /** Backwards-compatible alias. */
 export const AgentClient = RubiconClient;
 
-function normalizeChunkWords(chunkWords: number | undefined): number {
-  if (chunkWords === undefined) return 1;
+function normalizeBundleWords(chunkWords: number | undefined): number {
+  if (chunkWords === undefined) return 32;
   if (!Number.isInteger(chunkWords) || chunkWords < 1) return 1;
   return Math.min(chunkWords, 256);
+}
+
+function selectedRangeWordLimit(session: StartSessionResponse, sectionId: string | undefined): number | undefined {
+  if (!sectionId || sectionId === "full-article") {
+    return session.article.totalWords;
+  }
+  return session.navigation.sections.find((section) => section.sectionId === sectionId)?.wordCount;
 }

@@ -2,7 +2,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { RubiconClient } from "@rubicon-caliga/agent-sdk";
-import { parseUsdcToAtomic, settlementNetworkInfo, type ArticleSectionSummary, type ArticleSummary } from "@rubicon-caliga/core";
+import { parseUsdcToAtomic, settlementNetworkInfo, type ArticleSectionSummary, type ArticleSummary, type StreamMode } from "@rubicon-caliga/core";
 import { parseArgs, booleanFlag, stringFlag, type ParsedArgs } from "./args.js";
 import { configPath, HOSTED_GATEWAY_URL, readConfig, writeConfig, type RubiconCliConfig } from "./config.js";
 import { CliError, toCliError } from "./errors.js";
@@ -180,6 +180,7 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
   const stopAfterSection = booleanFlag(runtime.parsed.flags, "stop-after-section");
   const summary = booleanFlag(runtime.parsed.flags, "summary") || booleanFlag(runtime.parsed.flags, "receipt-summary");
   const chunkWords = chunkWordsFlag(runtime.parsed);
+  const streamMode = streamModeFlag(runtime.parsed);
   const maxWordsFlag = stringFlag(runtime.parsed.flags, "max-words");
   const maxWords = maxWordsFlag === undefined ? undefined : Number(maxWordsFlag);
   if (maxWords !== undefined && (!Number.isInteger(maxWords) || maxWords < 1)) {
@@ -193,7 +194,7 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
   }
 
   if (booleanFlag(runtime.parsed.flags, "dry-run")) {
-    await dryRun(runtime, articleId, maxSpendAtomic, goal, maxWords, sectionId, stopAfterSection, chunkWords);
+    await dryRun(runtime, articleId, maxSpendAtomic, goal, maxWords, sectionId, stopAfterSection, chunkWords, streamMode);
     return;
   }
 
@@ -220,6 +221,7 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
     maxSpendAtomic,
     maxWords,
     chunkWords,
+    streamMode,
     metadata: stopAfterSection ? { stopAfterSection: true } : undefined,
   });
 
@@ -253,6 +255,7 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
         case "article.word":
           if (!summary) process.stdout.write(`${event.word} `);
           break;
+        case "article.bundle":
         case "article.chunk":
           if (!summary) process.stdout.write(`${event.words.map((entry) => entry.word).join(" ")} `);
           break;
@@ -309,6 +312,7 @@ async function dryRun(
   sectionId: string | undefined,
   stopAfterSection: boolean,
   chunkWords: number | undefined,
+  streamMode: StreamMode,
 ): Promise<void> {
   const article = await findArticle(runtime, articleId);
   const navigation = goal && !sectionId ? await runtime.client.getNavigation(articleId, goal).catch(() => undefined) : undefined;
@@ -349,6 +353,7 @@ async function dryRun(
       readStartsAt: effectiveSectionId ? `section:${effectiveSectionId}` : "full-article",
       stopAfterSection,
       chunkWords,
+      streamMode,
       fundingMethod,
       estimatedMax: budgetSufficiency,
       walletBalance: balanceCheck,
@@ -376,7 +381,8 @@ async function dryRun(
       `Read starts at: ${effectiveSectionId ? `section ${effectiveSectionId}` : "full article"}`,
       sectionId ? `Section: ${sectionId}` : undefined,
       stopAfterSection ? "Stop after section: yes" : undefined,
-      chunkWords ? `Chunk words: ${chunkWords}` : undefined,
+      `Stream mode: ${streamMode}`,
+      streamMode === "bundled" ? `Bundle words: ${chunkWords ?? 32}` : undefined,
       "",
       humanArticle(article),
       "",
@@ -535,14 +541,27 @@ function chunkWordsFlag(parsed: ParsedArgs): number | undefined {
   }
   const rawChunkWords = stringFlag(parsed.flags, "chunk-words");
   if (rawChunkWords === undefined) return fast || mode === "batch" ? 32 : undefined;
-  if (mode === "word") {
-    throw new CliError("INVALID_READ_MODE", "--mode word cannot be combined with --chunk-words.");
-  }
   const chunkWords = Number(rawChunkWords);
   if (!Number.isInteger(chunkWords) || chunkWords < 1) {
     throw new CliError("INVALID_CHUNK_WORDS", "--chunk-words must be a positive integer.");
   }
   return Math.min(chunkWords, 256);
+}
+
+function streamModeFlag(parsed: ParsedArgs): StreamMode {
+  const streamMode = stringFlag(parsed.flags, "stream-mode");
+  const legacyMode = stringFlag(parsed.flags, "mode");
+  const perWord = booleanFlag(parsed.flags, "per-word");
+  if (streamMode !== undefined && streamMode !== "bundled" && streamMode !== "word") {
+    throw new CliError("INVALID_STREAM_MODE", "--stream-mode must be bundled or word.");
+  }
+  if (perWord && streamMode === "bundled") {
+    throw new CliError("INVALID_STREAM_MODE", "--per-word cannot be combined with --stream-mode bundled.");
+  }
+  if ((perWord || legacyMode === "word" || streamMode === "word") && stringFlag(parsed.flags, "chunk-words") !== undefined) {
+    throw new CliError("INVALID_STREAM_MODE", "Per-word mode cannot be combined with --chunk-words.");
+  }
+  return perWord || legacyMode === "word" ? "word" : streamMode ?? "bundled";
 }
 
 function findSection(article: ArticleSummary, sectionId: string): ArticleSectionSummary | undefined {
@@ -580,7 +599,7 @@ function showHelp(json: boolean): void {
     "rubicon search \"<query>\"",
     "rubicon article show <article-id>",
     "rubicon article navigation <article-id> --goal \"<goal>\"",
-    "rubicon read <article-id> --max-usdc 0.10 [--goal \"...\"] [--section <section-id>] [--stop-after-section] [--chunk-words 32] [--fast] [--max-words 50] [--summary] [--dry-run]",
+    "rubicon read <article-id> --max-usdc 0.10 [--goal \"...\"] [--section <section-id>] [--stop-after-section] [--stream-mode bundled|word] [--chunk-words 32] [--per-word] [--max-words 50] [--summary] [--dry-run]",
     "rubicon receipts list [--limit 10] [--summary]",
     "rubicon receipts show <receipt-id> [--summary]",
     "rubicon config show",
