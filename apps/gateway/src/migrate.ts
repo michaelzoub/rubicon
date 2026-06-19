@@ -1,4 +1,4 @@
-import { createPgPool, runMigrations } from "./repositories/postgres.js";
+import { assertRailwayCompatibleDatabaseUrl, createPgPool, runMigrations } from "./repositories/postgres.js";
 
 // Apply Rubicon's shared schema migrations.
 //
@@ -12,6 +12,7 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is not set");
 }
 
+assertRailwayCompatibleDatabaseUrl(databaseUrl);
 const pool = createPgPool(databaseUrl);
 try {
   await runMigrations(pool);

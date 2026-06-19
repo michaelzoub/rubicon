@@ -28,7 +28,10 @@ console.log("[gateway] using Supabase for published articles");
 const databaseUrl = process.env.DATABASE_URL;
 if (databaseUrl) {
   // Runtime sessions, conversations, payments, and receipts remain in Postgres.
-  const { createPgPool, runMigrations, PostgresLedgerRepository } = await import("./repositories/postgres.js");
+  const { assertRailwayCompatibleDatabaseUrl, createPgPool, runMigrations, PostgresLedgerRepository } = await import(
+    "./repositories/postgres.js"
+  );
+  assertRailwayCompatibleDatabaseUrl(databaseUrl);
   const pool = createPgPool(databaseUrl);
   if (process.env.RUN_MIGRATIONS === "true") {
     await runMigrations(pool);

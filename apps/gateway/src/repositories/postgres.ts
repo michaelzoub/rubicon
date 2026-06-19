@@ -31,6 +31,36 @@ export function createPgPool(databaseUrl: string): Pool {
   return new Pool({ connectionString: databaseUrl });
 }
 
+export function assertRailwayCompatibleDatabaseUrl(
+  databaseUrl: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (!isRailwayRuntime(env)) {
+    return;
+  }
+
+  let hostname: string;
+  try {
+    hostname = new URL(databaseUrl).hostname;
+  } catch {
+    return;
+  }
+
+  if (/^db\.[^.]+\.supabase\.co$/i.test(hostname)) {
+    throw new Error(
+      [
+        "DATABASE_URL points at Supabase's direct Postgres host, which is IPv6-only and often unreachable from Railway.",
+        "Use the Supabase connection pooler URL instead, for example:",
+        "postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require",
+      ].join(" "),
+    );
+  }
+}
+
+function isRailwayRuntime(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.RAILWAY_ENVIRONMENT || env.RAILWAY_PROJECT_ID || env.RAILWAY_SERVICE_ID);
+}
+
 /** Run all SQL migration files in apps/gateway/migrations in lexical order. */
 export async function runMigrations(pool: Pool): Promise<void> {
   const dir = fileURLToPath(new URL("../../migrations/", import.meta.url));

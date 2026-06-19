@@ -150,6 +150,16 @@ and the app agree. A target-port mismatch returns
 listening. The app always honors `process.env.PORT` for the bind, so no
 application-code change is needed — only the env/target port must match.
 
+For runtime persistence on Railway, set `DATABASE_URL` to the Supabase connection
+pooler string, not the direct `db.<project-ref>.supabase.co:5432` string. The
+direct host is IPv6-only and commonly fails from Railway with `ENETUNREACH` on
+port 5432, which prevents sessions, word payments, and settlement receipts from
+being persisted. Use the Supabase Dashboard connection-pooling URL, for example:
+
+```bash
+DATABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
+```
+
 ## Docs
 
 See [docs/architecture.md](./docs/architecture.md),

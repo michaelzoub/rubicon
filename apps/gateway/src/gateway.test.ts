@@ -9,6 +9,7 @@ import {
   type ArticleFixture,
 } from "./repositories/in-memory.js";
 import { resolveSupabaseConfigFromEnv, SupabasePublishedArticleRepository, type SupabaseReader } from "./repositories/supabase.js";
+import { assertRailwayCompatibleDatabaseUrl } from "./repositories/postgres.js";
 import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
 import type { PaymentVerifier } from "./payments/types.js";
 
@@ -694,6 +695,31 @@ test("Supabase env config prefers the service-role key and falls back to anon", 
   assert.throws(
     () => resolveSupabaseConfigFromEnv({ SUPABASE_URL: "https://project.supabase.co" }),
     /Missing required Supabase environment variable/,
+  );
+});
+
+test("Railway DATABASE_URL rejects Supabase direct Postgres hosts", () => {
+  assert.throws(
+    () =>
+      assertRailwayCompatibleDatabaseUrl(
+        "postgresql://postgres:secret@db.project-ref.supabase.co:5432/postgres?sslmode=require",
+        { RAILWAY_ENVIRONMENT: "production" },
+      ),
+    /connection pooler URL/,
+  );
+
+  assert.doesNotThrow(() =>
+    assertRailwayCompatibleDatabaseUrl(
+      "postgresql://postgres.project-ref:secret@aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require",
+      { RAILWAY_ENVIRONMENT: "production" },
+    ),
+  );
+
+  assert.doesNotThrow(() =>
+    assertRailwayCompatibleDatabaseUrl(
+      "postgresql://postgres:secret@db.project-ref.supabase.co:5432/postgres?sslmode=require",
+      {},
+    ),
   );
 });
 
