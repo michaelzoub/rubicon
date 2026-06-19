@@ -88,6 +88,33 @@ export function sectionsFromMarkdown(articleId: string, content: string): Articl
   return [full, ...headings];
 }
 
+/**
+ * Reconcile advertised section ranges against the actual tokenized word array.
+ *
+ * The gateway always slices delivered words out of `tokenizeWords(body)`, so the
+ * advertised counts a buyer signs against must never exceed what that array can
+ * yield. Stored `word_start`/`word_count` (authored by rubicon-marketing) can
+ * drift from the body — e.g. a later edit shortened the text but the section
+ * rows or `total_words` were not recomputed. Left unclamped, a buyer could sign
+ * an authorization for more words than the gateway can deliver, and the
+ * EIP-3009 value would exceed what gets sliced. Clamping here makes every
+ * advertised range a subset of the sliceable words so the two clamps agree.
+ */
+export function clampSectionsToWords(
+  words: string[],
+  sections: ArticleSection[],
+): ArticleSection[] {
+  const total = words.length;
+  return sections.map((section) => {
+    const wordStart = Math.max(0, Math.min(section.wordStart, total));
+    const wordCount = Math.max(0, Math.min(section.wordCount, total - wordStart));
+    if (wordStart === section.wordStart && wordCount === section.wordCount) {
+      return section;
+    }
+    return { ...section, wordStart, wordCount };
+  });
+}
+
 /** Resolve the ordered word list for a section (or the whole article). */
 export function wordsForSection(
   words: string[],

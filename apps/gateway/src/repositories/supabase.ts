@@ -4,7 +4,7 @@ import type { ArticleSection, ArticleState, ArticleSummary, CreatorWallet, Selle
 import { PUBLIC_ARTICLE_STATE } from "@rubicon-caliga/core";
 import { createRequire } from "node:module";
 import { toCaip2Network } from "../chain.js";
-import { tokenizeWords } from "../words.js";
+import { clampSectionsToWords, tokenizeWords } from "../words.js";
 import type { ArticleRecord, PublishedArticleRepository } from "./types.js";
 
 const require = createRequire(import.meta.url);
@@ -236,6 +236,10 @@ function toArticleRecord(row: ArticleRow): ArticleRecord {
   if (!creator) {
     throw new Error(`Live article ${row.id} is missing creator data`);
   }
+  // Single source of truth: the tokenized body is what the gateway slices, so
+  // totalWords and section ranges are derived from it rather than the stored
+  // `total_words`/section rows, which can drift. See clampSectionsToWords.
+  const words = tokenizeWords(row.body);
   return {
     id: row.id,
     creatorId: row.creator_id,
@@ -245,12 +249,12 @@ function toArticleRecord(row: ArticleRow): ArticleRecord {
     state: row.state,
     pricePerWordAtomic: BigInt(row.price_per_word_atomic),
     maxArticlePriceAtomic: row.max_article_price_atomic ? BigInt(row.max_article_price_atomic) : undefined,
-    totalWords: row.total_words,
+    totalWords: words.length,
     revision: row.revision,
     sellerAgentConfig: row.seller_agent_config ?? undefined,
     body: row.body,
-    words: tokenizeWords(row.body),
-    sections,
+    words,
+    sections: clampSectionsToWords(words, sections),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

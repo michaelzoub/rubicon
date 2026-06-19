@@ -638,6 +638,38 @@ test("repository endpoint returns live article records from Supabase", async () 
   await app.close();
 });
 
+test("article records clamp drifted total_words and section ranges to the sliceable body", async () => {
+  // Stored counts have drifted past the actual body: total_words says 6 and the
+  // "later" section claims words 3..5, but the body only holds 3 words. Left
+  // unclamped, a buyer would sign an authorization for more words than the
+  // gateway can ever slice and the EIP-3009 value would exceed delivery.
+  const supabase = new FakeSupabase();
+  supabase.articles[0]!.body = "one two three";
+  supabase.articles[0]!.total_words = 6;
+  const repo = new SupabasePublishedArticleRepository(supabase);
+
+  const article = await repo.getPublishedArticle("art-db");
+  assert.ok(article);
+  // totalWords is derived from the tokenized body, not the stored 6.
+  assert.equal(article.totalWords, 3);
+  assert.equal(article.words.length, 3);
+
+  const start = article.sections.find((section) => section.sectionId === "start");
+  const later = article.sections.find((section) => section.sectionId === "later");
+  // The in-range section is untouched; the drifted one is clamped so its range
+  // never exceeds what the gateway can slice (wordStart 3 leaves 0 words).
+  assert.deepEqual({ wordStart: start?.wordStart, wordCount: start?.wordCount }, { wordStart: 0, wordCount: 3 });
+  assert.deepEqual({ wordStart: later?.wordStart, wordCount: later?.wordCount }, { wordStart: 3, wordCount: 0 });
+
+  // A section starting fully past the body collapses to an empty range at the end.
+  supabase.articles[0]!.body = "only one";
+  const shrunk = await repo.getPublishedArticle("art-db");
+  const startShrunk = shrunk?.sections.find((section) => section.sectionId === "start");
+  assert.deepEqual({ wordStart: startShrunk?.wordStart, wordCount: startShrunk?.wordCount }, { wordStart: 0, wordCount: 2 });
+  const laterShrunk = shrunk?.sections.find((section) => section.sectionId === "later");
+  assert.deepEqual({ wordStart: laterShrunk?.wordStart, wordCount: laterShrunk?.wordCount }, { wordStart: 2, wordCount: 0 });
+});
+
 test("Supabase env config prefers the service-role key and falls back to anon", () => {
   // Service-role key wins when present — the server-side gateway reads directly,
   // bypassing RLS.
