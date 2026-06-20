@@ -103,13 +103,14 @@ directly:
 
 ```bash
 pnpm --filter @rubicon-caliga/cli build
-pnpm dev:cli -- repository --json
-pnpm dev:cli -- read <article-id> --goal "find pricing" --max-usdc 0.10 --dry-run --json
+pnpm dev:cli -- buy --first --goal "find pricing" --max-usdc 0.10 --json
 ```
 
-The CLI is a thin wrapper around `@rubicon-caliga/agent-sdk`. It supports public
-repository discovery, safe metadata search, article navigation, budgeted reads,
-local receipt persistence, and `~/.rubicon/config.json`. It does not implement
+The CLI is a thin wrapper around `@rubicon-caliga/agent-sdk`. Its primary `buy`
+command autonomously performs seller-guided section selection, cumulative
+budget enforcement, wallet readiness checks, strategic paid reads, and verified
+local receipt persistence. It also supports lower-level discovery and debugging
+commands and `~/.rubicon/config.json`. It does not implement
 creator dashboard functionality. See [docs/cli.md](./docs/cli.md).
 
 ## Production storage

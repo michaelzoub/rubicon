@@ -110,6 +110,7 @@ export class DefaultSellerAgent implements SellerAgent {
       modelId: this.model.id,
       recommendedSectionId: navigation.recommendedSectionId,
       alternativeSectionIds: navigation.alternativeSectionIds,
+      sectionAssessments: navigation.sectionAssessments,
       rationale: navigation.rationale,
       safeHints: [
         recommended

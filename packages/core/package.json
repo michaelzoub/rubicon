@@ -1,6 +1,6 @@
 {
   "name": "@rubicon-caliga/core",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Shared protocol types, pricing math, and session primitives for the Rubicon x402 streaming gateway.",
   "license": "MIT",
   "type": "module",

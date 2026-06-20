@@ -114,6 +114,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       sellerAgent: {
         recommendedSectionId: navigation.recommendedSectionId,
         alternativeSectionIds: navigation.alternativeSectionIds,
+        sectionAssessments: navigation.sectionAssessments,
         rationale: navigation.rationale,
         safeHints: navigation.safeHints,
         withheld: navigation.withheld,

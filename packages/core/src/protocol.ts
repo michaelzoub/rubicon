@@ -60,9 +60,20 @@ export interface ArticleNavigation {
 export interface SellerNavigationSummary {
   recommendedSectionId: string;
   alternativeSectionIds: string[];
+  /** Seller estimate derived from safe metadata, never unpaid article text. */
+  sectionAssessments?: SellerSectionAssessment[];
   rationale: string;
   safeHints: string[];
   withheld: string[];
+}
+
+export interface SellerSectionAssessment {
+  sectionId: string;
+  /** Relative likelihood (0..1) that this section answers the buyer's exact goal. */
+  expectedValue: number;
+  /** Smallest prefix the seller expects to be useful. */
+  minimumUsefulWords: number;
+  rationale: string;
 }
 
 export interface StreamStopCondition {

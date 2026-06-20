@@ -9,7 +9,7 @@ import {
   type ArticleFixture,
 } from "./repositories/in-memory.js";
 import { resolveSupabaseConfigFromEnv, SupabasePublishedArticleRepository, type SupabaseReader } from "./repositories/supabase.js";
-import { assertRailwayCompatibleDatabaseUrl, resolvePgPoolConfig } from "./repositories/postgres.js";
+import { assertRailwayCompatibleDatabaseUrl, describeDatabaseUrl, resolvePgPoolConfig } from "./repositories/postgres.js";
 import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
 import type { PaymentVerifier } from "./payments/types.js";
 
@@ -723,6 +723,14 @@ test("Railway DATABASE_URL rejects Supabase direct Postgres hosts", () => {
   );
 });
 
+test("Railway DATABASE_URL rejects placeholder hosts before pg tries DNS", () => {
+  assert.throws(() => assertRailwayCompatibleDatabaseUrl("base", { RAILWAY_ENVIRONMENT: "production" }), /full PostgreSQL/);
+  assert.throws(
+    () => assertRailwayCompatibleDatabaseUrl("postgresql://postgres:secret@base:5432/postgres", { RAILWAY_ENVIRONMENT: "production" }),
+    /host `base`/,
+  );
+});
+
 test("Supabase pooler DATABASE_URL disables pg certificate chain verification", () => {
   assert.deepEqual(
     resolvePgPoolConfig(
@@ -740,6 +748,15 @@ test("Supabase pooler DATABASE_URL disables pg certificate chain verification", 
     {
       connectionString: "postgresql://postgres:secret@localhost:5432/postgres?sslmode=require",
     },
+  );
+});
+
+test("database URL diagnostics redact secrets", () => {
+  assert.equal(
+    describeDatabaseUrl(
+      "postgresql://postgres.project-ref:secret@aws-0-us-west-2.pooler.supabase.com:5432/postgres?sslmode=no-verify",
+    ),
+    "host=aws-0-us-west-2.pooler.supabase.com port=5432 database=postgres user=postgres.project-ref sslmode=no-verify",
   );
 });
 

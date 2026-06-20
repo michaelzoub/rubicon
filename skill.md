@@ -1,301 +1,61 @@
 ---
 name: rubicon
-version: 1.0.0
-description: Set up Rubicon for AI agents - consume pay-per-word articles through the buyer SDK and hosted gateway
+version: 1.1.0
+description: Autonomously buy goal-relevant article content with a hard USDC cap
 homepage: https://github.com/michaelzoub/rubicon
 ---
 
-# Rubicon For AI Agents
+# Rubicon Agent Runbook
 
-Rubicon lets an AI agent read paid articles one word at a time. The buyer opens
-a budgeted session, authorizes a maximum Circle / Arc spend, streams only the
-words it consumes, stops when it has enough information, and receives a final
-receipt for exact usage.
+Rubicon lets agents buy the useful parts of a paid article under one atomic,
+cumulative budget. Use the CLI first and the SDK only in embedded runtimes.
 
-Use the `rubicon` CLI first for common terminal-native agents such as Codex,
-Claude Code, Cursor agents, and other shell-based tools. Use the SDK for custom
-agent runtimes or deeper integrations. Do not hand-wire the HTTP
-session/stream/payment/abort routes unless the user asks for a custom protocol
-test.
-Do not request, store, export, infer, or use raw private keys for normal
-Rubicon paid reads.
+## Hard Rules
 
-## Decision Flow
+- Never request, handle, print, store, infer, or export private keys.
+- Never accept Circle Terms on the user's behalf.
+- Always require an explicit `--max-usdc` or `--max-atomic` budget.
+- Never exceed the approved cumulative cap.
+- Use the testnet faucet only for testnet articles.
+- Do not recommend fiat, crypto on-ramp, or mainnet funding for Arc Testnet.
+- Prefer `--json` for agent-executed commands.
 
-1. **Use the CLI first for terminal agents** — prefer `rubicon repository`,
-   `rubicon article navigation`, and `rubicon read` with `--json`.
-2. **Use the SDK for custom runtimes** — prefer `@rubicon-caliga/agent-sdk` and
-   `rubicon.run(...)` when building an embedded integration.
-3. **Use Circle CLI custody for real reads** — prefer
-   `CircleCliGatewayPaymentEngine`, which signs through Circle CLI / Agent
-   Wallet custody.
-4. **Pass the gateway URL explicitly** — use the hosted Rubicon gateway unless
-   the user is deliberately running a local gateway.
-5. **Dry-run before spending** — always run `rubicon read ... --dry-run` first.
-6. **Confirm the budget before spending** — use the user's exact approved limit
-   as `maxSpendAtomic`.
+## Primary Workflow
 
-Hosted gateway:
-
-```text
-https://rubicon-caligagateway-production.up.railway.app
-```
-
-## Quick Start
-
-For terminal-native agents, configure the hosted gateway and inspect safe public
-metadata through the CLI:
+Run exactly one command:
 
 ```bash
-rubicon config set gateway-url https://rubicon-caligagateway-production.up.railway.app
-rubicon repository --json
-rubicon search "agent economies" --json
-rubicon article show <article-id> --json
-rubicon article navigation <article-id> --goal "find pricing" --json
-rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --dry-run --json
-rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --mode batch --json
-rubicon receipts list --json
-rubicon receipts show <receipt-id> --json
+rubicon buy --first --goal "<exact goal>" --max-usdc <amount> --json
 ```
 
-Always set `--max-usdc` or `--max-atomic` for reads. Prefer `--json` in
-automated workflows. Repository, article, and dry-run output include
-`paymentTerms.circleChain`, network environment, and funding guidance when
-known. For Arc Testnet, `paymentTerms.network` is `eip155:5042002` and
-`paymentTerms.circleChain` is `ARC-TESTNET`; fund through Circle's testnet
-faucet / Gateway testnet flow, not mainnet fiat or crypto. Do not use raw HTTP
-unless testing the protocol.
+`buy` internally verifies wallet readiness, chooses the first relevant live
+article, consults its seller agent, ranks sections by expected information value
+per paid word, purchases under the shrinking cumulative cap, reassesses after
+each section, and saves and verifies every receipt. It may switch sections or
+stop early once the goal is adequately answered. Do not separately run
+`doctor`, repository/article/navigation inspection, wallet status, dry-run, or
+receipt commands before or after a normal purchase.
 
-Install the SDK:
+The JSON result distinguishes `purchasedInformation` from
+`metadataInference`. Internal decisions are emitted as structured events.
 
-```bash
-pnpm add @rubicon-caliga/agent-sdk
-```
+## Blockers
 
-For a dry run against a development gateway, omit `paymentEngine`; the SDK uses
-`StaticPaymentEngine`.
+If `buy` reports missing Circle authentication, use only the supported agent
+wallet login flow. Never ask for private keys and never accept legal terms for
+the user. A low non-testnet balance requires the wallet controller to fund it
+through supported production funding. A low testnet balance may be handled by
+the command's internal testnet faucet flow.
 
-```ts
-import Rubicon from "@rubicon-caliga/agent-sdk";
+## Final Report
 
-const rubicon = new Rubicon({
-  baseUrl: process.env.RUBICON_GATEWAY_URL ?? "http://localhost:8787",
-});
+Report only:
 
-const receipt = await rubicon.run({
-  articleId: "live-article-id-from-repository",
-  goal: "Find the resale-fee clause",
-  maxSpendAtomic: "20000",
-  onWord: (word) => process.stdout.write(`${word} `),
-});
+- blockers, if the command failed;
+- final USDC spending and approved budget;
+- receipt ids and available settlement/payment/transaction details;
+- limitations, including partial reads or metadata-only inferences;
+- the answer derived from `purchasedInformation`.
 
-console.log("\nreceipt:", receipt);
-```
-
-Expected receipt fields include `sessionId`, `articleId`, `wordsRead`,
-`amountPaidAtomic`, `payments`, `settlementIds`, `buyerWalletAddress`,
-`sellerPayTo`, `network`, `text`, `completed`, and `stopReason`.
-
-## Circle CLI Agent Wallet Paid Read
-
-This is the recommended real paid-read path on Arc Testnet. It uses Circle CLI
-and a funded Circle Agent Wallet Gateway/Nanopayments balance, without exposing
-raw private keys to the agent.
-
-```ts
-import Rubicon, { CircleCliGatewayPaymentEngine } from "@rubicon-caliga/agent-sdk";
-
-const rubicon = new Rubicon({
-  baseUrl: process.env.RUBICON_GATEWAY_URL ?? "https://rubicon-caligagateway-production.up.railway.app",
-  authorization: process.env.RUBICON_AGENT_API_KEY
-    ? `Bearer ${process.env.RUBICON_AGENT_API_KEY}`
-    : undefined,
-  paymentEngine: new CircleCliGatewayPaymentEngine({
-    agentWalletAddress: process.env.CIRCLE_AGENT_WALLET_ADDRESS as `0x${string}` | undefined,
-    chain: "ARC-TESTNET",
-  }),
-});
-
-const receipt = await rubicon.run({
-  articleId: "live-article-id-from-repository",
-  goal: "Find the useful part",
-  maxSpendAtomic: "20000",
-  maxWords: 1,
-});
-```
-
-Before spending, verify:
-
-- Circle CLI is installed and logged in: `circle wallet status`
-- An Agent Wallet exists on `ARC-TESTNET`
-- Gateway balance covers the approved budget:
-  `circle gateway balance --address <agent-wallet-address> --chain ARC-TESTNET --output json`
-- The selected article has `paymentTerms.network: "eip155:5042002"` and a
-  seller `payTo` address
-
-Rubicon's Arc Testnet network string is `eip155:5042002`; Circle CLI calls the
-same chain `ARC-TESTNET`.
-
-`CircleCliGatewayPaymentEngine` keeps the Circle Agent Wallet and Gateway
-backing EOA separate. `agentWalletAddress` is passed to
-`circle wallet sign typed-data --address`; `buyerWalletAddress` / `backingEOA`
-is used as the x402 `TransferWithAuthorization.from` address. If only the Agent
-Wallet is configured, the SDK discovers `data.backingEOA` with
-`circle gateway balance --address <agent-wallet-address> --chain ARC-TESTNET --output json`.
-Final Rubicon receipts may therefore show a buyer wallet that differs from the
-Agent Wallet address used for Circle CLI signing.
-
-Rubicon's target Circle / Arc model authorizes the session cap once and settles
-actual words delivered. Current compatibility gateways may still ask the SDK for
-chunk or one-word x402 payloads; agents should treat that as a transport
-fallback, not as a change to the pay-per-word product model.
-
-Gateway/Nanopayments settlement ids can look like UUIDs rather than EVM
-transaction hashes, and `transactionHashes` may be empty. Treat
-`settlementIds` as the primary proof of payment. A successful nanopayment may
-not appear as a direct ERC-20 transfer to the seller on Arcscan. Seller
-dashboards must count Rubicon backend payment receipts / Circle Gateway
-settlement IDs, not direct on-chain transfers. Verify paid reads with the
-Rubicon receipt, `word.payment_accepted` events, and Circle Gateway balance
-before and after the read.
-
-## SDK Surface
-
-Primary method:
-
-```ts
-rubicon.run({
-  articleId,
-  goal,
-  maxSpendAtomic,
-  maxWords,
-  stopWhen,
-  onWord,
-  onEvent,
-});
-```
-
-Streaming method:
-
-```ts
-for await (const event of rubicon.read(options)) {
-  // session.started, seller.message, article.word, article.usage, article.completed
-}
-```
-
-Lower-level methods:
-
-```ts
-rubicon.getRepository()
-rubicon.getNavigation(articleId, goal)
-rubicon.startConversation(input)
-rubicon.sendConversationMessage(conversationId, message)
-rubicon.startSession(request)
-rubicon.payForWord(sessionId, payment)
-rubicon.abort(sessionId, reason)
-rubicon.streamEvents(sessionId, onEvent)
-```
-
-The SDK handles the session-first lifecycle, budget conversion, authorization
-payload shape, idempotency key, and Circle / Arc wrapper. Agents should not
-manually build payment payloads when the SDK payment engine is available.
-
-## Paid-Read Preflight
-
-Before spending real testnet or production funds:
-
-1. Confirm the exact user budget for this read.
-2. Discover live articles from the gateway:
-
-   ```bash
-   curl -s "$RUBICON_GATEWAY_URL/v1/articles?status=published"
-   ```
-
-3. Choose an article from the live response.
-4. Confirm the article exposes USDC payment terms on `eip155:5042002`.
-5. Check Circle CLI login and Agent Wallet balance on `ARC-TESTNET`.
-6. Verify the seller `payTo` is allowed by wallet policy or recipient allowlist.
-
-Stop at the first failed check. Do not substitute on-chain wallet balance for
-Gateway/Nanopayments balance.
-
-## Raw HTTP Protocol
-
-Use raw HTTP only for protocol tests or custom integrations. The SDK input
-`maxSpendAtomic` is a convenience field; raw session creation must use nested
-`budget`:
-
-```json
-{
-  "articleId": "article_<uuid>",
-  "goal": "Find the useful part",
-  "sectionId": "section-2",
-  "budget": {
-    "currency": "USDC",
-    "maxAmountAtomic": "20000"
-  }
-}
-```
-
-Rubicon is session-first. `POST /v1/sessions` returns Circle / Arc
-authorization terms for the maximum approved spend. Preferred gateways stream
-through `POST /v1/sessions/:sessionId/stream`. Compatibility gateways may still
-use `POST /v1/sessions/:sessionId/payments` for chunk or one-word fallback:
-
-```json
-{
-  "paymentPayload": { "...": "signed x402 payment payload" },
-  "idempotencyKey": "<sessionId>:0"
-}
-```
-
-Do not use `circle services pay` against the current Rubicon payments route; it
-expects the endpoint itself to emit a standard HTTP 402 challenge.
-
-Endpoints:
-
-- `GET /v1/repository`
-- `GET /v1/articles?status=published`
-- `GET /v1/articles/:articleId/navigation`
-- `POST /v1/seller-agent/conversations`
-- `POST /v1/sessions`
-- `POST /v1/sessions/:sessionId/payments`
-- `GET /v1/sessions/:sessionId/events`
-- `POST /v1/sessions/:sessionId/abort`
-
-## Hosted Gateway Environment
-
-On Railway, set:
-
-```bash
-PORT=8080
-RUBICON_GATEWAY_URL=https://rubicon-caligagateway-production.up.railway.app
-RUBICON_AGENT_API_KEY=your-shared-buyer-agent-secret
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5.4-mini
-RUBICON_PAYMENTS=circle
-CIRCLE_FACILITATOR_URL=https://gateway-api-testnet.circle.com
-CIRCLE_X402_NETWORKS=eip155:5042002
-```
-
-Keep Railway's service and target port aligned to `8080`.
-
-## Troubleshooting
-
-- `Expected 402`: `circle services pay` was used against Rubicon's
-  session-first payment route. Use the SDK or submit a signed `paymentPayload`.
-- `Cannot read properties of undefined (reading 'maxAmountAtomic')`: raw
-  session body omitted nested `budget`.
-- `invalid_signature`: the payment signature does not match the authorization.
-  Prefer the SDK payment engine instead of manual signing.
-- `authorization_validity_too_short`: the x402 authorization window is too
-  short for Circle Gateway.
-- `session_not_found`: the session expired, was evicted, or the wrong session
-  id was used. Start a fresh session.
-- `EADDRINUSE`: the local gateway port is already in use. Pick another port and
-  pass the matching `baseUrl` to the SDK.
-
-If the hosted gateway accepts sessions but payments fail, check gateway logs by
-timestamp and `sessionId` for payment requirement and payment attempt events,
-then verify the buyer Gateway balance, seller `payTo`, and hosted Circle
-environment variables.
+Do not narrate internal diagnostics, navigation, wallet checks, preflight, or
+receipt verification when they succeed.

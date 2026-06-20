@@ -69,8 +69,10 @@ test("quickstart detects expired OTP request IDs", async () => {
 
 test("quickstart stops when dry-run estimate exceeds budget", async () => {
   await assert.rejects(
-    () => runQuickstartRead(runtimeFor({ article: article({ pricePerWordAtomic: "1000000" }) })),
-    (error) => error instanceof CliError && error.code === "DRY_RUN_OVER_BUDGET",
+    () => runQuickstartRead(runtimeFor({ article: article({ pricePerWordAtomic: "1000000" }) }), {
+      circleRunner: async (_command, args) => circleOutput(args, "1000000"),
+    }),
+    (error) => error instanceof CliError && error.code === "BUDGET_TOO_SMALL",
   );
 });
 
@@ -83,7 +85,7 @@ test("quickstart uses existing Arc Testnet balance without faucet", async () => 
     },
   });
 
-  assert.equal((result.receipt as Record<string, unknown>).amountPaidAtomic, "2");
+  assert.equal((result.result as Record<string, unknown>).amountPaidAtomic, "2");
   assert.equal(calls.some((args) => args[0] === "gateway" && args[1] === "faucet"), false);
 });
 
@@ -151,6 +153,18 @@ test("final receipt schema includes buyer/Circle wallet mismatch explanation", (
 function runtimeFor(input: { argv?: string[]; article?: ArticleSummary } = {}): CommandRuntime {
   process.env.HOME = mkdtempSync(join(tmpdir(), "rubicon-cli-test-"));
   const articleFixture = input.article ?? article();
+  const navigationFixture = {
+    articleId: articleFixture.articleId,
+    sections: articleFixture.sections,
+    sellerAgent: {
+      recommendedSectionId: "intro",
+      alternativeSectionIds: [],
+      rationale: "Start here.",
+      safeHints: [],
+      withheld: [],
+    },
+    stopConditions: [],
+  };
   const client = {
     async getRepository() {
       return { repository: "articles" as const, articles: [articleFixture] };
@@ -158,18 +172,16 @@ function runtimeFor(input: { argv?: string[]; article?: ArticleSummary } = {}): 
     async getNavigation() {
       return {
         article: articleFixture,
-        navigation: {
-          articleId: articleFixture.articleId,
-          sections: articleFixture.sections,
-          sellerAgent: {
-            recommendedSectionId: "intro",
-            alternativeSectionIds: [],
-            rationale: "Start here.",
-            safeHints: [],
-            withheld: [],
-          },
-          stopConditions: [],
-        },
+        navigation: navigationFixture,
+      };
+    },
+    async startConversation() {
+      return {
+        conversationId: "conversation_1",
+        articleId: articleFixture.articleId,
+        article: articleFixture,
+        navigation: navigationFixture,
+        messages: [{ id: "message_1", role: "seller", content: "Start here.", recommendedSectionId: "intro", createdAt: new Date().toISOString() }],
       };
     },
     async run() {

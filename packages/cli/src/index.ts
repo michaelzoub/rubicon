@@ -20,7 +20,7 @@ import {
   receiptSummaryJson,
 } from "./format.js";
 import { selectPaymentEngine, type PaymentMode } from "./payments.js";
-import { runDoctor, runQuickstartRead } from "./quickstart.js";
+import { runBuy, runDoctor, runQuickstartRead } from "./quickstart.js";
 import { listReceipts, loadReceipt, saveReceipt } from "./receipts.js";
 import packageJson from "../package.json" with { type: "json" };
 
@@ -88,6 +88,10 @@ async function dispatch(runtime: Runtime): Promise<void> {
   }
   if (command === "quickstart-read") {
     printJson(await runQuickstartRead(runtime));
+    return;
+  }
+  if (command === "buy") {
+    printJson(await runBuy(runtime));
     return;
   }
   if (command === "repository") {
@@ -610,9 +614,9 @@ function matchesQuery(article: ArticleSummary, query: string): boolean {
 
 function showHelp(json: boolean): void {
   const usage = [
+    "rubicon buy --first --goal \"<goal>\" --max-usdc 0.10 --json",
     "rubicon repository",
     "rubicon doctor --json",
-    "rubicon quickstart-read --first --goal \"<goal>\" --max-usdc 0.10 --json",
     "rubicon search \"<query>\"",
     "rubicon article show <article-id>",
     "rubicon article navigation <article-id> --goal \"<goal>\"",

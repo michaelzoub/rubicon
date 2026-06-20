@@ -40,6 +40,12 @@ export interface SellerModelNavigation {
   recommendedSectionId: string;
   alternativeSectionIds: string[];
   rationale: string;
+  sectionAssessments?: Array<{
+    sectionId: string;
+    expectedValue: number;
+    minimumUsefulWords: number;
+    rationale: string;
+  }>;
 }
 
 export interface SellerModelReply {
@@ -104,6 +110,12 @@ export class DeterministicSellerModelProvider implements SellerModelProvider {
       rationale: recommended
         ? `Section "${recommended.heading}" is the closest match to the buyer goal based on section headings (${recommended.wordCount} words at ~${context.article.pricePerWordAtomic} atomic USDC each).`
         : "No sections are available; the full article is the only reading path.",
+      sectionAssessments: top.map((section, index) => ({
+        sectionId: section.sectionId,
+        expectedValue: Math.max(0.2, 0.9 - index * 0.25),
+        minimumUsefulWords: Math.min(section.wordCount, Math.max(1, Math.ceil(section.wordCount * 0.35))),
+        rationale: `Rank ${index + 1} from goal-to-heading relevance; ${section.wordCount} paid words available.`,
+      })),
     };
   }
 
@@ -135,7 +147,7 @@ export class TextCompletionSellerModelProvider implements SellerModelProvider {
 
   async navigate(context: SellerNavigationContext): Promise<SellerModelNavigation> {
     const system =
-      "You are a seller agent for a paywalled article. You may only use the provided safe metadata (title, author, section headings, word ranges, pricing). Never invent or reveal article body text, quotes, conclusions, or facts. Reply ONLY with JSON: {\"recommendedSectionId\":string,\"alternativeSectionIds\":string[],\"rationale\":string}.";
+      "You are a seller agent for a paywalled article. Use only the provided safe metadata. Never reveal unpaid body text or facts. Rank sections for the exact goal and reply ONLY with JSON: {\"recommendedSectionId\":string,\"alternativeSectionIds\":string[],\"rationale\":string,\"sectionAssessments\":[{\"sectionId\":string,\"expectedValue\":number from 0 to 1,\"minimumUsefulWords\":positive integer,\"rationale\":string}]}. Prefer concise self-contained sections for small budgets and include conclusions, counterarguments, or practical details when useful.";
     const prompt = JSON.stringify({ goal: context.goal, article: context.article });
     try {
       const parsed = JSON.parse(await this.complete({ system, prompt })) as Partial<SellerModelNavigation>;
@@ -149,6 +161,16 @@ export class TextCompletionSellerModelProvider implements SellerModelProvider {
           context.article.sections.some((s) => s.sectionId === id),
         ),
         rationale: typeof parsed.rationale === "string" ? parsed.rationale : "Recommended from section headings.",
+        sectionAssessments: (parsed.sectionAssessments ?? []).flatMap((assessment) => {
+          const section = context.article.sections.find((candidate) => candidate.sectionId === assessment.sectionId);
+          if (!section || !Number.isFinite(assessment.expectedValue) || !Number.isInteger(assessment.minimumUsefulWords)) return [];
+          return [{
+            sectionId: section.sectionId,
+            expectedValue: Math.max(0, Math.min(1, assessment.expectedValue)),
+            minimumUsefulWords: Math.max(1, Math.min(section.wordCount, assessment.minimumUsefulWords)),
+            rationale: typeof assessment.rationale === "string" ? assessment.rationale : "Seller metadata assessment.",
+          }];
+        }),
       };
     } catch {
       return this.fallback.navigate(context);

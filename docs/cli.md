@@ -16,7 +16,7 @@ During local development:
 
 ```bash
 pnpm dev:cli -- repository --json
-pnpm --filter @rubicon-caliga/cli dev -- read <article-id> --max-usdc 0.10 --dry-run
+pnpm --filter @rubicon-caliga/cli dev -- buy --first --goal "<goal>" --max-usdc 0.10 --json
 ```
 
 After publishing or linking, the binary is:
@@ -92,6 +92,27 @@ The CLI respects:
 
 The CLI never asks for, prints, stores, or infers raw private keys.
 
+## Autonomous Purchases
+
+The primary buyer workflow is one command:
+
+```bash
+rubicon buy --first --goal "<exact goal>" --max-usdc 0.10 --json
+```
+
+It selects the first relevant live article, performs hidden wallet readiness
+checks, consults the real seller agent for expected value, minimum useful word
+counts, and alternatives, then ranks sections by expected information value per
+paid word. Every paid session receives only the remaining cumulative budget.
+The command reassesses after each section, avoids duplicate content, can switch
+sections, reserves useful budget for conclusions/counterarguments/practical
+details, and persists then reloads each receipt for verification.
+
+JSON output includes structured decision events. `purchasedInformation` is paid
+article text; `metadataInference` describes conclusions based only on public
+metadata and seller routing. Successful internal checks are intentionally not a
+multi-command user workflow.
+
 ## Repository And Search
 
 ```bash
@@ -123,9 +144,11 @@ the seller-recommended section:
 rubicon read <article-id> --section <section-id> --stop-after-section --max-usdc <amount>
 ```
 
-## Dry Runs
+## Lower-Level Dry Runs
 
-Always dry-run before spending:
+Dry runs remain available for protocol debugging and direct `read` callers.
+They are not required before `rubicon buy`, which performs its budget and
+wallet preflight internally before initiating payment:
 
 ```bash
 rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --dry-run
@@ -253,19 +276,14 @@ The CLI does not add or call a server receipt API.
 
 ## Agent Workflow
 
-Automated agents should prefer JSON and explicit budgets:
+Automated agents should use the atomic purchase workflow:
 
 ```bash
-rubicon config set gateway-url https://rubicon-caligagateway-production.up.railway.app
-rubicon repository --json
-rubicon search "agent economies" --json
-rubicon article show <article-id> --json
-rubicon article navigation <article-id> --goal "find pricing" --json
-rubicon read <article-id> --goal "find pricing" --max-usdc 0.10 --dry-run --json
-rubicon read <article-id> --section <section-id> --max-usdc 0.10 --fast --summary --json
-rubicon receipts list --limit 10 --summary --json
-rubicon receipts show <receipt-id> --summary --json
+rubicon buy --first --goal "find pricing" --max-usdc 0.10 --json
 ```
 
-Use the SDK directly for custom agent runtimes or deeper integrations. Use raw
-HTTP only when testing the protocol itself.
+Agents should report only blockers, final spending, receipt details,
+limitations, and the resulting answer. The lower-level commands above remain
+available for debugging and protocol development, but are not prerequisites for
+`buy`. Use the SDK directly for custom runtimes and raw HTTP only for protocol
+testing.

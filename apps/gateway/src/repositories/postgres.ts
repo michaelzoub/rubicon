@@ -36,6 +36,17 @@ export function createPgPool(databaseUrl: string): Pool {
   return new Pool(resolvePgPoolConfig(databaseUrl));
 }
 
+export function describeDatabaseUrl(databaseUrl: string): string {
+  const parsed = parseDatabaseUrl(databaseUrl);
+  if (!parsed) {
+    return "invalid DATABASE_URL";
+  }
+  const database = parsed.pathname.replace(/^\//, "") || "(default)";
+  const sslMode = parsed.searchParams.get("sslmode") ?? "(unspecified)";
+  const username = parsed.username || "(unspecified)";
+  return `host=${parsed.hostname} port=${parsed.port || "(default)"} database=${database} user=${username} sslmode=${sslMode}`;
+}
+
 export function resolvePgPoolConfig(databaseUrl: string): PgPoolConfig {
   const config: PgPoolConfig = { connectionString: databaseUrl };
   const parsed = parseDatabaseUrl(databaseUrl);
@@ -63,7 +74,13 @@ export function assertRailwayCompatibleDatabaseUrl(
 
   const parsed = parseDatabaseUrl(databaseUrl);
   if (!parsed) {
-    return;
+    throw new Error("DATABASE_URL must be a full PostgreSQL connection URL, for example postgresql://user:password@host:5432/postgres.");
+  }
+
+  if (parsed.hostname === "base") {
+    throw new Error(
+      "DATABASE_URL resolves to host `base`, which is a placeholder/default. Set the persistent Railway service variable to the Supabase pooler URL.",
+    );
   }
 
   if (/^db\.[^.]+\.supabase\.co$/i.test(parsed.hostname)) {

@@ -14,7 +14,7 @@ import {
 import { HOSTED_GATEWAY_URL, writeConfig, type RubiconCliConfig } from "./config.js";
 import { CliError } from "./errors.js";
 import { articleJson, formatAtomic } from "./format.js";
-import { saveReceipt } from "./receipts.js";
+import { loadReceipt, saveReceipt } from "./receipts.js";
 
 export interface CommandRuntime {
   parsed: ParsedArgs;
@@ -126,27 +126,35 @@ export async function runDoctor(runtime: CommandRuntime, deps: CommandDeps = {})
 }
 
 export async function runQuickstartRead(runtime: CommandRuntime, deps: CommandDeps = {}): Promise<Record<string, unknown>> {
+  return runBuy(runtime, deps);
+}
+
+export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): Promise<Record<string, unknown>> {
   if (runtime.parsed.positionals[1] !== "--first" && !runtime.parsed.flags.first) {
-    throw new CliError("MISSING_FIRST", "rubicon quickstart-read currently requires --first.");
+    throw new CliError("MISSING_FIRST", "rubicon buy currently requires --first.");
   }
   const goal = stringFlag(runtime.parsed.flags, "goal");
-  if (!goal) throw new CliError("MISSING_GOAL", "rubicon quickstart-read requires --goal.");
+  if (!goal) throw new CliError("MISSING_GOAL", "rubicon buy requires --goal.");
   const maxSpendAtomic = parseQuickstartBudget(runtime.parsed);
   const approvedBudgetUsdc = formatAtomic(maxSpendAtomic);
+  const events: Array<Record<string, unknown>> = [];
   const wroteGatewayConfig = await ensureGatewayConfig(runtime);
   const repository = await runtime.client.getRepository();
-  const article = repository.articles[0];
+  const article = [...repository.articles]
+    .filter((candidate) => candidate.state === "live")
+    .sort((left, right) => articleRelevance(right, goal) - articleRelevance(left, goal))[0];
   if (!article) throw new CliError("NO_ARTICLES", "No public articles are available from the configured gateway.");
+  events.push({ type: "article.selected", articleId: article.articleId, basis: "safe_metadata_relevance" });
 
-  const navigation = await runtime.client.getNavigation(article.articleId, goal);
-  const sectionId = navigation.navigation.sellerAgent.recommendedSectionId;
-  const estimate = estimateRead(article, sectionId, maxSpendAtomic);
-  if (!estimate.withinBudget) {
-    throw new CliError(
-      "DRY_RUN_OVER_BUDGET",
-      `Dry-run estimate is ${formatAtomic(estimate.estimatedMaxCostAtomic)} USDC, which exceeds the approved ${approvedBudgetUsdc} USDC budget.`,
-    );
-  }
+  const consultation = await runtime.client.startConversation({
+    articleId: article.articleId,
+    goal,
+    message: `For the exact goal "${goal}", rank the best sections, their expected value, minimum useful word count, and alternatives. Prefer concise self-contained sections and preserve budget for conclusions, counterarguments, or practical details when useful.`,
+  });
+  const navigation = consultation.navigation;
+  events.push({ type: "seller.consulted", conversationId: consultation.conversationId, inferenceSource: "safe_metadata", sellerAgent: navigation.sellerAgent });
+  const ranked = rankSectionPlans(article, navigation.sellerAgent);
+  if (ranked.length === 0) throw new CliError("NO_RELEVANT_SECTIONS", "The seller agent did not identify a purchasable section.");
 
   const networkInfo = settlementNetworkInfo(article.paymentTerms?.network);
   const chain = article.paymentTerms?.circleChain ?? networkInfo.circleChain ?? runtime.circleChain ?? "ARC-TESTNET";
@@ -165,7 +173,7 @@ export async function runQuickstartRead(runtime: CommandRuntime, deps: CommandDe
       circleWalletAddress = wallet.address;
       let balance = await circleGatewayBalance({ ...circleInput(runtime, deps), chain, address: wallet.address });
       balanceAtomic = balance.balanceAtomic;
-      if (BigInt(balance.balanceAtomic) < BigInt(estimate.estimatedMaxCostAtomic)) {
+      if (BigInt(balance.balanceAtomic) < BigInt(maxSpendAtomic)) {
         if (environment !== "testnet") {
           throw new CliError("INSUFFICIENT_FUNDS", "Wallet balance is below the dry-run estimate. Refusing to suggest mainnet funding for this article.");
         }
@@ -181,26 +189,81 @@ export async function runQuickstartRead(runtime: CommandRuntime, deps: CommandDe
     }
   }
 
-  const receipt = await runtime.client.run({
-    articleId: article.articleId,
-    goal,
-    sectionId,
-    maxSpendAtomic,
-    chunkWords: 32,
-    streamMode: "bundled" as StreamMode,
-    metadata: { quickstart: true, stopAfterSection: true },
-  });
-  const stored = await saveReceipt(receipt);
+  let spent = 0n;
+  let wordsRead = 0;
+  let purchasedText = "";
+  const visited = new Set<string>();
+  const storedReceipts: Array<{ receiptId: string; savedAt: string; receipt: ReadReceipt }> = [];
+  for (const plan of ranked) {
+    if (visited.has(plan.sectionId)) continue;
+    const remaining = BigInt(maxSpendAtomic) - spent;
+    const affordableWords = Number(remaining / BigInt(article.pricePerWordAtomic));
+    if (affordableWords < 1 || affordableWords < plan.minimumUsefulWords) {
+      events.push({ type: "section.skipped", sectionId: plan.sectionId, reason: "insufficient_remaining_budget", remainingAtomic: `${remaining}` });
+      continue;
+    }
+    const section = article.sections.find((candidate) => candidate.sectionId === plan.sectionId)!;
+    const reserveWords = reserveWordsForLater(ranked, plan.sectionId, visited, affordableWords);
+    const maxWords = Math.min(section.wordCount, Math.max(plan.minimumUsefulWords, affordableWords - reserveWords));
+    const sessionCap = BigInt(maxWords) * BigInt(article.pricePerWordAtomic);
+    if (sessionCap > remaining) throw new CliError("BUDGET_INVARIANT", "Refusing payment because the section cap exceeds the remaining approved budget.");
+    events.push({ type: "section.selected", sectionId: plan.sectionId, expectedValue: plan.expectedValue, minimumUsefulWords: plan.minimumUsefulWords, informationValuePerPaidWord: plan.score, sessionCapAtomic: `${sessionCap}` });
+    let lastBundleWords = 0;
+    const receipt = await runtime.client.run({
+      articleId: article.articleId,
+      goal,
+      conversationId: consultation.conversationId,
+      sectionId: plan.sectionId,
+      maxSpendAtomic: `${sessionCap}`,
+      maxWords,
+      chunkWords: Math.min(32, maxWords),
+      streamMode: "bundled" as StreamMode,
+      metadata: { autonomousBuy: true, stopAfterSection: true },
+      onEvent(event) {
+        if (event.type !== "article.bundle") return;
+        lastBundleWords = event.wordsRead;
+        const adequate = plan.expectedValue >= 0.75 && event.wordsRead >= plan.minimumUsefulWords;
+        events.push({
+          type: "strategy.reassessed",
+          trigger: "paid_bundle",
+          sectionId: plan.sectionId,
+          adequatelyAnswered: adequate,
+          sectionWordsRead: event.wordsRead,
+          inferenceSource: "seller_metadata_plus_purchased_bundle",
+        });
+      },
+      stopWhen({ wordsRead: currentWords }) {
+        return plan.expectedValue >= 0.75 && currentWords >= plan.minimumUsefulWords;
+      },
+    });
+    if (BigInt(receipt.amountPaidAtomic) > sessionCap || spent + BigInt(receipt.amountPaidAtomic) > BigInt(maxSpendAtomic)) {
+      throw new CliError("BUDGET_INVARIANT", "Payment receipt exceeds the approved cumulative budget.");
+    }
+    spent += BigInt(receipt.amountPaidAtomic);
+    wordsRead += receipt.wordsRead;
+    purchasedText = [purchasedText, receipt.text].filter(Boolean).join("\n\n");
+    visited.add(plan.sectionId);
+    const stored = await saveReceipt(receipt);
+    const verified = await loadReceipt(stored.receiptId);
+    if (verified.receipt.amountPaidAtomic !== receipt.amountPaidAtomic || verified.receipt.sessionId !== receipt.sessionId) {
+      throw new CliError("RECEIPT_VERIFICATION_FAILED", `Saved receipt ${stored.receiptId} could not be verified.`);
+    }
+    storedReceipts.push(stored);
+    events.push({ type: "receipt.verified", receiptId: stored.receiptId, sectionId: plan.sectionId, cumulativeSpendAtomic: `${spent}` });
+    const adequate = plan.expectedValue >= 0.75 && receipt.wordsRead >= plan.minimumUsefulWords;
+    if (lastBundleWords !== receipt.wordsRead) {
+      events.push({ type: "strategy.reassessed", trigger: "paid_section", adequatelyAnswered: adequate, remainingAtomic: `${BigInt(maxSpendAtomic) - spent}`, inferenceSource: "seller_metadata_plus_purchase_completion" });
+    }
+    if (adequate) break;
+  }
+  if (storedReceipts.length === 0) throw new CliError("BUDGET_TOO_SMALL", "The remaining budget cannot fund the seller's minimum useful word count for any section.");
   return {
     success: true,
     gatewayUrl: runtime.gatewayUrl,
     gatewayConfigured: wroteGatewayConfig || Boolean(runtime.config.gatewayUrl || process.env.RUBICON_GATEWAY_URL),
     selectedArticle: articleJson(article),
-    navigation: navigation.navigation,
-    dryRun: {
-      ...estimate,
-      estimatedMaxCostUsdc: formatAtomic(estimate.estimatedMaxCostAtomic),
-    },
+    events,
+    navigation,
     wallet: {
       chain,
       environment,
@@ -208,17 +271,42 @@ export async function runQuickstartRead(runtime: CommandRuntime, deps: CommandDe
       balanceAtomic,
       balanceUsdc: balanceAtomic ? formatAtomic(balanceAtomic) : undefined,
     },
-    receiptId: stored.receiptId,
-    savedAt: stored.savedAt,
-    receipt: finalReceiptJson({
-      receipt,
-      article,
-      receiptId: stored.receiptId,
-      goal,
-      approvedBudgetUsdc,
-      circleWalletAddress,
-    }),
+    result: {
+      articleId: article.articleId, title: article.title, author: article.author, goal,
+      approvedBudgetUsdc, amountPaidAtomic: `${spent}`, amountPaidUsdc: formatAtomic(`${spent}`), wordsRead,
+      purchasedInformation: purchasedText,
+      metadataInference: "Article and section selection used only public metadata and seller-agent guidance.",
+      receiptIds: storedReceipts.map((stored) => stored.receiptId),
+      receipts: storedReceipts.map((stored) => finalReceiptJson({ receipt: stored.receipt, article, receiptId: stored.receiptId, goal, approvedBudgetUsdc, circleWalletAddress })),
+      completed: events.some((event) => event.type === "strategy.reassessed" && event.adequatelyAnswered === true),
+      stopReason: spent >= BigInt(maxSpendAtomic)
+        ? "budget_reached"
+        : events.some((event) => event.type === "strategy.reassessed" && event.adequatelyAnswered === true)
+          ? "goal_adequately_answered"
+          : "seller_options_exhausted",
+    },
   };
+}
+
+function articleRelevance(article: ArticleSummary, goal: string): number {
+  const terms = goal.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2);
+  const text = [article.title, ...article.sections.map((section) => section.heading)].join(" ").toLowerCase();
+  return terms.filter((term) => text.includes(term)).length;
+}
+
+function rankSectionPlans(article: ArticleSummary, seller: Awaited<ReturnType<RubiconClient["getNavigation"]>>["navigation"]["sellerAgent"]) {
+  const assessments = seller.sectionAssessments ?? [seller.recommendedSectionId, ...seller.alternativeSectionIds].map((sectionId, index) => ({ sectionId, expectedValue: Math.max(0.25, 0.9 - index * 0.25), minimumUsefulWords: 1, rationale: seller.rationale }));
+  return assessments.flatMap((assessment) => {
+    const section = article.sections.find((candidate) => candidate.sectionId === assessment.sectionId);
+    if (!section || section.sectionId === "full-article") return [];
+    const minimumUsefulWords = Math.max(1, Math.min(section.wordCount, assessment.minimumUsefulWords));
+    return [{ ...assessment, minimumUsefulWords, score: assessment.expectedValue / minimumUsefulWords }];
+  }).sort((left, right) => right.score - left.score || right.expectedValue - left.expectedValue);
+}
+
+function reserveWordsForLater(plans: ReturnType<typeof rankSectionPlans>, current: string, visited: Set<string>, affordable: number): number {
+  const useful = plans.find((plan) => plan.sectionId !== current && !visited.has(plan.sectionId) && /conclusion|counter|practical|implementation|detail/i.test(plan.sectionId + " " + plan.rationale));
+  return useful && affordable > useful.minimumUsefulWords * 2 ? useful.minimumUsefulWords : 0;
 }
 
 async function ensureGatewayConfig(runtime: CommandRuntime): Promise<boolean> {
@@ -264,28 +352,11 @@ export function finalReceiptJson(input: {
   };
 }
 
-function estimateRead(article: ArticleSummary, sectionId: string | undefined, maxSpendAtomic: `${bigint}`): {
-  sectionId?: string;
-  estimatedWords: number;
-  estimatedMaxCostAtomic: `${bigint}`;
-  withinBudget: boolean;
-} {
-  const section = sectionId ? article.sections.find((candidate) => candidate.sectionId === sectionId) : undefined;
-  const estimatedWords = section?.wordCount ?? article.totalWords;
-  const estimatedMaxCostAtomic = `${BigInt(article.pricePerWordAtomic) * BigInt(estimatedWords)}` as `${bigint}`;
-  return {
-    sectionId,
-    estimatedWords,
-    estimatedMaxCostAtomic,
-    withinBudget: BigInt(maxSpendAtomic) >= BigInt(estimatedMaxCostAtomic),
-  };
-}
-
 function parseQuickstartBudget(parsed: ParsedArgs): `${bigint}` {
   const maxUsdc = stringFlag(parsed.flags, "max-usdc");
   const maxAtomic = stringFlag(parsed.flags, "max-atomic");
   if (!maxUsdc && !maxAtomic) {
-    throw new CliError("MISSING_BUDGET", "rubicon quickstart-read refuses paid reads without explicit --max-usdc or --max-atomic.");
+    throw new CliError("MISSING_BUDGET", "rubicon buy refuses paid reads without explicit --max-usdc or --max-atomic.");
   }
   if (maxUsdc && maxAtomic) {
     throw new CliError("MULTIPLE_BUDGETS", "Use either --max-usdc or --max-atomic, not both.");
