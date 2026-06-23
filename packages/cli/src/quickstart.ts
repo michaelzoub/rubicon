@@ -114,7 +114,7 @@ export async function runDoctor(runtime: CommandRuntime, deps: CommandDeps = {})
     guidance:
       balance?.balanceAtomic && BigInt(balance.balanceAtomic) > 0n
         ? undefined
-        : "Arc Testnet reads can be funded with the Circle testnet faucet / Gateway testnet funding flow. Do not send mainnet funds for testnet articles.",
+        : "Arc Testnet reads can be funded with `circle wallet fund --address <addr> --chain ARC-TESTNET --token usdc --output json`. Do not send mainnet funds for testnet articles.",
   });
 
   return {

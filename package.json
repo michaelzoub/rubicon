@@ -12,7 +12,8 @@
     "dev:cli": "pnpm --filter @rubicon-caliga/cli dev",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "smoke:hosted-buyer-flow": "node scripts/smoke-hosted-buyer-flow.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

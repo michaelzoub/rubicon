@@ -59,7 +59,7 @@ test("quickstart detects expired OTP request IDs", async () => {
     () =>
       runQuickstartRead(runtimeFor(), {
         circleRunner: async (_command, args) => {
-          if (args[0] === "auth") throw new Error("OTP request id expired");
+          if (args[0] === "wallet" && args[1] === "status") throw new Error("OTP request id expired");
           return circleOutput(args, "1000000");
         },
       }),
@@ -87,6 +87,7 @@ test("quickstart uses existing Arc Testnet balance without faucet", async () => 
 
   assert.equal((result.result as Record<string, unknown>).amountPaidAtomic, "2");
   assert.equal(calls.some((args) => args[0] === "gateway" && args[1] === "faucet"), false);
+  assert.equal(calls.some((args) => args[0] === "auth"), false);
 });
 
 test("quickstart faucet-funds only the testnet path when needed", async () => {
@@ -95,7 +96,7 @@ test("quickstart faucet-funds only the testnet path when needed", async () => {
   const result = await runQuickstartRead(runtimeFor(), {
     circleRunner: async (_command, args) => {
       calls.push(args);
-      if (args[0] === "gateway" && args[1] === "faucet") {
+      if (args[0] === "wallet" && args[1] === "fund") {
         funded = true;
         return JSON.stringify({ ok: true });
       }
@@ -103,8 +104,33 @@ test("quickstart faucet-funds only the testnet path when needed", async () => {
     },
   });
 
-  assert.equal(calls.some((args) => args[0] === "gateway" && args[1] === "faucet"), true);
+  assert.equal(calls.some((args) => args[0] === "wallet" && args[1] === "fund" && args.includes("--token") && args.includes("usdc")), true);
+  assert.equal(calls.some((args) => args[0] === "gateway" && args[1] === "faucet"), false);
   assert.equal((result.wallet as Record<string, unknown>).balanceAtomic, "1000000");
+});
+
+test("hosted buyer flow uses only Circle 0.0.6-compatible wallet commands and stays under cap", async () => {
+  const calls: string[][] = [];
+  const result = await runQuickstartRead(runtimeFor({
+    argv: ["buy", "--first", "--goal", "find and summarize the first available article", "--max-usdc", "0.01", "--json"],
+  }), {
+    circleRunner: async (_command, args) => {
+      calls.push(args);
+      return circleOutput(args, "1000000");
+    },
+  });
+
+  const output = result as Record<string, unknown>;
+  const final = output.result as Record<string, unknown>;
+  assert.equal(calls.some((args) => args[0] === "auth"), false);
+  assert.equal(calls.some((args) => args[0] === "gateway" && args[1] === "faucet"), false);
+  assert.equal(calls.some((args) => args[0] === "wallet" && args[1] === "status" && args.includes("--type") && args.includes("agent")), true);
+  assert.ok(BigInt(String(final.amountPaidAtomic)) <= 10_000n);
+  assert.equal(final.approvedBudgetUsdc, "0.01");
+  assert.equal(final.articleId, "article_1");
+  assert.deepEqual(final.receiptIds, ["session_1-article_1"]);
+  assert.equal((final.receipts as Array<Record<string, unknown>>)[0]?.sessionId, "session_1");
+  assert.deepEqual((final.receipts as Array<Record<string, unknown>>)[0]?.paymentIds, ["payment_1"]);
 });
 
 test("quickstart refuses to suggest mainnet funding", async () => {
@@ -263,7 +289,7 @@ function receipt(): ReadReceipt {
 
 function circleOutput(args: string[], balanceAtomic: `${bigint}`): string {
   if (args[0] === "--version") return "circle 1.0.0";
-  if (args[0] === "auth") return JSON.stringify({ loggedIn: true });
+  if (args[0] === "wallet" && args[1] === "status") return JSON.stringify({ data: { testnet: { tokenStatus: "VALID" }, mainnet: { tokenStatus: "VALID" } } });
   if (args[0] === "wallet") {
     return JSON.stringify({ data: { wallets: [{ address: "0x1111111111111111111111111111111111111111" }] } });
   }

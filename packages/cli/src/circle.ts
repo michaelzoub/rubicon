@@ -98,7 +98,7 @@ export async function circleVersion(input: { command?: string; runner?: CircleRu
 export async function circleAuthStatus(input: { command?: string; runner?: CircleRunner } = {}): Promise<unknown> {
   const command = input.command ?? defaultCircleCommand();
   const runner = input.runner ?? runCircleCli;
-  const output = await runner(command, ["auth", "status", "--output", "json"]);
+  const output = await runner(command, ["wallet", "status", "--type", "agent", "--output", "json"]);
   return parseMaybeJson(output);
 }
 
@@ -142,7 +142,18 @@ export async function circleGatewayFaucet(input: {
 }): Promise<unknown> {
   const command = input.command ?? defaultCircleCommand();
   const runner = input.runner ?? runCircleCli;
-  const output = await runner(command, ["gateway", "faucet", "--address", input.address, "--chain", input.chain, "--output", "json"]);
+  const output = await runner(command, [
+    "wallet",
+    "fund",
+    "--address",
+    input.address,
+    "--chain",
+    input.chain,
+    "--token",
+    "usdc",
+    "--output",
+    "json",
+  ]);
   return parseMaybeJson(output);
 }
 
