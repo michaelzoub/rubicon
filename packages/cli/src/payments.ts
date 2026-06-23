@@ -1,8 +1,10 @@
 import {
   CircleCliGatewayPaymentEngine,
+} from "@rubicon-caliga/agent-sdk/circle-cli-gateway-payment";
+import {
   StaticPaymentEngine,
   type AgentPaymentEngine,
-} from "@rubicon-caliga/agent-sdk";
+} from "@rubicon-caliga/agent-sdk/payment-engine";
 import { HOSTED_GATEWAY_URL, type RubiconCliConfig } from "./config.js";
 import { CliError } from "./errors.js";
 

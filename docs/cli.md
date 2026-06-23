@@ -25,6 +25,12 @@ After publishing or linking, the binary is:
 rubicon repository
 ```
 
+For one-off use without installing Rubicon globally, npm users can run:
+
+```bash
+npx -y @rubicon-caliga/cli buy --first --goal "<goal>" --max-usdc 0.10 --json
+```
+
 ## Configuration
 
 The hosted gateway is the default:
@@ -86,11 +92,15 @@ The CLI respects:
 - `CIRCLE_CLI_PAYMENT`
 - `CIRCLE_AGENT_WALLET_ADDRESS`
 - `CIRCLE_CLI_CHAIN`
+- `CIRCLE_CLI_COMMAND`
 - `CIRCLE_API_KEY`
 - `CIRCLE_ENTITY_SECRET`
 - `CIRCLE_AGENT_WALLET_ID`
 
-The CLI never asks for, prints, stores, or infers raw private keys.
+The CLI looks for `circle` first, then falls back to `circle-cli`, which is the
+binary exposed by the npm `circle-cli` package. Set `CIRCLE_CLI_COMMAND` only
+when a custom path is needed. The CLI never asks for, prints, stores, or infers
+raw private keys.
 
 ## Autonomous Purchases
 

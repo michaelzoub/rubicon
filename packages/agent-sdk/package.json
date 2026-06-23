@@ -1,6 +1,6 @@
 {
   "name": "@rubicon-caliga/agent-sdk",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Client SDK for autonomous agents consuming per-word article streams via Rubicon x402.",
   "license": "MIT",
   "type": "module",
@@ -10,6 +10,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./agent-client": {
+      "types": "./dist/agent-client.d.ts",
+      "import": "./dist/agent-client.js"
+    },
+    "./circle-cli-gateway-payment": {
+      "types": "./dist/circle-cli-gateway-payment.d.ts",
+      "import": "./dist/circle-cli-gateway-payment.js"
+    },
+    "./payment-engine": {
+      "types": "./dist/payment-engine.d.ts",
+      "import": "./dist/payment-engine.js"
     }
   },
   "files": [

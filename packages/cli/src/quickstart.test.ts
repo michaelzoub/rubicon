@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { ReadReceipt, RubiconClient } from "@rubicon-caliga/agent-sdk";
+import type { ReadReceipt, RubiconClient } from "@rubicon-caliga/agent-sdk/agent-client";
 import type { ArticleSummary } from "@rubicon-caliga/core";
 import { parseArgs } from "./args.js";
 import { CliError } from "./errors.js";

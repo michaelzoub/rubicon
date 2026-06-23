@@ -1,6 +1,6 @@
 import { formatAtomicUsdc, settlementNetworkInfo } from "@rubicon-caliga/core";
 import type { ArticleSummary, ArticleNavigation, SellerPaymentTerms } from "@rubicon-caliga/core";
-import type { ReadReceipt } from "@rubicon-caliga/agent-sdk";
+import type { ReadReceipt } from "@rubicon-caliga/agent-sdk/agent-client";
 import type { StoredReceipt } from "./receipts.js";
 
 export function printJson(value: unknown): void {

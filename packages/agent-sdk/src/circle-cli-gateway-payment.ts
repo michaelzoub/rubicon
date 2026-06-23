@@ -197,11 +197,32 @@ async function runCircleCli(command: string, args: string[]): Promise<string> {
     });
     return stdout;
   } catch (error) {
+    if (shouldRetryCircleCliFallback(command, error)) {
+      try {
+        const { stdout } = await execFileAsync("circle-cli", args, {
+          maxBuffer: 1024 * 1024,
+        });
+        return stdout;
+      } catch (fallbackError) {
+        const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        throw new Error(
+          `Circle CLI command failed. Ensure Circle CLI is installed as circle or circle-cli, logged in, and has an Agent Wallet on the selected chain. ${message}`,
+        );
+      }
+    }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Circle CLI command failed. Ensure Circle CLI is installed, logged in, and has an Agent Wallet on the selected chain. ${message}`,
+      `Circle CLI command failed. Ensure Circle CLI is installed as circle or circle-cli, logged in, and has an Agent Wallet on the selected chain. ${message}`,
     );
   }
+}
+
+function shouldRetryCircleCliFallback(command: string, error: unknown): boolean {
+  if (command !== "circle") return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const stderr = isRecord(error) && typeof error.stderr === "string" ? error.stderr : "";
+  const output = `${message}\n${stderr}`.toLowerCase();
+  return output.includes("enoent") || output.includes("not found");
 }
 
 export function parseCircleCliSignature(output: string): `0x${string}` {

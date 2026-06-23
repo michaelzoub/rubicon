@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ReadReceipt } from "@rubicon-caliga/agent-sdk";
+import type { ReadReceipt } from "@rubicon-caliga/agent-sdk/agent-client";
 import { CliError } from "./errors.js";
 
 export interface StoredReceipt {

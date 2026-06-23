@@ -1,5 +1,5 @@
 import { parseUsdcToAtomic, settlementNetworkInfo, type ArticleSummary, type StreamMode } from "@rubicon-caliga/core";
-import type { ReadReceipt, RubiconClient } from "@rubicon-caliga/agent-sdk";
+import type { ReadReceipt, RubiconClient } from "@rubicon-caliga/agent-sdk/agent-client";
 import { stringFlag, type ParsedArgs } from "./args.js";
 import {
   circleAgentWallet,

@@ -22,10 +22,11 @@ cumulative budget. Use the CLI first and the SDK only in embedded runtimes.
 
 ## Primary Workflow
 
-Run exactly one command:
+Run exactly one command. For one-off use, prefer `npx` so npm-only machines do
+not need pnpm installed first:
 
 ```bash
-rubicon buy --first --goal "<exact goal>" --max-usdc <amount> --json
+npx -y @rubicon-caliga/cli@0.1.7 buy --first --goal "<exact goal>" --max-usdc <amount> --json
 ```
 
 `buy` internally verifies wallet readiness, chooses the first relevant live
@@ -45,7 +46,9 @@ If `buy` reports missing Circle authentication, use only the supported agent
 wallet login flow. Never ask for private keys and never accept legal terms for
 the user. A low non-testnet balance requires the wallet controller to fund it
 through supported production funding. A low testnet balance may be handled by
-the command's internal testnet faucet flow.
+the command's internal testnet faucet flow. Rubicon looks for the Circle CLI as
+`circle` first, then falls back to `circle-cli`; set `CIRCLE_CLI_COMMAND` only
+when a custom binary path is needed.
 
 ## Final Report
 

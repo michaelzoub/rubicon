@@ -31,6 +31,14 @@ export async function runCircleCli(command: string, args: string[]): Promise<str
     const { stdout } = await execFileAsync(command, args, { maxBuffer: 1024 * 1024 });
     return stdout;
   } catch (error) {
+    if (shouldRetryCircleCliFallback(command, error)) {
+      try {
+        const { stdout } = await execFileAsync("circle-cli", args, { maxBuffer: 1024 * 1024 });
+        return stdout;
+      } catch (fallbackError) {
+        throw classifyCircleError(fallbackError);
+      }
+    }
     throw classifyCircleError(error);
   }
 }
@@ -68,7 +76,7 @@ export function classifyCircleError(error: unknown): Error & { circle?: CircleEr
     info = {
       code: "missing_cli",
       message: "Circle CLI was not found.",
-      guidance: "Install Circle CLI and make sure the `circle` binary is on PATH.",
+      guidance: "Install Circle CLI and make sure the `circle` or `circle-cli` binary is on PATH.",
     };
   } else {
     info = {
@@ -80,6 +88,14 @@ export function classifyCircleError(error: unknown): Error & { circle?: CircleEr
   const wrapped = new Error(`${info.message} ${output}`.trim()) as Error & { circle?: CircleErrorInfo };
   wrapped.circle = info;
   return wrapped;
+}
+
+function shouldRetryCircleCliFallback(command: string, error: unknown): boolean {
+  if (command !== "circle") return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const stderr = isRecord(error) && typeof error.stderr === "string" ? error.stderr : "";
+  const output = `${message}\n${stderr}`.toLowerCase();
+  return output.includes("enoent") || output.includes("not found");
 }
 
 export function circleGuidance(error: unknown): CircleErrorInfo | undefined {

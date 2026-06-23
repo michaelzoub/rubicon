@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { RubiconClient } from "@rubicon-caliga/agent-sdk";
+import { RubiconClient } from "@rubicon-caliga/agent-sdk/agent-client";
 import { parseUsdcToAtomic, settlementNetworkInfo, type ArticleSectionSummary, type ArticleSummary, type StreamMode } from "@rubicon-caliga/core";
 import { parseArgs, booleanFlag, stringFlag, type ParsedArgs } from "./args.js";
 import { configPath, HOSTED_GATEWAY_URL, readConfig, writeConfig, type RubiconCliConfig } from "./config.js";
