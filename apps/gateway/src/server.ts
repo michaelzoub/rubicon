@@ -55,6 +55,13 @@ interface StreamState {
   sectionId: string;
 }
 
+function nextStreamWord(state: StreamState, nextIndex: number): string | null {
+  if (nextIndex < 0 || nextIndex >= state.words.length) {
+    return null;
+  }
+  return state.words[nextIndex] ?? null;
+}
+
 const STOP_CONDITIONS: StreamStopCondition[] = [
   { kind: "sufficient_information", description: "Stop once the buyer agent has enough paid words for its task." },
   { kind: "max_words", description: "Stop after a buyer-selected word limit." },
@@ -421,19 +428,14 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       const quote = quotePerWord({ pricePerWordAtomic: session.pricePerWordAtomic, gatewayFeeBps: session.gatewayFeeBps });
       const wordPaymentAtomic = BigInt(quote.wordPaymentAtomic);
 
-      // The next word the buyer is paying for. Decided before settlement; only
-      // emitted after a verified payment. Never reveals future words.
+      // Resolve the next word from server-owned session state before settlement;
+      // emit it only after a verified payment. Never reveal future words.
       const state = await resolveStreamState(session);
       if (!state) {
         return reply.code(404).send({ error: "article_unavailable" });
       }
-      const next = await sellerAgent.selectNextWord({
-        article: state.article,
-        words: state.words,
-        nextIndex: sequence,
-        sectionId: state.sectionId,
-      });
-      if (next.word === null) {
+      const nextWord = nextStreamWord(state, sequence);
+      if (nextWord === null) {
         await complete(session, state.article.id);
         return reply.send(
           buildPaymentResponse(session, "", sequence, wordPaymentAtomic, true),
@@ -469,7 +471,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         articleId: session.articleId,
         creatorId: session.creatorId,
         sequence,
-        word: next.word,
+        word: nextWord,
         priceAtomic: wordPaymentAtomic,
         creatorAmountAtomic: BigInt(usage.creatorAmountAtomic),
         rubiconFeeAtomic: BigInt(usage.rubiconFeeAtomic),
@@ -530,7 +532,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         sessionId: session.id,
         articleId: session.articleId,
         sequence,
-        word: next.word,
+        word: nextWord,
         priceAtomic: `${wordPaymentAtomic}`,
         totalWordsStreamed: session.wordsDelivered,
         totalPaidAtomic: `${session.paidAtomic}`,
@@ -548,7 +550,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         paidAtomic: `${session.paidAtomic}`,
       });
 
-      const completed = next.done;
+      const completed = session.wordsDelivered >= state.words.length;
       if (completed) {
         await complete(session, session.articleId);
       }
@@ -557,7 +559,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         reply,
         buildPaymentResponse(
           session,
-          next.word,
+          nextWord,
           sequence,
           wordPaymentAtomic,
           completed,
@@ -662,13 +664,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         if (!canAffordNextWord(session, wordPaymentAtomic)) {
           break;
         }
-        const next = await sellerAgent.selectNextWord({
-          article: state.article,
-          words: state.words,
-          nextIndex: session.wordsDelivered,
-          sectionId: state.sectionId,
-        });
-        if (next.word === null) {
+        const nextWord = nextStreamWord(state, session.wordsDelivered);
+        if (nextWord === null) {
           await complete(session, state.article.id);
           chunkCompleted = true;
           break;
@@ -685,7 +682,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           articleId: session.articleId,
           creatorId: session.creatorId,
           sequence,
-          word: next.word,
+          word: nextWord,
           priceAtomic: wordPaymentAtomic,
           creatorAmountAtomic: BigInt(usage.creatorAmountAtomic),
           rubiconFeeAtomic: BigInt(usage.rubiconFeeAtomic),
@@ -709,11 +706,11 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         await ledger.saveSession(session);
         released.push({
           sequence,
-          word: next.word,
+          word: nextWord,
           priceAtomic: `${wordPaymentAtomic}`,
         });
 
-        if (next.done) {
+        if (session.wordsDelivered >= state.words.length) {
           await complete(session, session.articleId);
           chunkCompleted = true;
           break;

@@ -30,38 +30,21 @@ export interface SellerConversationResult {
   modelId: string;
 }
 
-export interface SellerStreamInput {
-  article: ArticleRecord;
-  /** Ordered word list for the buyer's chosen section (or whole article). */
-  words: string[];
-  /** Number of words already delivered in this session. */
-  nextIndex: number;
-  sectionId?: string;
-}
-
-export interface SellerStreamResult {
-  /** The single next word to release, or null when the reading path is exhausted. */
-  word: string | null;
-  done: boolean;
-}
-
 /**
  * First-class seller agent. It represents one article, understands its title,
- * sections, body, author, and pricing, talks to buyer agents, and controls the
- * paid stream one word at a time.
+ * sections, author, and pricing, and talks to buyer agents through safe,
+ * independently callable navigation and conversation endpoints.
  *
  * Safety invariants:
- *  - It may inspect private article body internally, but its unpaid outputs
- *    (navigate/respond) only reveal safe navigation information.
+ *  - Its unpaid outputs (navigate/respond) only reveal safe navigation
+ *    information.
  *  - It never includes unpaid quotes, conclusions, facts, or summaries in free
  *    navigation responses.
- *  - It releases exactly one word per call to selectNextWord and stops the
- *    moment the buyer stops paying.
+ *  - Paid word delivery belongs to the session stream, not this agent.
  */
 export interface SellerAgent {
   navigate(input: SellerNavigationInput): Promise<SellerNavigationResult>;
   respond(input: SellerConversationInput): Promise<SellerConversationResult>;
-  selectNextWord(input: SellerStreamInput): Promise<SellerStreamResult>;
 }
 
 const WITHHELD = [
@@ -132,11 +115,4 @@ export class DefaultSellerAgent implements SellerAgent {
     return { modelId: this.model.id, reply: reply.reply, recommendedSectionId: reply.recommendedSectionId };
   }
 
-  async selectNextWord(input: SellerStreamInput): Promise<SellerStreamResult> {
-    if (input.nextIndex < 0 || input.nextIndex >= input.words.length) {
-      return { word: null, done: true };
-    }
-    const word = input.words[input.nextIndex] ?? null;
-    return { word, done: input.nextIndex + 1 >= input.words.length };
-  }
 }
