@@ -151,7 +151,7 @@ test("run can consume chunk stream while preserving per-word receipt fields", as
   const receipt = await client.run({
     articleId: "article_1",
     maxSpendAtomic: "10",
-    chunkWords: 3,
+    granularity: 3,
   });
 
   assert.equal(receipt.text, "Rubicon streams chunks");
@@ -203,7 +203,7 @@ test("read defaults to bundled mode and clamps bundle size to remaining article 
 
   const client = new RubiconClient({ baseUrl: "http://rubicon.test", paymentEngine: { ...chunkPaymentEngine, createWordPayment: paymentEngine.createWordPayment }, fetch: fetcher });
   const events = [];
-  for await (const event of client.read({ articleId: "article_1", maxSpendAtomic: "100" })) {
+  for await (const event of client.read({ articleId: "article_1", maxSpendAtomic: "100", granularity: "article" })) {
     events.push(event.type);
   }
   assert.deepEqual(events, ["session.started", "article.bundle", "article.usage", "article.completed"]);

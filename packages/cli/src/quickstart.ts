@@ -1,5 +1,5 @@
 import { parseUsdcToAtomic, settlementNetworkInfo, type ArticleSummary, type StreamMode } from "@rubicon-caliga/core";
-import type { ReadReceipt, RubiconClient } from "@rubicon-caliga/agent-sdk/agent-client";
+import type { ReadGranularity, ReadReceipt, RubiconClient } from "@rubicon-caliga/agent-sdk/agent-client";
 import { stringFlag, type ParsedArgs } from "./args.js";
 import {
   circleAgentWallet,
@@ -13,6 +13,7 @@ import {
 } from "./circle.js";
 import { HOSTED_GATEWAY_URL, writeConfig, type RubiconCliConfig } from "./config.js";
 import { CliError } from "./errors.js";
+import { assertNoLegacyGranularityConflict, granularityFlag } from "./granularity.js";
 import { articleJson, formatAtomic } from "./format.js";
 import { loadReceipt, saveReceipt } from "./receipts.js";
 
@@ -79,10 +80,10 @@ export async function runDoctor(runtime: CommandRuntime, deps: CommandDeps = {})
     });
   }
 
-  await addCircleCheck(checks, "circleCli", () => circleVersion(circleInput(runtime, deps)));
-  await addCircleCheck(checks, "circleAuth", () => circleAuthStatus(circleInput(runtime, deps)));
-
   const chain = runtime.circleChain ?? runtime.config.circleChain ?? "ARC-TESTNET";
+  await addCircleCheck(checks, "circleCli", () => circleVersion(circleInput(runtime, deps)));
+  await addCircleCheck(checks, "circleAuth", () => circleAuthStatus({ ...circleInput(runtime, deps), testnet: isTestnetChain(chain) }));
+
   let walletAddress: `0x${string}` | undefined;
   await addCircleCheck(checks, "arcTestnetWallet", async () => {
     const wallet = await circleAgentWallet({
@@ -130,12 +131,11 @@ export async function runQuickstartRead(runtime: CommandRuntime, deps: CommandDe
 }
 
 export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): Promise<Record<string, unknown>> {
-  if (runtime.parsed.positionals[1] !== "--first" && !runtime.parsed.flags.first) {
-    throw new CliError("MISSING_FIRST", "rubicon buy currently requires --first.");
-  }
   const goal = stringFlag(runtime.parsed.flags, "goal");
   if (!goal) throw new CliError("MISSING_GOAL", "rubicon buy requires --goal.");
   const maxSpendAtomic = parseQuickstartBudget(runtime.parsed);
+  const granularity = granularityFlag(runtime.parsed);
+  assertNoLegacyGranularityConflict(runtime.parsed, granularity);
   const approvedBudgetUsdc = formatAtomic(maxSpendAtomic);
   const events: Array<Record<string, unknown>> = [];
   const wroteGatewayConfig = await ensureGatewayConfig(runtime);
@@ -153,7 +153,9 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
   });
   const navigation = consultation.navigation;
   events.push({ type: "seller.consulted", conversationId: consultation.conversationId, inferenceSource: "safe_metadata", sellerAgent: navigation.sellerAgent });
-  const ranked = rankSectionPlans(article, navigation.sellerAgent);
+  const ranked = granularity === "article"
+    ? [{ sectionId: "full-article", expectedValue: 1, minimumUsefulWords: article.totalWords, rationale: "Buyer selected the complete article.", score: 1 / article.totalWords }]
+    : rankSectionPlans(article, navigation.sellerAgent);
   if (ranked.length === 0) throw new CliError("NO_RELEVANT_SECTIONS", "The seller agent did not identify a purchasable section.");
 
   const networkInfo = settlementNetworkInfo(article.paymentTerms?.network);
@@ -162,9 +164,11 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
   let circleWalletAddress: `0x${string}` | undefined;
   let balanceAtomic: `${bigint}` | undefined;
 
+  const testnet = environment === "testnet" || (environment === undefined && isTestnetChain(chain));
+
   if (runtime.paymentMode === "circle-cli") {
     try {
-      await circleAuthStatus(circleInput(runtime, deps));
+      await circleAuthStatus({ ...circleInput(runtime, deps), testnet });
       const wallet = await circleAgentWallet({
         ...circleInput(runtime, deps),
         chain,
@@ -184,7 +188,10 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
     } catch (error) {
       if (error instanceof CliError) throw error;
       const guidance = circleGuidance(error) ?? circleGuidance(classifyCircleError(error));
-      if (guidance) throw new CliError(guidance.code.toUpperCase(), `${guidance.message} ${guidance.guidance}`);
+      if (guidance) {
+        const recovery = guidance.code === "not_logged_in" ? `rubicon login <email>${testnet ? " --testnet" : ""} --json` : undefined;
+        throw new CliError(guidance.code.toUpperCase(), `${guidance.message} ${guidance.guidance}`, 1, recovery);
+      }
       throw error;
     }
   }
@@ -202,9 +209,11 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
       events.push({ type: "section.skipped", sectionId: plan.sectionId, reason: "insufficient_remaining_budget", remainingAtomic: `${remaining}` });
       continue;
     }
-    const section = article.sections.find((candidate) => candidate.sectionId === plan.sectionId)!;
-    const reserveWords = reserveWordsForLater(ranked, plan.sectionId, visited, affordableWords);
-    const maxWords = Math.min(section.wordCount, Math.max(plan.minimumUsefulWords, affordableWords - reserveWords));
+    const sectionWords = plan.sectionId === "full-article"
+      ? article.totalWords
+      : article.sections.find((candidate) => candidate.sectionId === plan.sectionId)!.wordCount;
+    const reserveWords = granularity === "article" ? 0 : reserveWordsForLater(ranked, plan.sectionId, visited, affordableWords);
+    const maxWords = Math.min(sectionWords, Math.max(plan.minimumUsefulWords, affordableWords - reserveWords));
     const sessionCap = BigInt(maxWords) * BigInt(article.pricePerWordAtomic);
     if (sessionCap > remaining) throw new CliError("BUDGET_INVARIANT", "Refusing payment because the section cap exceeds the remaining approved budget.");
     events.push({ type: "section.selected", sectionId: plan.sectionId, expectedValue: plan.expectedValue, minimumUsefulWords: plan.minimumUsefulWords, informationValuePerPaidWord: plan.score, sessionCapAtomic: `${sessionCap}` });
@@ -215,8 +224,8 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
       conversationId: consultation.conversationId,
       sectionId: plan.sectionId,
       maxSpendAtomic: `${sessionCap}`,
-      maxWords,
-      chunkWords: Math.min(32, maxWords),
+      maxWords: granularity === "section" || granularity === "article" ? undefined : maxWords,
+      granularity: granularityForBuy(granularity, maxWords),
       streamMode: "bundled" as StreamMode,
       metadata: { autonomousBuy: true, stopAfterSection: true },
       onEvent(event) {
@@ -232,9 +241,9 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
           inferenceSource: "seller_metadata_plus_purchased_bundle",
         });
       },
-      stopWhen({ wordsRead: currentWords }) {
-        return plan.expectedValue >= 0.75 && currentWords >= plan.minimumUsefulWords;
-      },
+      stopWhen: granularity === "section" || granularity === "article"
+        ? undefined
+        : ({ wordsRead: currentWords }) => plan.expectedValue >= 0.75 && currentWords >= plan.minimumUsefulWords,
     });
     if (BigInt(receipt.amountPaidAtomic) > sessionCap || spent + BigInt(receipt.amountPaidAtomic) > BigInt(maxSpendAtomic)) {
       throw new CliError("BUDGET_INVARIANT", "Payment receipt exceeds the approved cumulative budget.");
@@ -286,6 +295,11 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
           : "seller_options_exhausted",
     },
   };
+}
+
+function granularityForBuy(granularity: ReadGranularity | undefined, maxWords: number): ReadGranularity {
+  if (granularity === "section" || granularity === "article") return granularity;
+  return Math.min(typeof granularity === "number" ? granularity : 32, maxWords);
 }
 
 function articleRelevance(article: ArticleSummary, goal: string): number {
@@ -389,6 +403,10 @@ async function addCircleCheck(checks: CheckResult[], name: string, task: () => P
 
 function circleInput(_runtime: CommandRuntime, deps: CommandDeps): { command?: string; runner?: CircleRunner } {
   return { command: deps.circleCommand, runner: deps.circleRunner };
+}
+
+function isTestnetChain(chain: string): boolean {
+  return /testnet/i.test(chain);
 }
 
 function envAddress(name: string): `0x${string}` | undefined {

@@ -190,35 +190,77 @@ export class CircleCliGatewaySigner {
   }
 }
 
+export interface CircleInvocation {
+  file: string;
+  args: string[];
+  options: { maxBuffer: number; windowsVerbatimArguments?: boolean };
+}
+
+export function buildCircleInvocation(command: string, args: string[], platform: NodeJS.Platform = process.platform): CircleInvocation {
+  const maxBuffer = 1024 * 1024;
+  if (platform !== "win32" || /[\\/.]/.test(command)) {
+    return { file: command, args, options: { maxBuffer } };
+  }
+  // npm exposes CLI entry points as .cmd shims on Windows, and Node refuses to
+  // spawn those without a shell, so bare commands route through cmd.exe.
+  const escaped = [escapeCmdCommand(command), ...args.map(escapeCmdArg)].join(" ");
+  return {
+    file: "cmd.exe",
+    args: ["/d", "/s", "/c", `"${escaped}"`],
+    options: { maxBuffer, windowsVerbatimArguments: true },
+  };
+}
+
+function escapeCmdCommand(command: string): string {
+  return /[\s()%!^"<>&|]/.test(command) ? `"${command}"` : command;
+}
+
+function escapeCmdArg(value: string): string {
+  let arg = value.replace(/(\\*)"/g, '$1$1\\"');
+  arg = arg.replace(/(\\*)$/, "$1$1");
+  return `"${arg}"`.replace(/[()%!^"<>&|]/g, "^$&");
+}
+
+async function execCircle(command: string, args: string[]): Promise<string> {
+  const invocation = buildCircleInvocation(command, args);
+  const { stdout } = await execFileAsync(invocation.file, invocation.args, invocation.options);
+  return stdout;
+}
+
 async function runCircleCli(command: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(command, args, {
-      maxBuffer: 1024 * 1024,
-    });
-    return stdout;
+    return await execCircle(command, args);
   } catch (error) {
-    if (shouldRetryCircleCliFallback(command, error)) {
-      try {
-        const { stdout } = await execFileAsync("circle-cli", args, {
-          maxBuffer: 1024 * 1024,
-        });
-        return stdout;
-      } catch (fallbackError) {
-        const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-        throw new Error(
-          `Circle CLI command failed. Ensure Circle CLI is installed as circle or circle-cli, logged in, and has an Agent Wallet on the selected chain. ${message}`,
-        );
-      }
+    if (!shouldRetryCircleCliFallback(command, error)) {
+      throw circleCliFailure(error);
     }
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Circle CLI command failed. Ensure Circle CLI is installed as circle or circle-cli, logged in, and has an Agent Wallet on the selected chain. ${message}`,
-    );
+    try {
+      return await execCircle("circle-cli", args);
+    } catch (fallbackError) {
+      if (isMissingBinary(fallbackError) && process.env.RUBICON_NO_NPX_FALLBACK !== "1") {
+        try {
+          return await execCircle("npx", ["-y", "--package", "@circle-fin/cli", "circle", ...args]);
+        } catch (npxError) {
+          throw circleCliFailure(npxError);
+        }
+      }
+      throw circleCliFailure(fallbackError);
+    }
   }
 }
 
+function circleCliFailure(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `Circle CLI command failed. Ensure Circle CLI is installed as circle or circle-cli (or reachable via npx -y --package @circle-fin/cli circle), logged in, and has an Agent Wallet on the selected chain. ${message}`,
+  );
+}
+
 function shouldRetryCircleCliFallback(command: string, error: unknown): boolean {
-  if (command !== "circle") return false;
+  return command === "circle" && isMissingBinary(error);
+}
+
+function isMissingBinary(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const stderr = isRecord(error) && typeof error.stderr === "string" ? error.stderr : "";
   const output = `${message}\n${stderr}`.toLowerCase();

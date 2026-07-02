@@ -28,7 +28,6 @@ import {
   type StreamPaymentRequest,
   type StreamPaymentResponse,
   type StreamStopCondition,
-  type WordPaymentReceipt,
 } from "@rubicon-caliga/core";
 import { InMemoryEventBus } from "./stores/event-bus.js";
 import { summarizeArticle } from "./repositories/in-memory.js";
@@ -36,6 +35,14 @@ import type { ArticleRecord, LedgerRepository, PublishedArticleRepository } from
 import { DefaultSellerAgent, type SellerAgent } from "./seller-agent/seller-agent.js";
 import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
 import { wordsForSection } from "./words.js";
+import {
+  affordableWordCount,
+  authorizedWordCount,
+  buildPaymentResponse,
+  buildWordReceipt,
+  normalizeChunkWords,
+  PaidReadingWorkflow,
+} from "./workflows/paid-reading.js";
 
 export interface GatewayOptions {
   articleRepository: PublishedArticleRepository;
@@ -47,19 +54,6 @@ export interface GatewayOptions {
   gatewayFeeBps?: number;
   gatewayBaseUrl?: string;
   logger?: boolean;
-}
-
-interface StreamState {
-  article: ArticleRecord;
-  words: string[];
-  sectionId: string;
-}
-
-function nextStreamWord(state: StreamState, nextIndex: number): string | null {
-  if (nextIndex < 0 || nextIndex >= state.words.length) {
-    return null;
-  }
-  return state.words[nextIndex] ?? null;
 }
 
 const STOP_CONDITIONS: StreamStopCondition[] = [
@@ -95,7 +89,12 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   const gatewayFeeBps = options.gatewayFeeBps ?? 0;
   const gatewayBaseUrl = options.gatewayBaseUrl ?? `http://localhost:${process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787}`;
   const agentApiKey = process.env.RUBICON_AGENT_API_KEY;
-  const streamStates = new Map<string, StreamState>();
+  const paidReading = new PaidReadingWorkflow({
+    articles,
+    ledger,
+    paymentVerifier,
+    publish: (event) => events.publish(event),
+  });
 
   app.addHook("onRequest", async (request, reply) => {
     if (!agentApiKey || request.url === "/health") {
@@ -338,7 +337,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     logPaymentRequirementIssued(reply, session, paymentRequired, quote.wordPaymentAtomic, wallet.address);
 
     await ledger.createSession(session);
-    streamStates.set(session.id, { article, words: slice.words, sectionId });
+    paidReading.rememberSession(session.id, { article, words: slice.words, sectionId });
 
     const summary = await articleSummaryWithPaymentTerms(article);
     const wordsAuthorized = authorizedWordCount(request.body.budget.maxAmountAtomic, quote.wordPaymentAtomic);
@@ -430,20 +429,20 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
 
       // Resolve the next word from server-owned session state before settlement;
       // emit it only after a verified payment. Never reveal future words.
-      const state = await resolveStreamState(session);
+      const state = await paidReading.resolveStreamState(session);
       if (!state) {
         return reply.code(404).send({ error: "article_unavailable" });
       }
-      const nextWord = nextStreamWord(state, sequence);
+      const nextWord = paidReading.nextWord(state, sequence);
       if (nextWord === null) {
-        await complete(session, state.article.id);
+        await paidReading.complete(session, state.article.id);
         return reply.send(
           buildPaymentResponse(session, "", sequence, wordPaymentAtomic, true),
         );
       }
 
       if (!canAffordNextWord(session, wordPaymentAtomic)) {
-        await closeSession(session, "budget_exhausted");
+        await paidReading.close(session, "budget_exhausted");
         return reply.code(402).send({ error: "budget_exhausted" });
       }
 
@@ -552,7 +551,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
 
       const completed = session.wordsDelivered >= state.words.length;
       if (completed) {
-        await complete(session, session.articleId);
+        await paidReading.complete(session, session.articleId);
       }
 
       return sendPaymentResponse(
@@ -603,7 +602,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       const quote = quotePerWord({ pricePerWordAtomic: session.pricePerWordAtomic, gatewayFeeBps: session.gatewayFeeBps });
       const wordPaymentAtomic = BigInt(quote.wordPaymentAtomic);
 
-      const state = await resolveStreamState(session);
+      const state = await paidReading.resolveStreamState(session);
       if (!state) {
         return reply.code(404).send({ error: "article_unavailable" });
       }
@@ -615,7 +614,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       );
       if (maxWords < 1) {
         if (remainingArticleWords < 1) {
-          await complete(session, state.article.id);
+          await paidReading.complete(session, state.article.id);
           return reply.send({
             accepted: true,
             words: [],
@@ -627,7 +626,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
             authorizationMode: "chunk",
           } satisfies StreamChunkResponse);
         }
-        await closeSession(session, "budget_exhausted");
+        await paidReading.close(session, "budget_exhausted");
         return reply.code(402).send({ error: "budget_exhausted" });
       }
 
@@ -664,9 +663,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         if (!canAffordNextWord(session, wordPaymentAtomic)) {
           break;
         }
-        const nextWord = nextStreamWord(state, session.wordsDelivered);
+        const nextWord = paidReading.nextWord(state, session.wordsDelivered);
         if (nextWord === null) {
-          await complete(session, state.article.id);
+          await paidReading.complete(session, state.article.id);
           chunkCompleted = true;
           break;
         }
@@ -711,7 +710,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         });
 
         if (session.wordsDelivered >= state.words.length) {
-          await complete(session, session.articleId);
+          await paidReading.complete(session, session.articleId);
           chunkCompleted = true;
           break;
         }
@@ -851,7 +850,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       if (!session) {
         return reply.code(404).send({ error: "session_not_found" });
       }
-      await closeSession(session, request.body?.reason ?? "agent_cancelled");
+      await paidReading.close(session, request.body?.reason ?? "agent_cancelled");
       return reply.send({ aborted: true });
     },
   );
@@ -904,63 +903,6 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         createdAt: sellerMessage.createdAt,
       },
     ];
-  }
-
-  async function resolveStreamState(session: SessionRecord): Promise<StreamState | undefined> {
-    const existing = streamStates.get(session.id);
-    if (existing) {
-      return existing;
-    }
-    // Rebuild after a restart. Existing sessions continue even if the article is
-    // now paused (documented policy): we reload the article by id regardless of
-    // public state when possible.
-    const article =
-      (await maybeGetAnyState(session.articleId)) ?? (await articles.getPublishedArticle(session.articleId));
-    if (!article) {
-      return undefined;
-    }
-    const slice = wordsForSection(article.words, article.sections, session.sectionId);
-    if (!slice) {
-      return undefined;
-    }
-    const rebuilt: StreamState = { article, words: slice.words, sectionId: session.sectionId ?? "full-article" };
-    streamStates.set(session.id, rebuilt);
-    return rebuilt;
-  }
-
-  async function maybeGetAnyState(articleId: string): Promise<ArticleRecord | null> {
-    const repo = articles as PublishedArticleRepository & {
-      getArticleAnyState?(id: string): Promise<ArticleRecord | null>;
-    };
-    if (typeof repo.getArticleAnyState === "function") {
-      return repo.getArticleAnyState(articleId);
-    }
-    return null;
-  }
-
-  async function complete(session: SessionRecord, articleId: string): Promise<void> {
-    session.state = "completed";
-    await ledger.saveSession(session);
-    streamStates.delete(session.id);
-    // Settle any words still batched behind the stream so the final receipts are
-    // backfilled promptly rather than waiting on the batch timer.
-    await paymentVerifier.flush?.().catch(() => {});
-    events.publish({
-      type: "article.completed",
-      sessionId: session.id,
-      articleId,
-      totalWordsStreamed: session.wordsDelivered,
-      totalPaidAtomic: `${session.paidAtomic}`,
-    });
-    events.publish({ type: "session.closed", sessionId: session.id, reason: "article_completed" });
-  }
-
-  async function closeSession(session: SessionRecord, reason: string): Promise<void> {
-    session.state = reason === "budget_exhausted" ? "expired" : "aborted";
-    await ledger.saveSession(session);
-    streamStates.delete(session.id);
-    await paymentVerifier.flush?.().catch(() => {});
-    events.publish({ type: "session.aborted", sessionId: session.id, reason });
   }
 
   function logPaymentRequirementIssued(
@@ -1023,26 +965,6 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     return Array.isArray(accepts) ? accepts[0] : undefined;
   }
 
-  function authorizedWordCount(maxAmountAtomic: `${bigint}`, wordPaymentAtomic: `${bigint}`): number {
-    const count = BigInt(maxAmountAtomic) / BigInt(wordPaymentAtomic);
-    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
-    return Number(count > maxSafe ? maxSafe : count);
-  }
-
-  function affordableWordCount(session: SessionRecord, wordPaymentAtomic: bigint): number {
-    const remaining = BigInt(session.budget.maxAmountAtomic) - session.paidAtomic;
-    if (remaining <= 0n) return 0;
-    const count = remaining / wordPaymentAtomic;
-    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
-    return Number(count > maxSafe ? maxSafe : count);
-  }
-
-  function normalizeChunkWords(maxWords: number | undefined): number {
-    if (maxWords === undefined) return 32;
-    if (!Number.isInteger(maxWords) || maxWords < 1) return 1;
-    return Math.min(maxWords, 256);
-  }
-
   function paymentRequestFromHttp(
     body: Partial<StreamPaymentRequest> | undefined,
     getHeader: (name: string) => string | string[] | undefined,
@@ -1079,108 +1001,6 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     }
     reply.header("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired as PaymentRequired));
     return reply.code(402).send(paymentRequired);
-  }
-
-  function buildPaymentResponse(
-    session: SessionRecord,
-    word: string,
-    sequence: number,
-    priceAtomic: bigint,
-    completed: boolean,
-    transactionHash?: string,
-    transactionHashes?: string[],
-    paymentId = "",
-    network?: string,
-    payTo?: `0x${string}`,
-    settledAt = new Date().toISOString(),
-    settlementId?: string,
-    settlementIds?: string[],
-    buyerWalletAddress?: `0x${string}`,
-    transferId?: string,
-  ): StreamPaymentResponse {
-    const payment = buildWordReceipt(
-      session,
-      sequence,
-      priceAtomic,
-      paymentId,
-      network,
-      payTo,
-      settledAt,
-      transactionHash,
-      transactionHashes,
-      settlementId,
-      settlementIds,
-      buyerWalletAddress,
-      transferId,
-    );
-    return {
-      accepted: true,
-      sequence,
-      word,
-      priceAtomic: `${priceAtomic}`,
-      wordsPaid: session.wordsPaid,
-      wordsDelivered: session.wordsDelivered,
-      paidAtomic: `${session.paidAtomic}`,
-      completed,
-      payment,
-      transactionHash,
-      transactionHashes: transactionHashes ?? (transactionHash ? [transactionHash] : undefined),
-      settlementId,
-      settlementIds,
-      buyerWalletAddress,
-      transferId,
-    };
-  }
-
-  function buildWordReceipt(
-    session: SessionRecord,
-    sequence: number,
-    priceAtomic: bigint,
-    paymentId = "",
-    network?: string,
-    payTo?: `0x${string}`,
-    settledAt = new Date().toISOString(),
-    transactionHash?: string,
-    transactionHashes?: string[],
-    settlementId?: string,
-    settlementIds?: string[],
-    buyerWalletAddress?: `0x${string}`,
-    transferId?: string,
-    bundle?: {
-      bundleSequence: number;
-      startSequence: number;
-      endSequence: number;
-      wordsDelivered: number;
-      pricePerWordAtomic: bigint;
-      text: string;
-    },
-  ): WordPaymentReceipt | undefined {
-    if (!paymentId) return undefined;
-    const hashes = transactionHashes ?? (transactionHash ? [transactionHash] : undefined);
-    return {
-      paymentId,
-      sessionId: session.id,
-      articleId: session.articleId,
-      sequence,
-      meteringUnit: "word",
-      amountAtomic: `${priceAtomic}`,
-      bundleSequence: bundle?.bundleSequence,
-      startSequence: bundle?.startSequence,
-      endSequence: bundle?.endSequence,
-      wordsDelivered: bundle?.wordsDelivered,
-      pricePerWordAtomic: bundle ? `${bundle.pricePerWordAtomic}` : undefined,
-      text: bundle?.text,
-      currency: "USDC",
-      network,
-      payTo,
-      transactionHash,
-      transactionHashes: hashes,
-      settlementId,
-      settlementIds,
-      buyerWalletAddress,
-      transferId,
-      settledAt,
-    };
   }
 
   function sendPaymentResponse(reply: FastifyReply, response: StreamPaymentResponse) {

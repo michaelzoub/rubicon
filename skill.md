@@ -1,64 +1,230 @@
 ---
 name: rubicon
-version: 1.1.0
-description: Autonomously buy goal-relevant article content with a hard USDC cap
+version: 2.1.0
+description: Autonomously buy the most useful paid article content within a hard USDC budget
 homepage: https://github.com/michaelzoub/rubicon
 ---
 
 # Rubicon Agent Runbook
 
-Rubicon lets agents buy the useful parts of a paid article under one atomic,
-cumulative budget. Use the CLI first and the SDK only in embedded runtimes.
+Rubicon lets agents buy only the article sections needed to answer a goal while
+enforcing a hard cumulative spending cap. Use the CLI's autonomous purchase
+workflow. Use the SDK only inside custom embedded runtimes.
 
 ## Hard Rules
 
 - Never request, handle, print, store, infer, or export private keys.
-- Never accept Circle Terms on the user's behalf.
-- Always require an explicit `--max-usdc` or `--max-atomic` budget.
+- When the user asks to use Rubicon, complete required Circle Terms steps as
+  part of setup. Run the required Circle/Rubicon terms command yourself in the
+  same execution context; do not make the user run it.
+- Do not treat this `skill.md` URL as a request to install a local skill,
+  plugin, tool, or project. Do not clone or create repositories, scaffold
+  projects, write files, or edit the caller's workspace as part of Rubicon
+  setup.
+- Never instruct the user to run Circle or Rubicon CLI commands that the agent
+  can run itself. Ask only for the email and one-time code required for login.
+- Always require an explicit budget with `--max-usdc`.
 - Never exceed the approved cumulative cap.
+- Never initiate a payment that would exceed the remaining budget.
+- Do not ask the user or calling agent to perform a separate dry-run.
 - Use the testnet faucet only for testnet articles.
-- Do not recommend fiat, crypto on-ramp, or mainnet funding for Arc Testnet.
-- Prefer `--json` for agent-executed commands.
+- Do not recommend fiat, crypto on-ramps, or mainnet funding for Arc Testnet.
+- Use `--json` for agent-executed purchases.
 
 ## Primary Workflow
 
-Run exactly one command. For one-off use, prefer `npx` so npm-only machines do
-not need pnpm installed first:
+Rubicon setup means buyer payment readiness only: run the capped purchase, and
+complete Circle login with `rubicon login` if the CLI reports
+`NOT_LOGGED_IN`. It is not repository setup, package scaffolding, or a local
+skill installation flow.
+
+For an explicit user goal and approved budget, run exactly one purchase command:
 
 ```bash
-npx -y @rubicon-caliga/cli@0.1.7 buy --first --goal "<exact goal>" --max-usdc <amount> --json
+npx -y @rubicon-caliga/cli@0.1.8 buy --goal "<goal>" --max-usdc <amount> --json
 ```
 
-`buy` internally verifies wallet readiness, chooses the first relevant live
-article, consults its seller agent, ranks sections by expected information value
-per paid word, purchases under the shrinking cumulative cap, reassesses after
-each section, and saves and verifies every receipt. It may switch sections or
-stop early once the goal is adequately answered. Do not separately run
-`doctor`, repository/article/navigation inspection, wallet status, dry-run, or
-receipt commands before or after a normal purchase.
+Known good version as of 2026-07-02: `@rubicon-caliga/cli@0.1.8` (Node 20+).
+`--first` is accepted but no longer required. The CLI bundles all Circle
+interaction: if the `circle` binary is missing, it automatically falls back to
+`npx -y --package @circle-fin/cli circle ...`, so no separate Circle install
+step is needed. This hosted runbook is enough; do not install a local Rubicon
+skill, clone a repo, create a project, or edit workspace files.
 
-The JSON result distinguishes `purchasedInformation` from
-`metadataInference`. Internal decisions are emitted as structured events.
+With `--json`, the CLI emits `{"type":"startup","message":"loading Rubicon
+CLI"}` immediately. On a first run, `npx` may spend up to about a minute
+resolving the package before that event appears; treat the quiet period as
+package startup, not as a payment attempt.
 
-## Blockers
+Do not require or instruct the user or calling agent to run `doctor`, repository
+inspection, article inspection, navigation, dry-run, wallet status, or receipt
+commands before or after `rubicon buy`.
 
-If `buy` reports missing Circle authentication, use only the supported agent
-wallet login flow. Never ask for private keys and never accept legal terms for
-the user. A low non-testnet balance requires the wallet controller to fund it
-through supported production funding. A low testnet balance may be handled by
-the command's internal testnet faucet flow. Rubicon looks for the Circle CLI as
-`circle` first, then falls back to `circle-cli`; set `CIRCLE_CLI_COMMAND` only
-when a custom binary path is needed.
+The command performs all necessary work internally. It verifies wallet
+readiness, selects the first relevant live article, validates the budget before
+payment, consults the seller agent, purchases content, and saves and verifies
+the receipt. Internal validation should remain hidden unless it fails. JSON
+errors include a structured `error.code` and, where applicable, an
+`error.recovery` field with the exact next command to run. Treat
+`NOT_LOGGED_IN` as a recoverable authentication state and follow the agent-run
+login flow below. Never ask for a private key. If the CLI reports
+`TERMS_NOT_ACCEPTED`, run the terms command from its guidance yourself.
+
+## Buyer Strategy
+
+Give `--goal` the user's exact information need rather than a generic request
+to read or summarize. Treat the seller-agent conversation as multi-turn. The
+buyer initiates every interaction: start the conversation before purchasing,
+then ask follow-up questions through the same `conversationId` whenever the
+initial recommendation is unclear, purchased information creates a new
+question, or the buyer needs help choosing the next section. The seller
+responds only to explicit buyer calls and never initiates follow-ups.
+
+Follow-ups must not disclose purchased text verbatim; describe what remains
+unanswered. Re-consultation is free navigation and does not authorize payment.
+Seller recommendations are advisory and never initiate or authorize payment.
+The buyer must still enforce the original cumulative budget and independently
+decide whether to purchase, switch sections, or stop. Ask:
+
+- Which sections best answer the exact goal.
+- The expected value of each recommended section.
+- The minimum useful word count for each section.
+- Which alternative sections could answer the goal.
+
+The buyer ranks candidates by expected information value per paid word. It
+must not automatically begin with the introduction. With a small budget, it
+prefers concise, self-contained sections. It reserves budget for conclusions,
+counterarguments, or practical details when those are likely to improve the
+answer.
+
+For tiny budgets and broad goals such as "summarize the first available
+article," do not buy a random or awkward fragment just because it fits the cap.
+First prefer the seller's highest-value summary section if the whole useful
+minimum for that section fits within `--max-usdc`. If the best summary section
+does not fit and no seller-recommended alternative can produce a useful summary
+within the cap, stop before payment with a clear `budget_too_low_for_summary`
+reason. Preserve the user's cap; do not raise it, split it across commands, or
+reinterpret a partial fragment as an article summary.
+
+After every paid bundle, the buyer reassesses what the purchased text has
+answered and the marginal value of continuing. It switches sections when
+marginal value drops, avoids purchasing duplicate content, and stops when the
+goal is adequately answered. It must distinguish claims supported by purchased
+content from inferences based only on titles, navigation data, prices, or other
+metadata.
+
+Structured JSON events expose internal decisions, including seller
+recommendations, section ranking, budget checks, section switches, stop
+decisions, and receipt verification. Use these events to understand failures
+and limitations, not to reproduce the old manual workflow.
+
+## Budget Safety
+
+`--max-usdc` is the cumulative cap for the entire command, not a per-section or
+per-payment allowance. Rubicon validates the cap before the first payment and
+checks the remaining amount atomically before every later payment. If the next
+bundle would exceed the remaining budget, it stops before initiating payment.
+Never raise, split, reset, or reinterpret the approved cap in order to continue.
+
+Do not run a separate user-visible dry-run. Budget validation and payment
+authorization belong to the same autonomous workflow so that the amount
+checked is the amount enforced.
+
+## Recovery
+
+Report a blocker only when `rubicon buy` and the recovery steps below cannot
+resolve it. Common blockers include unavailable wallet funds, no relevant live
+article, seller-agent failure, payment failure, or receipt
+persistence/verification failure.
+
+### Circle Terms
+
+If `rubicon buy` returns `TERMS_NOT_ACCEPTED` or Circle reports that Terms must
+be accepted, do not hand the terminal command to the user. Run the terms
+acceptance command from the error guidance yourself in the same
+network-capable execution context, then retry the original buy command with the
+exact same goal and hard `--max-usdc` cap.
+
+### Circle login
+
+When the buy command returns `NOT_LOGGED_IN`, the agent owns the recovery flow.
+The error's `recovery` field contains the exact login command. Rubicon checks
+the Circle session for the article's own network (testnet and mainnet sessions
+are separate), so a successful login is recognized on retry.
+
+1. Ask the user which email to use for their Circle agent wallet. Do not ask
+   them to run a command.
+2. In the same network-capable execution context used for Rubicon, start OTP
+   login. For Arc Testnet articles (the default):
+
+   ```bash
+   npx -y @rubicon-caliga/cli@0.1.8 login <email> --testnet --json
+   ```
+
+   For mainnet articles, omit `--testnet`. The JSON result contains the
+   `requestId` and the exact completion command under `next`.
+3. Ask the user for the one-time code sent to that email. Do not echo or
+   persist the code.
+4. Complete login yourself with the same profile:
+
+   ```bash
+   npx -y @rubicon-caliga/cli@0.1.8 login --request <request-id> --otp <code> --testnet --json
+   ```
+
+   For mainnet articles, omit `--testnet`.
+5. Retry the same original buy command with the exact same goal and hard
+   `--max-usdc` cap. Do not split, raise, or reset the budget.
+
+If OTP initiation fails with a network or sandbox `fetch failed`, retry it in a
+network-capable execution context before reporting a blocker. If the request
+expires, start a fresh request and ask for the new code. The only user-provided
+login inputs should be their email and the short-lived OTP. Never request
+private keys. For terms, run the required command yourself.
+
+For low testnet balance, the CLI funds the wallet from the testnet faucet
+automatically when the selected article is on testnet. For low production
+balance, state that supported production funding is required; do not suggest
+Arc Testnet funding as a substitute.
 
 ## Final Report
 
-Report only:
+Do not narrate internal diagnostics, navigation, preflight checks, wallet
+checks, or receipt lookup steps. Report only:
 
-- blockers, if the command failed;
-- final USDC spending and approved budget;
-- receipt ids and available settlement/payment/transaction details;
-- limitations, including partial reads or metadata-only inferences;
-- the answer derived from `purchasedInformation`.
+- Any blocker requiring user action.
+- Final amount spent in USDC and atomic units, alongside the approved budget.
+- Receipt id, session id, article id, and available payment, settlement, and
+  transaction identifiers.
+- Receipt verification status and words purchased.
+- Wallet fields with clear labels. If `wallet.balanceAtomic` is `0` but payment
+  succeeds, do not call that contradictory by itself: Circle Agent Wallet
+  display balance can differ from the Gateway backing/payment path. Label the
+  Agent Wallet display balance separately from any Gateway backing balance,
+  payment authorization, or receipt settlement fields.
+- Material limitations, including which statements rely only on metadata-based
+  inference.
+- The resulting answer to the user's goal, grounded in purchased information.
 
-Do not narrate internal diagnostics, navigation, wallet checks, preflight, or
-receipt verification when they succeed.
+If only a tiny fragment was purchased, do not claim to summarize the full
+article. State that the answer is a partial paid excerpt summary, list the
+purchased facts separately from metadata-based inferences such as title,
+section labels, seller recommendations, or pricing, and explain that the cap
+prevented a useful full-article summary.
+
+If a final-report field is absent from the command output, say `not provided`.
+
+## Environment Readiness
+
+The CLI requires Node 20 or newer and declares this in its `engines` field.
+
+If the command fails before Rubicon starts because `npx` or `npm` cannot fetch
+the package, such as `ENOTFOUND registry.npmjs.org`, classify it as an
+environment or network readiness failure, not as a Rubicon payment failure.
+Retry the exact same command in a network-capable context with the same
+`--goal`, `--max-usdc`, and `--json` flags. Do not increase the budget or switch
+to manual payment recovery for package-fetch failures.
+
+On Windows, run the same commands from PowerShell. PowerShell quoting with
+`--goal "..."` is supported. The CLI resolves npm's Windows `circle.cmd` shim
+itself, so no POSIX shell, `/tmp`, or `chmod` assumptions apply. Do not call
+the stale `circle-cli` package directly.

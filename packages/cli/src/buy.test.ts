@@ -60,6 +60,23 @@ test("buy persists receipts and verifies they can be loaded", async () => {
   assert.ok((result.events as Array<{ type: string }>).some((event) => event.type === "receipt.verified"));
 });
 
+test("buy can purchase the whole article as one buyer-selected unit", async () => {
+  const fixture = setup([assessment("practical", 0.9, 1)]);
+  fixture.runtime.parsed = parseArgs(["buy", "--first", "--goal", "complete context", "--max-atomic", "100", "--granularity", "article"]);
+  await runBuy(fixture.runtime);
+  assert.equal(fixture.runs.length, 1);
+  assert.equal(fixture.runs[0]?.sectionId, "full-article");
+  assert.equal(fixture.runs[0]?.granularity, "article");
+  assert.equal(fixture.runs[0]?.maxWords, undefined);
+});
+
+test("buy forwards an explicit numeric granularity", async () => {
+  const fixture = setup([assessment("practical", 0.9, 10)]);
+  fixture.runtime.parsed = parseArgs(["buy", "--first", "--goal", "practical answer", "--max-atomic", "100", "--granularity", "10"]);
+  await runBuy(fixture.runtime);
+  assert.equal(fixture.runs[0]?.granularity, 10);
+});
+
 test("buy reports wallet setup failures before payment", async () => {
   const fixture = setup([assessment("practical", 0.9, 1)], { paymentMode: "circle-cli" });
   await assert.rejects(

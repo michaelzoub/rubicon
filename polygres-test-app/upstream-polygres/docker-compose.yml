@@ -1,0 +1,15 @@
+services:
+  postgres:
+    # 0.1.8 is in the source repo but its GHCR image was not published yet.
+    image: ghcr.io/evokoa/pggraph:0.1.7
+    environment:
+      POSTGRES_DB: graph
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d graph"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
