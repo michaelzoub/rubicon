@@ -74,7 +74,12 @@ async function main(): Promise<void> {
     if (json) {
       printJson({
         success: false,
-        error: { code: cliError.code, message: cliError.message, ...(cliError.recovery ? { recovery: cliError.recovery } : {}) },
+        error: {
+          code: cliError.code,
+          message: cliError.message,
+          ...(cliError.recovery ? { recovery: cliError.recovery } : {}),
+          ...(cliError.details ? { details: cliError.details } : {}),
+        },
       });
     } else {
       process.stderr.write(`Error: ${cliError.message}\n`);

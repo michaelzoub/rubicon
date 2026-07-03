@@ -6,10 +6,13 @@ import assert from "node:assert/strict";
 import {
   buildCircleInvocation,
   circleAuthStatus,
+  circleCommandDiagnostics,
   circleGuidance,
   circleLoginComplete,
   circleLoginInit,
   classifyCircleError,
+  redactCircleArgs,
+  redactSecrets,
   runCircleCli,
 } from "./circle.js";
 
@@ -92,6 +95,66 @@ test("circleAuthStatus adds --testnet only for testnet sessions", async () => {
 
   assert.deepEqual(calls[0], ["wallet", "status", "--type", "agent", "--testnet", "--output", "json"]);
   assert.deepEqual(calls[1], ["wallet", "status", "--type", "agent", "--output", "json"]);
+});
+
+test("runCircleCli preserves exit code, stdout, and stderr diagnostics", async () => {
+  const binDir = mkdtempSync(join(tmpdir(), "rubicon-circle-diag-"));
+  const script = join(binDir, "circle");
+  writeFileSync(script, "#!/bin/sh\necho out-line\necho err-line >&2\nexit 7\n");
+  chmodSync(script, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = binDir;
+  try {
+    await assert.rejects(
+      () => runCircleCli("circle", ["wallet", "status"]),
+      (error) => {
+        const diagnostics = circleCommandDiagnostics(error);
+        assert.ok(diagnostics);
+        assert.equal(diagnostics.command, "circle");
+        assert.deepEqual(diagnostics.args, ["wallet", "status"]);
+        assert.equal(diagnostics.exitCode, 7);
+        assert.match(diagnostics.stdout, /out-line/);
+        assert.match(diagnostics.stderr, /err-line/);
+        return true;
+      },
+    );
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
+test("classifyCircleError redacts OTPs and secrets from diagnostics and message", () => {
+  const error = Object.assign(new Error("circle command exited 2"), {
+    code: 2,
+    stdout: '{"otp":"123456"}',
+    stderr: "upstream 503; apiKey=sk-live-abc",
+    circleInvocation: { command: "circle", args: ["wallet", "login", "--otp", "123456", "--request", "req_1"] },
+  });
+  const classified = classifyCircleError(error);
+  const diagnostics = circleCommandDiagnostics(classified);
+  assert.ok(diagnostics);
+  assert.equal(diagnostics.command, "circle");
+  assert.deepEqual(diagnostics.args, ["wallet", "login", "--otp", "[REDACTED]", "--request", "req_1"]);
+  assert.equal(diagnostics.exitCode, 2);
+  assert.ok(!diagnostics.stdout.includes("123456"));
+  assert.ok(!diagnostics.stderr.includes("sk-live-abc"));
+  assert.ok(!classified.message.includes("123456"));
+  assert.ok(!classified.message.includes("sk-live-abc"));
+});
+
+test("redaction helpers scrub secret flags and key-value secrets", () => {
+  assert.deepEqual(redactCircleArgs(["--otp", "000111", "--otp=222333", "--chain", "ARC-TESTNET"]), [
+    "--otp",
+    "[REDACTED]",
+    "--otp=[REDACTED]",
+    "--chain",
+    "ARC-TESTNET",
+  ]);
+  const text = redactSecrets('authorization: Bearer abc.def token="xyz" balance=12');
+  assert.ok(!text.includes("abc.def"));
+  assert.ok(!text.includes("xyz"));
+  assert.ok(text.includes("balance=12"));
 });
 
 test("classifies Circle terms acceptance errors", () => {

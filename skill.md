@@ -1,6 +1,6 @@
 ---
 name: rubicon
-version: 2.2.0
+version: 2.3.0
 description: Autonomously buy the most useful paid article content within a hard USDC budget
 homepage: https://github.com/michaelzoub/rubicon
 ---
@@ -46,10 +46,10 @@ skill installation flow.
 For an explicit user goal and approved budget, run exactly one purchase command:
 
 ```bash
-npx -y @rubicon-caliga/cli@0.1.9 buy --goal "<goal>" --max-usdc <amount> --json
+npx -y @rubicon-caliga/cli@0.1.11 buy --goal "<goal>" --max-usdc <amount> --json
 ```
 
-Known good version as of 2026-07-02: `@rubicon-caliga/cli@0.1.9` (Node 20+).
+Known good version as of 2026-07-03: `@rubicon-caliga/cli@0.1.11` (Node 20+).
 `--first` is accepted but no longer required. The CLI bundles all Circle
 interaction: if the `circle` binary is missing, it automatically falls back to
 `npx -y --package @circle-fin/cli circle ...`, so no separate Circle install
@@ -83,8 +83,9 @@ convention; the buyer cannot be talked out of it:
 
 - Catalog selection from safe metadata is provisional, never a purchase
   decision.
-- Before payment, the buyer evaluates semantic relevance from safe metadata and
-  consults the seller agent for confirmation.
+- Before seller consultation or payment, the buyer requires a direct topic
+  match in safe article metadata. If none exists, it reports the available
+  titles and stops with zero spend.
 - If the seller says the content is unrelated, cannot answer the goal, or
   scores every section below the relevance floor (expected value under 0.35),
   the CLI stops immediately with zero spend.
@@ -98,6 +99,15 @@ When the CLI returns `NO_RELEVANT_ARTICLE`, report clearly that no sufficiently
 relevant article was found, that zero USDC was spent out of the approved
 budget, and do not retry with a rephrased goal in an attempt to force a
 purchase.
+
+The CLI applies the same zero-spend discipline to affordability. If the
+approved budget cannot fund the seller's minimum useful word count for any
+relevant section, it stops with error code `BUDGET_TOO_LOW_FOR_SUMMARY` before
+any wallet or payment call is made; the `affordability.gate` event records the
+decision and 0 USDC is spent. The error payload names the cheapest relevant
+section, the minimum budget that would fund it, and a ready-to-run retry
+command under `error.recovery`. Report that minimum to the user and retry only
+after they approve the higher `--max-usdc`; never raise the cap on your own.
 
 ## Buyer Strategy
 
@@ -131,9 +141,10 @@ article," do not buy a random or awkward fragment just because it fits the cap.
 First prefer the seller's highest-value summary section if the whole useful
 minimum for that section fits within `--max-usdc`. If the best summary section
 does not fit and no seller-recommended alternative can produce a useful summary
-within the cap, stop before payment with a clear `budget_too_low_for_summary`
-reason. Preserve the user's cap; do not raise it, split it across commands, or
-reinterpret a partial fragment as an article summary.
+within the cap, the CLI stops before payment with the
+`BUDGET_TOO_LOW_FOR_SUMMARY` error described above. Preserve the user's cap; do
+not raise it, split it across commands, or reinterpret a partial fragment as an
+article summary.
 
 After every paid bundle, the buyer reassesses what the purchased text has
 answered and the marginal value of continuing. It switches sections when
@@ -187,7 +198,7 @@ are separate), so a successful login is recognized on retry.
    login. For Arc Testnet articles (the default):
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.9 login <email> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.11 login <email> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`. The JSON result contains the
@@ -197,7 +208,7 @@ are separate), so a successful login is recognized on retry.
 4. Complete login yourself with the same profile:
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.9 login --request <request-id> --otp <code> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.11 login --request <request-id> --otp <code> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`.
@@ -224,6 +235,13 @@ If the result is `NO_RELEVANT_ARTICLE`, report that no sufficiently relevant
 article was available for the goal, that the amount spent is 0 USDC
 (`amountPaidAtomic: "0"`) out of the approved budget, and that no session,
 payment, or receipt was created. Do not treat this as a failure of the tool.
+
+If the result is `BUDGET_TOO_LOW_FOR_SUMMARY`, report that the approved budget
+is below the seller's minimum useful purchase, state the minimum budget that
+would fund the cheapest relevant section (from the error payload), and confirm
+that 0 USDC was spent with no wallet or payment call made. Ask the user whether
+to retry with the higher budget; do not raise it yourself. Do not treat this as
+a failure of the tool.
 
 Otherwise report only:
 

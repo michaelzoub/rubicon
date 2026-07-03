@@ -11,6 +11,15 @@ export interface CircleErrorInfo {
   guidance: string;
 }
 
+export interface CircleCommandDiagnostics {
+  command: string;
+  args: string[];
+  exitCode: number | string | null;
+  signal?: string;
+  stdout: string;
+  stderr: string;
+}
+
 export interface CircleWalletInfo {
   address: `0x${string}`;
   raw?: unknown;
@@ -65,8 +74,57 @@ function escapeCmdArg(value: string): string {
 
 async function execCircle(command: string, args: string[]): Promise<string> {
   const invocation = buildCircleInvocation(command, args);
-  const { stdout } = await execFileAsync(invocation.file, invocation.args, invocation.options);
-  return stdout;
+  try {
+    const { stdout } = await execFileAsync(invocation.file, invocation.args, invocation.options);
+    return stdout;
+  } catch (error) {
+    annotateInvocation(error, command, args);
+    throw error;
+  }
+}
+
+// Records which logical Circle command failed so classifyCircleError can emit
+// structured diagnostics. The outermost annotation wins: execCircle names the
+// binary actually spawned (including fallbacks), injected runners keep theirs.
+function annotateInvocation(error: unknown, command: string, args: string[]): void {
+  if (!isRecord(error) || error.circleInvocation !== undefined) return;
+  (error as { circleInvocation?: { command: string; args: string[] } }).circleInvocation = { command, args };
+}
+
+async function invokeRunner(runner: CircleRunner, command: string, args: string[]): Promise<string> {
+  try {
+    return await runner(command, args);
+  } catch (error) {
+    annotateInvocation(error, command, args);
+    throw error;
+  }
+}
+
+const SECRET_FLAGS = new Set(["--otp", "--api-key", "--token", "--secret", "--password", "--private-key"]);
+
+export function redactCircleArgs(args: string[]): string[] {
+  const redacted: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const [flag] = arg.split("=", 1);
+    if (SECRET_FLAGS.has(arg) && index + 1 < args.length) {
+      redacted.push(arg, "[REDACTED]");
+      index += 1;
+    } else if (flag !== undefined && SECRET_FLAGS.has(flag) && arg.includes("=")) {
+      redacted.push(`${flag}=[REDACTED]`);
+    } else {
+      redacted.push(arg);
+    }
+  }
+  return redacted;
+}
+
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/(--otp[=\s]+)\S+/gi, "$1[REDACTED]")
+    .replace(/("otp"\s*:\s*")[^"]*(")/gi, "$1[REDACTED]$2")
+    .replace(/(bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1[REDACTED]")
+    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|private[_-]?key|authorization)["']?\s*[:=]\s*["']?)[^"'\s,}&]+/gi, "$1[REDACTED]");
 }
 
 export async function runCircleCli(command: string, args: string[]): Promise<string> {
@@ -89,15 +147,11 @@ export async function runCircleCli(command: string, args: string[]): Promise<str
   }
 }
 
-export function classifyCircleError(error: unknown): Error & { circle?: CircleErrorInfo } {
+export function classifyCircleError(error: unknown): Error & { circle?: CircleErrorInfo; circleDiagnostics?: CircleCommandDiagnostics } {
   const message = error instanceof Error ? error.message : String(error);
-  const output = [
-    message,
-    isRecord(error) && typeof error.stdout === "string" ? error.stdout : undefined,
-    isRecord(error) && typeof error.stderr === "string" ? error.stderr : undefined,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const stdout = isRecord(error) && typeof error.stdout === "string" ? error.stdout : "";
+  const stderr = isRecord(error) && typeof error.stderr === "string" ? error.stderr : "";
+  const output = [message, stdout || undefined, stderr || undefined].filter(Boolean).join("\n");
   const lower = output.toLowerCase();
   let info: CircleErrorInfo;
   if (lower.includes("fetch failed") || lower.includes("network") || lower.includes("enotfound") || lower.includes("econnrefused")) {
@@ -137,9 +191,30 @@ export function classifyCircleError(error: unknown): Error & { circle?: CircleEr
       guidance: "Inspect the Circle CLI output, confirm login, wallet, selected chain, and network access, then retry.",
     };
   }
-  const wrapped = new Error(`${info.message} ${output}`.trim()) as Error & { circle?: CircleErrorInfo };
+  const invocation = isRecord(error) && isRecord(error.circleInvocation) ? error.circleInvocation : undefined;
+  const exitCode = isRecord(error) && (typeof error.code === "number" || typeof error.code === "string") ? error.code : null;
+  const signal = isRecord(error) && typeof error.signal === "string" ? error.signal : undefined;
+  const wrapped = new Error(`${info.message} ${redactSecrets(output)}`.trim()) as Error & {
+    circle?: CircleErrorInfo;
+    circleDiagnostics?: CircleCommandDiagnostics;
+  };
   wrapped.circle = info;
+  wrapped.circleDiagnostics = {
+    command: typeof invocation?.command === "string" ? invocation.command : "unknown",
+    args: Array.isArray(invocation?.args) ? redactCircleArgs(invocation.args.map(String)) : [],
+    exitCode,
+    ...(signal ? { signal } : {}),
+    stdout: redactSecrets(stdout),
+    stderr: redactSecrets(stderr),
+  };
   return wrapped;
+}
+
+export function circleCommandDiagnostics(error: unknown): CircleCommandDiagnostics | undefined {
+  if (isRecord(error) && isRecord(error.circleDiagnostics)) {
+    return error.circleDiagnostics as unknown as CircleCommandDiagnostics;
+  }
+  return undefined;
 }
 
 function shouldRetryCircleCliFallback(command: string, error: unknown): boolean {
@@ -163,7 +238,7 @@ export function circleGuidance(error: unknown): CircleErrorInfo | undefined {
 export async function circleVersion(input: { command?: string; runner?: CircleRunner } = {}): Promise<string> {
   const command = input.command ?? defaultCircleCommand();
   const runner = input.runner ?? runCircleCli;
-  return (await runner(command, ["--version"])).trim();
+  return (await invokeRunner(runner, command, ["--version"])).trim();
 }
 
 export async function circleAuthStatus(input: { command?: string; runner?: CircleRunner; testnet?: boolean } = {}): Promise<unknown> {
@@ -172,7 +247,7 @@ export async function circleAuthStatus(input: { command?: string; runner?: Circl
   const args = ["wallet", "status", "--type", "agent"];
   if (input.testnet) args.push("--testnet");
   args.push("--output", "json");
-  const output = await runner(command, args);
+  const output = await invokeRunner(runner, command, args);
   return parseMaybeJson(output);
 }
 
@@ -192,7 +267,7 @@ export async function circleLoginInit(input: {
   const args = ["wallet", "login", input.email, "--type", "agent"];
   if (input.testnet) args.push("--testnet");
   args.push("--init");
-  const raw = parseMaybeJson(await runner(command, args));
+  const raw = parseMaybeJson(await invokeRunner(runner, command, args));
   return { requestId: parseLoginRequestId(raw), raw };
 }
 
@@ -208,7 +283,7 @@ export async function circleLoginComplete(input: {
   const args = ["wallet", "login", "--type", "agent"];
   if (input.testnet) args.push("--testnet");
   args.push("--request", input.requestId, "--otp", input.otp);
-  return parseMaybeJson(await runner(command, args));
+  return parseMaybeJson(await invokeRunner(runner, command, args));
 }
 
 function parseLoginRequestId(raw: unknown): string | undefined {
@@ -230,7 +305,7 @@ export async function circleAgentWallet(input: {
   if (input.configuredAddress) return { address: input.configuredAddress };
   const command = input.command ?? defaultCircleCommand();
   const runner = input.runner ?? runCircleCli;
-  const output = await runner(command, ["wallet", "list", "--chain", input.chain, "--type", "agent", "--output", "json"]);
+  const output = await invokeRunner(runner, command, ["wallet", "list", "--chain", input.chain, "--type", "agent", "--output", "json"]);
   const raw = parseMaybeJson(output);
   const address = parseWalletAddress(raw);
   return { address, raw };
@@ -244,7 +319,7 @@ export async function circleGatewayBalance(input: {
 }): Promise<CircleBalanceInfo> {
   const command = input.command ?? defaultCircleCommand();
   const runner = input.runner ?? runCircleCli;
-  const output = await runner(command, ["gateway", "balance", "--address", input.address, "--chain", input.chain, "--output", "json"]);
+  const output = await invokeRunner(runner, command, ["gateway", "balance", "--address", input.address, "--chain", input.chain, "--output", "json"]);
   const raw = parseMaybeJson(output);
   return {
     balanceAtomic: parseBalanceAtomic(raw),
@@ -261,7 +336,7 @@ export async function circleGatewayFaucet(input: {
 }): Promise<unknown> {
   const command = input.command ?? defaultCircleCommand();
   const runner = input.runner ?? runCircleCli;
-  const output = await runner(command, [
+  const output = await invokeRunner(runner, command, [
     "wallet",
     "fund",
     "--address",

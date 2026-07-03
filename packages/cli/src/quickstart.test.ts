@@ -67,13 +67,18 @@ test("quickstart detects expired OTP request IDs", async () => {
   );
 });
 
-test("quickstart stops when dry-run estimate exceeds budget", async () => {
+test("quickstart stops before Circle preflight when the budget cannot fund a useful summary", async () => {
+  const calls: string[][] = [];
   await assert.rejects(
     () => runQuickstartRead(runtimeFor({ article: article({ pricePerWordAtomic: "1000000" }) }), {
-      circleRunner: async (_command, args) => circleOutput(args, "1000000"),
+      circleRunner: async (_command, args) => {
+        calls.push(args);
+        return circleOutput(args, "1000000");
+      },
     }),
-    (error) => error instanceof CliError && error.code === "BUDGET_TOO_SMALL",
+    (error) => error instanceof CliError && error.code === "BUDGET_TOO_LOW_FOR_SUMMARY",
   );
+  assert.equal(calls.length, 0);
 });
 
 test("quickstart uses existing Arc Testnet balance without faucet", async () => {

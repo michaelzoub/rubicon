@@ -7,6 +7,7 @@ import type { ReadReceipt, RubiconClient, RunOptions } from "@rubicon-caliga/age
 import type { ArticleSummary, SellerSectionAssessment } from "@rubicon-caliga/core";
 import { parseArgs } from "./args.js";
 import { CliError } from "./errors.js";
+import { loadOperation } from "./operations.js";
 import { assessGoalFit, MIN_GOAL_FIT_EXPECTED_VALUE, runBuy, type CommandRuntime } from "./quickstart.js";
 import { listReceipts, loadReceipt } from "./receipts.js";
 
@@ -36,7 +37,7 @@ test("buy clamps partial reads to remaining budget before payment", async () => 
 
 test("buy never invokes payment when minimum useful content exceeds the cap", async () => {
   const fixture = setup([assessment("practical", 0.9, 3)], { price: "100", budgetAtomic: "250" });
-  await assert.rejects(() => runBuy(fixture.runtime), (error) => error instanceof CliError && error.code === "BUDGET_TOO_SMALL");
+  await assert.rejects(() => runBuy(fixture.runtime), (error) => error instanceof CliError && error.code === "BUDGET_TOO_LOW_FOR_SUMMARY");
   assert.equal(fixture.runs.length, 0);
 });
 
@@ -75,6 +76,103 @@ test("buy forwards an explicit numeric granularity", async () => {
   fixture.runtime.parsed = parseArgs(["buy", "--first", "--goal", "practical answer", "--max-atomic", "100", "--granularity", "10"]);
   await runBuy(fixture.runtime);
   assert.equal(fixture.runs[0]?.granularity, 10);
+});
+
+test("buy preserves redacted Circle diagnostics when a Circle command fails transiently", async () => {
+  const fixture = setup([assessment("practical", 0.9, 1)], { paymentMode: "circle-cli" });
+  const failure = Object.assign(new Error("Command failed with exit code 1"), {
+    code: 1,
+    stdout: '{"status":"degraded"}',
+    stderr: "503 upstream timeout; token=super-secret-value",
+  });
+  await assert.rejects(
+    () => runBuy(fixture.runtime, { circleRunner: async () => { throw failure; } }),
+    (error) => {
+      assert.ok(error instanceof CliError);
+      assert.equal(error.code, "COMMAND_FAILED");
+      const circle = (error.details as { circle: Record<string, unknown> }).circle;
+      assert.equal(circle.command, "circle");
+      assert.deepEqual(circle.args, ["wallet", "status", "--type", "agent", "--output", "json"]);
+      assert.equal(circle.exitCode, 1);
+      assert.match(String(circle.stdout), /degraded/);
+      assert.match(String(circle.stderr), /503 upstream timeout/);
+      assert.ok(!String(circle.stderr).includes("super-secret-value"));
+      return true;
+    },
+  );
+  assert.equal(fixture.runs.length, 0);
+});
+
+test("buy stops with BUDGET_TOO_LOW_FOR_SUMMARY before any Circle invocation when no useful section fits", async () => {
+  const circleCalls: string[][] = [];
+  const fixture = setup([assessment("practical", 0.9, 5)], { paymentMode: "circle-cli", price: "100", budgetAtomic: "250" });
+  await assert.rejects(
+    () => runBuy(fixture.runtime, {
+      circleRunner: async (_command, args) => {
+        circleCalls.push(args);
+        return JSON.stringify({ ok: true });
+      },
+    }),
+    (error) => {
+      assert.ok(error instanceof CliError);
+      assert.equal(error.code, "BUDGET_TOO_LOW_FOR_SUMMARY");
+      const details = error.details as Record<string, unknown>;
+      assert.equal(details.budgetAtomic, "250");
+      assert.equal(details.cheapestMinimumUsefulWords, 5);
+      assert.equal(details.cheapestMinimumCostAtomic, "500");
+      return true;
+    },
+  );
+  assert.equal(circleCalls.length, 0);
+  assert.equal(fixture.runs.length, 0);
+  assert.deepEqual(await listReceipts(), []);
+});
+
+test("buy retries safely after an ambiguous payment failure without duplicate payment or cap reset", async () => {
+  const fixture = setup([assessment("practical", 0.9, 1)]);
+  const client = fixture.runtime.client as unknown as { run: (input: RunOptions) => Promise<ReadReceipt> };
+  const originalRun = client.run.bind(fixture.runtime.client);
+  let failNext = true;
+  client.run = async (input: RunOptions) => {
+    if (failNext) {
+      failNext = false;
+      throw new Error("socket hang up");
+    }
+    return originalRun(input);
+  };
+
+  const failure = await runBuy(fixture.runtime).then(
+    () => assert.fail("expected PAYMENT_AMBIGUOUS"),
+    (error) => error as CliError,
+  );
+  assert.ok(failure instanceof CliError);
+  assert.equal(failure.code, "PAYMENT_AMBIGUOUS");
+  const operationId = (failure.details as { operationId: string }).operationId;
+  assert.ok(operationId.startsWith("op_"));
+  assert.equal((await loadOperation(operationId))?.status, "ambiguous");
+  assert.equal(fixture.runs.length, 0);
+  assert.deepEqual(await listReceipts(), []);
+
+  const retryProgress: Array<Record<string, unknown>> = [];
+  const retry = await runBuy(fixture.runtime, { onProgress: (event) => retryProgress.push(event) });
+  const retryResult = retry.result as { amountPaidAtomic: string; receiptIds: string[] };
+  assert.equal(fixture.runs.length, 1);
+  assert.equal(retryProgress.find((event) => event.type === "payment.started")?.operationId, operationId);
+  const completedOperation = await loadOperation(operationId);
+  assert.equal(completedOperation?.status, "completed");
+  assert.equal(completedOperation?.attempts, 2);
+  assert.ok(BigInt(retryResult.amountPaidAtomic) > 0n);
+
+  const thirdProgress: Array<Record<string, unknown>> = [];
+  const third = await runBuy(fixture.runtime, { onProgress: (event) => thirdProgress.push(event) });
+  const thirdResult = third.result as { amountPaidAtomic: string; receiptIds: string[]; operations: Array<{ reused: boolean; operationId: string }> };
+  assert.equal(fixture.runs.length, 1);
+  assert.equal(thirdProgress.filter((event) => event.type === "payment.started").length, 0);
+  assert.equal(thirdProgress.find((event) => event.type === "payment.reused")?.operationId, operationId);
+  assert.equal(thirdResult.amountPaidAtomic, retryResult.amountPaidAtomic);
+  assert.deepEqual(thirdResult.receiptIds, retryResult.receiptIds);
+  assert.deepEqual(thirdResult.operations, [{ operationId, sectionId: "practical", status: "completed", reused: true, receiptId: retryResult.receiptIds[0] }]);
+  assert.equal((await listReceipts()).length, 1);
 });
 
 test("buy reports wallet setup failures before payment", async () => {
