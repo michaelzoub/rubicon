@@ -132,6 +132,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   async function withPaymentTerms(summaries: ArticleSummary[]): Promise<ArticleSummary[]> {
     return Promise.all(
       summaries.map(async (summary) => {
+        if (summary.accessMode === "free") {
+          return summary;
+        }
         const wallet = await articles.getCreatorWallet(summary.creatorId);
         if (!wallet?.verified) {
           return summary;
@@ -146,6 +149,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
 
   async function articleSummaryWithPaymentTerms(article: ArticleRecord): Promise<ArticleSummary> {
     const summary = summarizeArticle(article);
+    if (article.accessMode === "free") {
+      return summary;
+    }
     const wallet = await articles.getCreatorWallet(article.creatorId);
     if (!wallet?.verified) {
       return summary;
@@ -173,6 +179,131 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       pricePerWordAtomic,
       meteringUnit: "word",
     };
+  }
+
+  async function releaseFreeChunk(
+    session: SessionRecord,
+    requestedWords: number,
+    idempotencyBase: string,
+  ): Promise<StreamChunkResponse | undefined> {
+    if (session.accessMode !== "free" || session.pricePerWordAtomic !== 0n) return undefined;
+    const state = await paidReading.resolveStreamState(session);
+    if (!state) return undefined;
+    const remaining = Math.max(0, state.words.length - session.wordsDelivered);
+    const maxWords = Math.min(requestedWords, remaining);
+    const released: StreamChunkResponse["words"] = [];
+    const startSequence = session.wordsDelivered;
+
+    for (let offset = 0; offset < maxWords; offset += 1) {
+      const sequence = session.wordsDelivered;
+      const word = paidReading.nextWord(state, sequence);
+      if (word === null) break;
+      const key = maxWords === 1 ? idempotencyBase : `${idempotencyBase}:${sequence}`;
+      const record = await ledger.recordFreeWordDelivery({
+        sessionId: session.id,
+        articleId: session.articleId,
+        sequence,
+        word,
+        idempotencyKey: key,
+      });
+      if (record.duplicate) break;
+      recordWordDelivery(session);
+      released.push({ sequence, word, priceAtomic: "0" });
+      events.publish({
+        type: "article.word",
+        sessionId: session.id,
+        articleId: session.articleId,
+        sequence,
+        word,
+        priceAtomic: "0",
+        totalWordsStreamed: session.wordsDelivered,
+        totalPaidAtomic: "0",
+      });
+    }
+
+    const text = released.map((entry) => entry.word).join(" ");
+    const completed = session.wordsDelivered >= state.words.length;
+    if (released.length > 0) {
+      events.publish({
+        type: "article.bundle",
+        sessionId: session.id,
+        articleId: session.articleId,
+        bundleSequence: typeof session.metadata.bundleSequence === "number" ? session.metadata.bundleSequence : 0,
+        startSequence,
+        endSequence: startSequence + released.length - 1,
+        words: released,
+        text,
+        wordCount: released.length,
+        pricePerWordAtomic: "0",
+        amountAtomic: "0",
+        totalWordsStreamed: session.wordsDelivered,
+        totalPaidAtomic: "0",
+      });
+      session.metadata = {
+        ...session.metadata,
+        bundleSequence: (typeof session.metadata.bundleSequence === "number" ? session.metadata.bundleSequence : 0) + 1,
+      };
+    }
+    events.publish({
+      type: "article.usage",
+      sessionId: session.id,
+      usage: usageForWords({ wordsDelivered: session.wordsDelivered, pricePerWordAtomic: 0n, gatewayFeeBps: 0 }),
+      wordsPaid: 0,
+      wordsDelivered: session.wordsDelivered,
+      paidAtomic: "0",
+    });
+    const freeChunkRequests = freeChunkRequestMap(session);
+    session.metadata = {
+      ...session.metadata,
+      freeChunkRequests: {
+        ...freeChunkRequests,
+        [idempotencyBase]: {
+          startSequence,
+          endSequence: startSequence + released.length,
+          completed,
+        },
+      },
+    };
+    if (completed) await paidReading.complete(session, session.articleId);
+    else await ledger.saveSession(session);
+
+    return {
+      accepted: true,
+      words: released,
+      text,
+      wordsPaid: 0,
+      wordsDelivered: session.wordsDelivered,
+      paidAtomic: "0",
+      completed,
+    };
+  }
+
+  async function cachedFreeChunk(
+    session: SessionRecord,
+    idempotencyKey: string | undefined,
+  ): Promise<StreamChunkResponse | undefined> {
+    if (!idempotencyKey) return undefined;
+    const cached = freeChunkRequestMap(session)[idempotencyKey];
+    if (!cached) return undefined;
+    const deliveries = (await ledger.listDeliveries(session.id))
+      .filter((entry) => entry.sequence >= cached.startSequence && entry.sequence < cached.endSequence)
+      .sort((left, right) => left.sequence - right.sequence);
+    const words = deliveries.map((entry) => ({ sequence: entry.sequence, word: entry.word, priceAtomic: "0" as const }));
+    return {
+      accepted: true,
+      words,
+      text: words.map((entry) => entry.word).join(" "),
+      wordsPaid: 0,
+      wordsDelivered: session.wordsDelivered,
+      paidAtomic: "0",
+      completed: cached.completed,
+    };
+  }
+
+  function freeChunkRequestMap(session: SessionRecord): Record<string, { startSequence: number; endSequence: number; completed: boolean }> {
+    const value = session.metadata.freeChunkRequests;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return value as Record<string, { startSequence: number; endSequence: number; completed: boolean }>;
   }
 
   app.get("/health", async () => ({ ok: true }));
@@ -280,11 +411,20 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       return reply.code(404).send({ error: "article_not_available" });
     }
 
-    const wallet = await articles.getCreatorWallet(article.creatorId);
-    if (!wallet) {
+    if (article.accessMode === "free" && article.pricePerWordAtomic !== 0n) {
+      return reply.code(409).send({ error: "free_article_has_nonzero_price" });
+    }
+    if (article.accessMode === "paid" && article.pricePerWordAtomic <= 0n) {
+      return reply.code(409).send({ error: "article_pricing_not_configured" });
+    }
+
+    const wallet = article.accessMode === "paid"
+      ? await articles.getCreatorWallet(article.creatorId)
+      : undefined;
+    if (article.accessMode === "paid" && !wallet) {
       return reply.code(409).send({ error: "creator_wallet_not_configured" });
     }
-    if (!wallet.verified) {
+    if (article.accessMode === "paid" && !wallet?.verified) {
       return reply.code(409).send({ error: "creator_wallet_unverified" });
     }
 
@@ -315,32 +455,39 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     const session = createSession({
       articleId: article.id,
       creatorId: article.creatorId,
+      accessMode: article.accessMode,
       conversationId,
       goal: request.body.goal,
       sectionId,
       budget: request.body.budget,
       pricePerWordAtomic: article.pricePerWordAtomic,
       gatewayFeeBps,
-      sellerWallet: wallet.address,
+      sellerWallet: wallet?.address,
       metadata: request.body.metadata,
       ttlMs: options.sessionTtlMs,
     });
 
-    const paymentRequired = await paymentVerifier.createPaymentRequired?.({
-      session,
-      article,
-      sellerWallet: wallet.address,
-      wordPaymentAtomic: BigInt(quote.wordPaymentAtomic),
-      gatewayBaseUrl,
-    });
+    const paymentRequired = article.accessMode === "paid"
+      ? await paymentVerifier.createPaymentRequired?.({
+          session,
+          article,
+          sellerWallet: wallet!.address,
+          wordPaymentAtomic: BigInt(quote.wordPaymentAtomic),
+          gatewayBaseUrl,
+        })
+      : undefined;
     session.paymentRequired = paymentRequired;
-    logPaymentRequirementIssued(reply, session, paymentRequired, quote.wordPaymentAtomic, wallet.address);
+    if (article.accessMode === "paid") {
+      logPaymentRequirementIssued(reply, session, paymentRequired, quote.wordPaymentAtomic, wallet!.address);
+    }
 
     await ledger.createSession(session);
     paidReading.rememberSession(session.id, { article, words: slice.words, sectionId });
 
     const summary = await articleSummaryWithPaymentTerms(article);
-    const wordsAuthorized = authorizedWordCount(request.body.budget.maxAmountAtomic, quote.wordPaymentAtomic);
+    const wordsAuthorized = article.accessMode === "free"
+      ? slice.words.length
+      : authorizedWordCount(request.body.budget.maxAmountAtomic, quote.wordPaymentAtomic);
     events.publish({
       type: "session.started",
       sessionId: session.id,
@@ -354,6 +501,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     const response: StartSessionResponse = {
       sessionId: session.id,
       state: session.state,
+      accessMode: article.accessMode,
       article: summary,
       navigation: await buildNavigation(article, request.body.goal),
       pricePerWordAtomic: quote.pricePerWordAtomic,
@@ -362,7 +510,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       wordPaymentAtomic: quote.wordPaymentAtomic,
       gatewayFeeBps,
       paymentRequired,
-      authorizationMode: "word",
+      authorizationMode: article.accessMode === "paid" ? "word" : undefined,
       wordsAuthorized,
       expiresAt: session.expiresAt.toISOString(),
       wordsPaid: 0,
@@ -381,6 +529,42 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       }
 
       const sequence = session.wordsDelivered;
+      if (session.accessMode === "free") {
+        const idempotencyKey = request.body?.idempotencyKey ?? `${session.id}:free:${sequence}`;
+        const cached = await ledger.getDeliveryByIdempotencyKey(idempotencyKey);
+        if (cached) {
+          return reply.send(
+            buildPaymentResponse(
+              session,
+              cached.delivery.word,
+              cached.delivery.sequence,
+              0n,
+              session.state === "completed",
+            ),
+          );
+        }
+        if (session.state === "completed" || session.state === "aborted" || session.state === "expired") {
+          return reply.code(409).send({ error: `session_${session.state}` });
+        }
+        if (isSessionExpired(session)) {
+          session.state = "expired";
+          await ledger.saveSession(session);
+          events.publish({ type: "session.closed", sessionId: session.id, reason: "session_expired" });
+          return reply.code(410).send({ error: "session_expired" });
+        }
+        const result = await releaseFreeChunk(session, 1, idempotencyKey);
+        if (!result) return reply.code(404).send({ error: "article_unavailable" });
+        const entry = result.words[0];
+        return reply.send(
+          buildPaymentResponse(
+            session,
+            entry?.word ?? "",
+            entry?.sequence ?? sequence,
+            0n,
+            result.completed,
+          ),
+        );
+      }
       const payment = paymentRequestFromHttp(request.body, (name) => request.headers[name.toLowerCase()]);
       if (!payment.paymentPayload) {
         return sendPaymentRequired(reply, session.paymentRequired);
@@ -392,6 +576,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       // Checked before state guards so retries of the final word stay idempotent.
       const cached = await ledger.getDeliveryByIdempotencyKey(idempotencyKey);
       if (cached) {
+        if (!cached.payment) {
+          return reply.code(500).send({ error: "paid_delivery_missing_payment" });
+        }
         return sendPaymentResponse(
           reply,
           buildPaymentResponse(
@@ -485,6 +672,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         transferId: verification.transferId,
         idempotencyKey,
       });
+      if (!record.payment) {
+        return reply.code(500).send({ error: "paid_delivery_missing_payment" });
+      }
       if (record.duplicate) {
         // Lost an idempotency race; return the canonical word without re-charging.
         // The winning request emits completion + closes the session over SSE.
@@ -584,6 +774,10 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       if (!session) {
         return reply.code(404).send({ error: "session_not_found" });
       }
+      if (session.accessMode === "free") {
+        const cached = await cachedFreeChunk(session, request.body?.idempotencyKey);
+        if (cached) return reply.send(cached);
+      }
       if (session.state === "completed" || session.state === "aborted" || session.state === "expired") {
         return reply.code(409).send({ error: `session_${session.state}` });
       }
@@ -595,6 +789,13 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       }
 
       const streamPayment = request.body;
+      if (session.accessMode === "free") {
+        const maxWords = normalizeChunkWords(streamPayment?.maxWords);
+        const idempotencyKey = streamPayment?.idempotencyKey ?? `${session.id}:free:${session.wordsDelivered}:${maxWords}`;
+        const result = await releaseFreeChunk(session, maxWords, idempotencyKey);
+        if (!result) return reply.code(404).send({ error: "article_unavailable" });
+        return reply.send(result);
+      }
       if (!streamPayment?.paymentPayload) {
         return sendPaymentRequired(reply, session.paymentRequired);
       }
@@ -822,6 +1023,9 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         await ledger.saveSession(session);
         events.publish({ type: "session.closed", sessionId: session.id, reason: "session_expired" });
         return reply.code(402).send({ error: "session_expired" });
+      }
+      if (session.accessMode === "free") {
+        return reply.code(204).send();
       }
       return sendPaymentRequired(reply, session.paymentRequired);
     },

@@ -197,7 +197,7 @@ export class RubiconClient {
     );
   }
 
-  async payForWord(sessionId: string, payment: StreamPaymentRequest): Promise<StreamPaymentResponse> {
+  async payForWord(sessionId: string, payment: Partial<StreamPaymentRequest> = {}): Promise<StreamPaymentResponse> {
     const response = await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/payments`, {
       method: "POST",
       headers: this.headers({ "content-type": "application/json" }),
@@ -209,7 +209,7 @@ export class RubiconClient {
     return response.json() as Promise<StreamPaymentResponse>;
   }
 
-  async streamChunk(sessionId: string, payment: StreamPaymentRequest): Promise<StreamChunkResponse> {
+  async streamChunk(sessionId: string, payment: Partial<StreamPaymentRequest> = {}): Promise<StreamChunkResponse> {
     const response = await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/stream`, {
       method: "POST",
       headers: this.headers({ "content-type": "application/json" }),
@@ -331,6 +331,7 @@ export class RubiconClient {
     yield { type: "session.started", session };
 
     const wordPaymentAtomic = BigInt(session.wordPaymentAtomic);
+    const isFree = session.accessMode === "free";
     let text = "";
     let wordsRead = 0;
     let amountPaid = 0n;
@@ -339,7 +340,7 @@ export class RubiconClient {
     const payments: WordPaymentReceipt[] = [];
     const streamMode = options.streamMode ?? "bundled";
     const bundleWords = resolveBundleWords(options.granularity, options.chunkWords, session, sectionId);
-    const useBundles = streamMode === "bundled" && typeof this.paymentEngine.createChunkPayment === "function";
+    const useBundles = streamMode === "bundled" && (isFree || typeof this.paymentEngine.createChunkPayment === "function");
     const selectedWordLimit = selectedRangeWordLimit(session, sectionId);
     if (
       (options.granularity === "section" || options.granularity === "article") &&
@@ -377,7 +378,7 @@ export class RubiconClient {
         stopReason = "max_words";
         break;
       }
-      if (amountPaid + wordPaymentAtomic > budgetAtomic) {
+      if (!isFree && amountPaid + wordPaymentAtomic > budgetAtomic) {
         stopReason = "budget_reached";
         break;
       }
@@ -388,7 +389,9 @@ export class RubiconClient {
 
       if (useBundles) {
         const remainingRequestedWords = options.maxWords === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, options.maxWords - wordsRead);
-        const affordableWords = Number((budgetAtomic - amountPaid) / wordPaymentAtomic);
+        const affordableWords = isFree
+          ? Number.MAX_SAFE_INTEGER
+          : Number((budgetAtomic - amountPaid) / wordPaymentAtomic);
         const remainingArticleWords =
           selectedWordLimit === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, selectedWordLimit - wordsRead);
         const maxWords = Math.min(bundleWords, remainingRequestedWords, affordableWords, remainingArticleWords);
@@ -396,10 +399,12 @@ export class RubiconClient {
           stopReason = selectedWordLimit !== undefined && wordsRead >= selectedWordLimit ? "article_completed" : "budget_reached";
           break;
         }
-        const payment = await this.paymentEngine.createChunkPayment!(session, {
-          nextSequence: wordsRead,
-          maxWords,
-        });
+        const payment = isFree
+          ? {}
+          : await this.paymentEngine.createChunkPayment!(session, {
+              nextSequence: wordsRead,
+              maxWords,
+            });
         const idempotencyKey = `${session.sessionId}:${wordsRead}:${maxWords}`;
         let result: StreamChunkResponse;
         try {
@@ -464,7 +469,7 @@ export class RubiconClient {
         continue;
       }
 
-      const payment = await this.paymentEngine.createWordPayment(session);
+      const payment = isFree ? {} : await this.paymentEngine.createWordPayment(session);
       // Idempotency key ties this payment to the specific next word; safe retries.
       const idempotencyKey = `${session.sessionId}:${wordsRead}`;
       let result: StreamPaymentResponse;

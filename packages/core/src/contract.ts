@@ -17,6 +17,9 @@ import type { AtomicAmount } from "./money.js";
  */
 export type ArticleState = "draft" | "live" | "paused" | "archived" | "deleted";
 
+/** Durable article access policy. Price zero alone is not an access decision. */
+export type ArticleAccessMode = "free" | "paid";
+
 export const PUBLIC_ARTICLE_STATE: ArticleState = "live";
 
 export type WalletNetwork = string; // CAIP-2 string, e.g. "eip155:5042002"
@@ -73,6 +76,7 @@ export interface Article {
   title: string;
   author: string;
   state: ArticleState;
+  accessMode: ArticleAccessMode;
   pricePerWordAtomic: AtomicAmount;
   /** Optional creator-set cap on the total price of the article. */
   maxArticlePriceAtomic?: AtomicAmount;
@@ -140,7 +144,8 @@ export interface WordDeliveryRecord {
   sequence: number;
   word: string;
   priceAtomic: AtomicAmount;
-  paymentId: string;
+  /** Absent for genuinely free delivery; no payment row exists in that case. */
+  paymentId?: string;
   createdAt: string;
 }
 

@@ -1,7 +1,7 @@
 ---
 name: rubicon
-version: 2.3.0
-description: Autonomously buy the most useful paid article content within a hard USDC budget
+version: 2.4.0
+description: Autonomously read relevant free or paid article content within a hard USDC budget
 homepage: https://github.com/michaelzoub/rubicon
 ---
 
@@ -23,7 +23,8 @@ workflow. Use the SDK only inside custom embedded runtimes.
   setup.
 - Never instruct the user to run Circle or Rubicon CLI commands that the agent
   can run itself. Ask only for the email and one-time code required for login.
-- Always require an explicit budget with `--max-usdc`.
+- Always require an explicit budget with `--max-usdc`; zero is valid when the
+  selected article is explicitly free.
 - Never exceed the approved cumulative cap.
 - Never initiate a payment that would exceed the remaining budget.
 - A budget is permission to spend up to that amount, never an instruction to
@@ -46,10 +47,10 @@ skill installation flow.
 For an explicit user goal and approved budget, run exactly one purchase command:
 
 ```bash
-npx -y @rubicon-caliga/cli@0.1.11 buy --goal "<goal>" --max-usdc <amount> --json
+npx -y @rubicon-caliga/cli@0.1.12 buy --goal "<goal>" --max-usdc <amount> --json
 ```
 
-Known good version as of 2026-07-03: `@rubicon-caliga/cli@0.1.11` (Node 20+).
+Known good version as of 2026-07-03: `@rubicon-caliga/cli@0.1.12` (Node 20+).
 `--first` is accepted but no longer required. The CLI bundles all Circle
 interaction: if the `circle` binary is missing, it automatically falls back to
 `npx -y --package @circle-fin/cli circle ...`, so no separate Circle install
@@ -65,10 +66,12 @@ Do not require or instruct the user or calling agent to run `doctor`, repository
 inspection, article inspection, navigation, dry-run, wallet status, or receipt
 commands before or after `rubicon buy`.
 
-The command performs all necessary work internally. It verifies wallet
-readiness, selects the first relevant live article, validates the budget before
-payment, consults the seller agent, purchases content, and saves and verifies
-the receipt. Internal validation should remain hidden unless it fails. JSON
+The command performs all necessary work internally. It selects the first
+relevant live article, validates the budget, consults the seller agent, reads
+the content, and saves and verifies the receipt. For paid articles it also
+verifies wallet readiness and authorizes payment. Explicitly free articles skip
+Circle, signing, settlement, and payment records entirely. Internal validation
+should remain hidden unless it fails. JSON
 errors include a structured `error.code` and, where applicable, an
 `error.recovery` field with the exact next command to run. Treat
 `NOT_LOGGED_IN` as a recoverable authentication state and follow the agent-run
@@ -99,6 +102,13 @@ When the CLI returns `NO_RELEVANT_ARTICLE`, report clearly that no sufficiently
 relevant article was found, that zero USDC was spent out of the approved
 budget, and do not retry with a rephrased goal in an attempt to force a
 purchase.
+
+An article is free only when the gateway reports `accessMode: "free"`; a zero
+price by itself is not a free-access signal. Free reads may use a zero cap and
+return normal receipts with delivered text and word counts, `amountPaidAtomic:
+"0"`, empty payment/settlement/transaction identifier arrays, and no wallet
+identifiers. Do not run Circle login, signing, funding, or settlement setup for
+an explicitly free article.
 
 The CLI applies the same zero-spend discipline to affordability. If the
 approved budget cannot fund the seller's minimum useful word count for any
@@ -198,7 +208,7 @@ are separate), so a successful login is recognized on retry.
    login. For Arc Testnet articles (the default):
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.11 login <email> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.12 login <email> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`. The JSON result contains the
@@ -208,7 +218,7 @@ are separate), so a successful login is recognized on retry.
 4. Complete login yourself with the same profile:
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.11 login --request <request-id> --otp <code> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.12 login --request <request-id> --otp <code> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`.

@@ -163,6 +163,75 @@ test("run can consume chunk stream while preserving per-word receipt fields", as
   assert.deepEqual(receipt.settlementIds, ["settlement_chunk"]);
 });
 
+test("free run accepts a zero cap, skips the payment engine, and returns an exact zero-spend receipt", async () => {
+  let paymentCalls = 0;
+  const rejectingPaymentEngine: AgentPaymentEngine = {
+    async createWordPayment() {
+      paymentCalls += 1;
+      throw new Error("free read invoked word payment");
+    },
+    async createChunkPayment() {
+      paymentCalls += 1;
+      throw new Error("free read invoked chunk payment");
+    },
+  };
+  const fetcher = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const url = String(input);
+    if (url.endsWith("/v1/sessions")) {
+      return jsonResponse({
+        sessionId: "free_session",
+        state: "open",
+        accessMode: "free",
+        article: { ...article(3), accessMode: "free", pricePerWordAtomic: "0", maxArticlePriceAtomic: "0" },
+        navigation: navigation(),
+        pricePerWordAtomic: "0",
+        maxArticlePriceAtomic: "0",
+        conversationId: "free_conversation",
+        wordPaymentAtomic: "0",
+        gatewayFeeBps: 0,
+        expiresAt: "2026-06-18T12:00:00.000Z",
+        wordsAuthorized: 3,
+        wordsPaid: 0,
+        wordsDelivered: 0,
+        paidAtomic: "0",
+      });
+    }
+    if (url.endsWith("/v1/sessions/free_session/stream")) {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      assert.equal(body.maxWords, 3);
+      assert.equal(body.paymentPayload, undefined);
+      return jsonResponse({
+        accepted: true,
+        words: [
+          { sequence: 0, word: "free", priceAtomic: "0" },
+          { sequence: 1, word: "and", priceAtomic: "0" },
+          { sequence: 2, word: "clear", priceAtomic: "0" },
+        ],
+        text: "free and clear",
+        wordsPaid: 0,
+        wordsDelivered: 3,
+        paidAtomic: "0",
+        completed: true,
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  const client = new RubiconClient({ baseUrl: "http://rubicon.test", paymentEngine: rejectingPaymentEngine, fetch: fetcher });
+  const receipt = await client.run({ articleId: "article_1", maxSpendAtomic: "0", granularity: "article" });
+  assert.equal(paymentCalls, 0);
+  assert.equal(receipt.text, "free and clear");
+  assert.equal(receipt.wordsRead, 3);
+  assert.equal(receipt.amountPaidAtomic, "0");
+  assert.deepEqual(receipt.payments, []);
+  assert.deepEqual(receipt.transactionHashes, []);
+  assert.deepEqual(receipt.settlementIds, []);
+  assert.equal(receipt.buyerWalletAddress, undefined);
+  assert.equal(receipt.sellerPayTo, undefined);
+  assert.equal(receipt.network, undefined);
+  assert.equal(receipt.completed, true);
+});
+
 test("read defaults to bundled mode and clamps bundle size to remaining article words", async () => {
   const fetcher = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const url = String(input);
@@ -319,6 +388,7 @@ function article(totalWords = 1) {
     title: "Title",
     author: "Author",
     state: "published",
+    accessMode: "paid",
     totalWords,
     pricePerWordAtomic: "1",
     maxArticlePriceAtomic: `${totalWords}`,

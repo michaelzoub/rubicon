@@ -63,6 +63,7 @@ function safeArticleContext(article: ArticleRecord): SafeArticleContext {
     title: article.title,
     author: article.author,
     totalWords: article.totalWords,
+    accessMode: article.accessMode,
     pricePerWordAtomic: `${article.pricePerWordAtomic}`,
     maxArticlePriceAtomic: `${maxPrice}`,
     // Headings and ranges only — never body text.
@@ -99,7 +100,9 @@ export class DefaultSellerAgent implements SellerAgent {
         recommended
           ? `Start at section "${recommended.sectionId}" ("${recommended.heading}"), ${recommended.wordCount} words.`
           : "Use the full article reading path.",
-        `Each word costs ${article.pricePerWordAtomic} atomic USDC; stop whenever you have enough.`,
+        article.accessMode === "free"
+          ? "This article is free to read; no payment authorization is required."
+          : `Each word costs ${article.pricePerWordAtomic} atomic USDC; stop whenever you have enough.`,
       ],
       withheld: WITHHELD,
     };

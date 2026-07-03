@@ -1,5 +1,6 @@
 import type {
   ArticleSection,
+  ArticleAccessMode,
   ArticleState,
   ArticleSummary,
   CreatorWallet,
@@ -18,6 +19,7 @@ import type {
   LedgerRepository,
   PublishedArticleRepository,
   RecordWordDeliveryInput,
+  RecordFreeWordDeliveryInput,
   RecordWordDeliveryResult,
   UpdatePaymentSettlementInput,
 } from "./types.js";
@@ -29,6 +31,7 @@ export interface ArticleFixture {
   title: string;
   author: string;
   state?: ArticleState;
+  accessMode?: ArticleAccessMode;
   pricePerWordAtomic: bigint;
   maxArticlePriceAtomic?: bigint;
   body: string;
@@ -55,6 +58,7 @@ function buildArticleRecord(fixture: ArticleFixture): ArticleRecord {
     title: fixture.title,
     author: fixture.author,
     state: fixture.state ?? "live",
+    accessMode: fixture.accessMode ?? "paid",
     pricePerWordAtomic: fixture.pricePerWordAtomic,
     maxArticlePriceAtomic: fixture.maxArticlePriceAtomic,
     totalWords: words.length,
@@ -78,6 +82,7 @@ export function summarizeArticle(article: ArticleRecord): ArticleSummary {
     title: article.title,
     author: article.author,
     state: article.state,
+    accessMode: article.accessMode,
     totalWords: article.totalWords,
     pricePerWordAtomic: `${article.pricePerWordAtomic}`,
     maxArticlePriceAtomic: `${maxPrice}`,
@@ -262,6 +267,31 @@ export class InMemoryLedgerRepository implements LedgerRepository {
     this.paymentsBySession.set(input.sessionId, [
       ...(this.paymentsBySession.get(input.sessionId) ?? []),
       payment,
+    ]);
+    return result;
+  }
+
+  async recordFreeWordDelivery(input: RecordFreeWordDeliveryInput): Promise<RecordWordDeliveryResult> {
+    const existingByKey = this.deliveriesByKey.get(input.idempotencyKey);
+    if (existingByKey) return { ...existingByKey, duplicate: true };
+    const seqKey = `${input.sessionId}:${input.sequence}`;
+    const existingBySeq = this.deliveriesBySeq.get(seqKey);
+    if (existingBySeq) return { ...existingBySeq, duplicate: true };
+
+    const delivery: WordDeliveryRecord = {
+      sessionId: input.sessionId,
+      articleId: input.articleId,
+      sequence: input.sequence,
+      word: input.word,
+      priceAtomic: "0",
+      createdAt: new Date().toISOString(),
+    };
+    const result: RecordWordDeliveryResult = { duplicate: false, delivery };
+    this.deliveriesByKey.set(input.idempotencyKey, result);
+    this.deliveriesBySeq.set(seqKey, result);
+    this.deliveriesBySession.set(input.sessionId, [
+      ...(this.deliveriesBySession.get(input.sessionId) ?? []),
+      delivery,
     ]);
     return result;
   }

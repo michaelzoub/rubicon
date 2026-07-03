@@ -110,6 +110,7 @@ interface FakeArticleRow {
   title: string;
   author: string;
   state: string;
+  access_mode: "free" | "paid";
   price_per_word_atomic: string;
   max_article_price_atomic: string | null;
   total_words: number;
@@ -136,6 +137,7 @@ class FakeSupabase implements SupabaseReader {
       title: "Database Article",
       author: "DB Alice",
       state: "live",
+      access_mode: "paid",
       price_per_word_atomic: "7",
       max_article_price_atomic: null,
       total_words: 6,
@@ -252,6 +254,178 @@ test("1: one accepted word payment releases exactly one word", async () => {
   assert.equal(body.word, PLAIN_WORDS[0]);
   assert.equal(body.paidAtomic, `${PRICE}`);
   assert.equal((await ledger.listDeliveries(session.sessionId)).length, 1);
+  await app.close();
+});
+
+test("free session creation needs no wallet and never creates a payment requirement", async () => {
+  let requirementCalls = 0;
+  let verificationCalls = 0;
+  const { app, ledger } = setup({
+    articles: [plainArticle({ accessMode: "free", pricePerWordAtomic: 0n, body: "free words here" })],
+    wallets: [],
+    paymentVerifier: {
+      async createPaymentRequired() {
+        requirementCalls += 1;
+        throw new Error("free content entered payment requirement creation");
+      },
+      async verify() {
+        verificationCalls += 1;
+        throw new Error("free content entered payment verification");
+      },
+    },
+  });
+
+  const session = await startSession(app, "art-plain", "0");
+  assert.equal(session.accessMode, "free");
+  assert.equal(session.wordPaymentAtomic, "0");
+  assert.equal(session.wordsAuthorized, 3);
+  assert.equal(session.paymentRequired, undefined);
+  assert.equal(session.authorizationRequired, undefined);
+  assert.equal(session.article.paymentTerms, undefined);
+  assert.equal(requirementCalls, 0);
+  assert.equal(verificationCalls, 0);
+  assert.equal((await ledger.getSession(session.sessionId))?.sellerWallet, undefined);
+  await app.close();
+});
+
+test("free per-word reads are idempotent usage records with no payment rows", async () => {
+  let verificationCalls = 0;
+  let flushCalls = 0;
+  const { app, ledger } = setup({
+    articles: [plainArticle({ accessMode: "free", pricePerWordAtomic: 0n, body: "alpha beta" })],
+    wallets: [],
+    paymentVerifier: {
+      async verify() {
+        verificationCalls += 1;
+        throw new Error("free content entered payment verification");
+      },
+      async flush() {
+        flushCalls += 1;
+        throw new Error("free content entered payment settlement flush");
+      },
+    },
+  });
+  const session = await startSession(app, "art-plain", "0");
+  const first = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/payments`,
+    payload: { idempotencyKey: "free-word-0" },
+  });
+  const retry = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/payments`,
+    payload: { idempotencyKey: "free-word-0" },
+  });
+  assert.equal(first.statusCode, 200, first.body);
+  assert.deepEqual(retry.json(), first.json());
+  const body = first.json() as StreamPaymentResponse;
+  assert.equal(body.word, "alpha");
+  assert.equal(body.priceAtomic, "0");
+  assert.equal(body.wordsPaid, 0);
+  assert.equal(body.wordsDelivered, 1);
+  assert.equal(body.paidAtomic, "0");
+  assert.equal(body.payment, undefined);
+  assert.equal(body.transactionHash, undefined);
+  assert.equal(body.settlementId, undefined);
+  assert.equal(verificationCalls, 0);
+  assert.equal(flushCalls, 0);
+  assert.equal((await ledger.listDeliveries(session.sessionId)).length, 1);
+  assert.equal((await ledger.listPayments(session.sessionId)).length, 0);
+  await app.close();
+});
+
+test("free chunk, section, and full-article reads deliver exact ranges without payment", async () => {
+  const sections = [
+    { id: "s1", articleId: "art-plain", sectionId: "first", heading: "First", level: 1, wordStart: 0, wordCount: 3, ordinal: 0 },
+    { id: "s2", articleId: "art-plain", sectionId: "second", heading: "Second", level: 1, wordStart: 3, wordCount: 3, ordinal: 1 },
+  ];
+  let verificationCalls = 0;
+  let flushCalls = 0;
+  const { app, ledger } = setup({
+    articles: [plainArticle({ accessMode: "free", pricePerWordAtomic: 0n, body: "one two three four five six", sections })],
+    wallets: [],
+    paymentVerifier: {
+      async verify() {
+        verificationCalls += 1;
+        throw new Error("free content entered payment verification");
+      },
+      async flush() {
+        flushCalls += 1;
+        throw new Error("free content entered payment settlement flush");
+      },
+    },
+  });
+
+  const sectionResponse = await app.inject({
+    method: "POST",
+    url: "/v1/sessions",
+    payload: { articleId: "art-plain", sectionId: "second", budget: { currency: "USDC", maxAmountAtomic: "0" } },
+  });
+  assert.equal(sectionResponse.statusCode, 201, sectionResponse.body);
+  const sectionSession = sectionResponse.json() as StartSessionResponse;
+  const sectionRead = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${sectionSession.sessionId}/stream`,
+    payload: { maxWords: 99, idempotencyKey: "free-section" },
+  });
+  const sectionBody = sectionRead.json() as { text: string; wordsDelivered: number; wordsPaid: number; paidAtomic: string; payment?: unknown; completed: boolean };
+  assert.equal(sectionBody.text, "four five six");
+  assert.equal(sectionBody.wordsDelivered, 3);
+  assert.equal(sectionBody.wordsPaid, 0);
+  assert.equal(sectionBody.paidAtomic, "0");
+  assert.equal(sectionBody.payment, undefined);
+  assert.equal(sectionBody.completed, true);
+
+  const fullSession = await startSession(app, "art-plain", "0");
+  const firstChunk = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${fullSession.sessionId}/stream`,
+    payload: { maxWords: 2, idempotencyKey: "free-chunk" },
+  });
+  assert.equal((firstChunk.json() as { text: string }).text, "one two");
+  const firstChunkRetry = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${fullSession.sessionId}/stream`,
+    payload: { maxWords: 2, idempotencyKey: "free-chunk" },
+  });
+  assert.deepEqual(firstChunkRetry.json(), firstChunk.json());
+  assert.equal((await ledger.listDeliveries(fullSession.sessionId)).length, 2);
+  const rest = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${fullSession.sessionId}/stream`,
+    payload: { maxWords: 99, idempotencyKey: "free-rest" },
+  });
+  assert.equal((rest.json() as { text: string; completed: boolean }).text, "three four five six");
+  assert.equal((rest.json() as { completed: boolean }).completed, true);
+  assert.equal(verificationCalls, 0);
+  assert.equal(flushCalls, 0);
+  assert.equal((await ledger.listDeliveries(fullSession.sessionId)).length, 6);
+  assert.equal((await ledger.listPayments(fullSession.sessionId)).length, 0);
+  await app.close();
+});
+
+test("free access is explicit: inaccessible states stay hidden and zero-priced paid content is rejected", async () => {
+  const hidden = (["draft", "paused", "deleted"] as const).map((state) =>
+    plainArticle({ id: `free-${state}`, state, accessMode: "free", pricePerWordAtomic: 0n }),
+  );
+  const { app } = setup({
+    articles: [...hidden, plainArticle({ id: "unpriced-paid", accessMode: "paid", pricePerWordAtomic: 0n })],
+  });
+  for (const article of hidden) {
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/sessions",
+      payload: { articleId: article.id, budget: { currency: "USDC", maxAmountAtomic: "0" } },
+    });
+    assert.equal(response.statusCode, 404);
+  }
+  const unpriced = await app.inject({
+    method: "POST",
+    url: "/v1/sessions",
+    payload: { articleId: "unpriced-paid", budget: { currency: "USDC", maxAmountAtomic: "0" } },
+  });
+  assert.equal(unpriced.statusCode, 409);
+  assert.deepEqual(unpriced.json(), { error: "article_pricing_not_configured" });
   await app.close();
 });
 
@@ -614,6 +788,7 @@ test("repository endpoint returns live article records from Supabase", async () 
         title: "Database Article",
         author: "DB Alice",
         state: "live",
+        accessMode: "paid",
         totalWords: 6,
         pricePerWordAtomic: "7",
         maxArticlePriceAtomic: "42",

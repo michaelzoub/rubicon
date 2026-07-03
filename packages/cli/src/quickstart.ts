@@ -296,6 +296,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
   // a budget that cannot fund the cheapest minimum-useful section is a buyer
   // decision, not a wallet problem, and must never spawn Circle processes.
   const pricePerWordAtomic = BigInt(article.pricePerWordAtomic);
+  const isFree = article.accessMode === "free";
   const cheapestPlan = ranked.reduce((left, right) => (left.minimumUsefulWords <= right.minimumUsefulWords ? left : right));
   const cheapestMinimumCostAtomic = BigInt(cheapestPlan.minimumUsefulWords) * pricePerWordAtomic;
   if (cheapestMinimumCostAtomic > BigInt(maxSpendAtomic)) {
@@ -332,7 +333,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
 
   const testnet = environment === "testnet" || (environment === undefined && isTestnetChain(chain));
 
-  if (runtime.paymentMode === "circle-cli") {
+  if (!isFree && runtime.paymentMode === "circle-cli") {
     try {
       await circleAuthStatus({ ...circleInput(runtime, deps), testnet });
       const wallet = await circleAgentWallet({
@@ -379,19 +380,28 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
   for (const plan of ranked) {
     if (visited.has(plan.sectionId)) continue;
     const remaining = BigInt(maxSpendAtomic) - spent;
-    const affordableWords = Number(remaining / BigInt(article.pricePerWordAtomic));
+    const sectionWords = plan.sectionId === "full-article"
+      ? article.totalWords
+      : article.sections.find((candidate) => candidate.sectionId === plan.sectionId)!.wordCount;
+    const affordableWords = isFree
+      ? sectionWords
+      : Number(remaining / pricePerWordAtomic);
     if (affordableWords < 1 || affordableWords < plan.minimumUsefulWords) {
       emit({ type: "section.skipped", sectionId: plan.sectionId, reason: "insufficient_remaining_budget", remainingAtomic: `${remaining}` });
       continue;
     }
-    const sectionWords = plan.sectionId === "full-article"
-      ? article.totalWords
-      : article.sections.find((candidate) => candidate.sectionId === plan.sectionId)!.wordCount;
     const reserveWords = granularity === "article" ? 0 : reserveWordsForLater(ranked, plan.sectionId, visited, affordableWords);
     const maxWords = Math.min(sectionWords, Math.max(plan.minimumUsefulWords, affordableWords - reserveWords));
-    const sessionCap = BigInt(maxWords) * BigInt(article.pricePerWordAtomic);
-    if (sessionCap > remaining) throw new CliError("BUDGET_INVARIANT", "Refusing payment because the section cap exceeds the remaining approved budget.");
-    emit({ type: "section.selected", sectionId: plan.sectionId, expectedValue: plan.expectedValue, minimumUsefulWords: plan.minimumUsefulWords, informationValuePerPaidWord: plan.score, sessionCapAtomic: `${sessionCap}` });
+    const sessionCap = BigInt(maxWords) * pricePerWordAtomic;
+    if (sessionCap > remaining) throw new CliError("BUDGET_INVARIANT", "Refusing the read because the section cap exceeds the remaining approved budget.");
+    emit({
+      type: "section.selected",
+      sectionId: plan.sectionId,
+      expectedValue: plan.expectedValue,
+      minimumUsefulWords: plan.minimumUsefulWords,
+      ...(isFree ? { informationValuePerWord: plan.score } : { informationValuePerPaidWord: plan.score }),
+      sessionCapAtomic: `${sessionCap}`,
+    });
 
     const operationId = deriveOperationId({
       gatewayUrl: runtime.gatewayUrl,
@@ -409,7 +419,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
       // purchase already settled in an earlier run; reuse it and count the
       // paid amount against the original cumulative cap instead of paying again.
       if (spent + BigInt(reusable.receipt.amountPaidAtomic) > BigInt(maxSpendAtomic)) {
-        throw new CliError("BUDGET_INVARIANT", "A previously completed payment for this operation exceeds the remaining approved budget.");
+        throw new CliError("BUDGET_INVARIANT", "A previously completed receipt for this operation exceeds the remaining approved budget.");
       }
       spent += BigInt(reusable.receipt.amountPaidAtomic);
       wordsRead += reusable.receipt.wordsRead;
@@ -418,7 +428,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
       storedReceipts.push(reusable);
       operations.push({ operationId, sectionId: plan.sectionId, status: "completed", reused: true, receiptId: reusable.receiptId });
       emit({
-        type: "payment.reused",
+        type: isFree ? "free_read.reused" : "payment.reused",
         operationId,
         articleId: article.articleId,
         sectionId: plan.sectionId,
@@ -447,7 +457,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
       updatedAt: startedAt,
     };
     await saveOperation(operationRecord);
-    emit({ type: "payment.started", articleId: article.articleId, sectionId: plan.sectionId, maxSpendAtomic: `${sessionCap}`, operationId });
+    emit({ type: isFree ? "free_read.started" : "payment.started", articleId: article.articleId, sectionId: plan.sectionId, maxSpendAtomic: `${sessionCap}`, operationId });
     let lastBundleWords = 0;
     let receipt: ReadReceipt;
     try {
@@ -467,11 +477,11 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
         const adequate = plan.expectedValue >= 0.75 && event.wordsRead >= plan.minimumUsefulWords;
         emit({
           type: "strategy.reassessed",
-          trigger: "paid_bundle",
+          trigger: isFree ? "free_bundle" : "paid_bundle",
           sectionId: plan.sectionId,
           adequatelyAnswered: adequate,
           sectionWordsRead: event.wordsRead,
-          inferenceSource: "seller_metadata_plus_purchased_bundle",
+          inferenceSource: isFree ? "seller_metadata_plus_free_bundle" : "seller_metadata_plus_purchased_bundle",
         });
       },
       stopWhen: granularity === "section" || granularity === "article"
@@ -479,10 +489,8 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
         : ({ wordsRead: currentWords }) => plan.expectedValue >= 0.75 && currentWords >= plan.minimumUsefulWords,
       });
     } catch (error) {
-      // Without a receipt the payment state is unknown: the session may have
-      // settled partially before the failure. Record the operation as
-      // ambiguous so an identical rerun can find it and never double-pays a
-      // completed operation.
+      // Without a receipt a paid session may have settled partially. Free
+      // reads use the same operation recovery record for idempotent retries.
       await saveOperation({
         ...operationRecord,
         status: "ambiguous",
@@ -490,16 +498,20 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
         updatedAt: new Date().toISOString(),
       });
       throw new CliError(
-        "PAYMENT_AMBIGUOUS",
-        `Payment for section "${plan.sectionId}" of ${article.articleId} failed before a receipt was returned: ${redactSecrets(errorMessage(error))} The payment may or may not have settled.`,
+        isFree ? "FREE_READ_FAILED" : "PAYMENT_AMBIGUOUS",
+        isFree
+          ? `Free read for section "${plan.sectionId}" of ${article.articleId} failed before a receipt was returned: ${redactSecrets(errorMessage(error))}`
+          : `Payment for section "${plan.sectionId}" of ${article.articleId} failed before a receipt was returned: ${redactSecrets(errorMessage(error))} The payment may or may not have settled.`,
         1,
-        "Re-run the identical rubicon buy command. The operation id is stable, so a payment that already completed is detected and reused instead of being paid twice, and the original cumulative budget cap still applies.",
+        isFree
+          ? "Re-run the identical rubicon buy command. Free delivery is idempotent and does not enter settlement."
+          : "Re-run the identical rubicon buy command. The operation id is stable, so a payment that already completed is detected and reused instead of being paid twice, and the original cumulative budget cap still applies.",
         { operationId, articleId: article.articleId, sectionId: plan.sectionId, sessionCapAtomic: `${sessionCap}`, budgetAtomic: maxSpendAtomic },
       );
     }
-    emit({ type: "payment.completed", articleId: article.articleId, sectionId: plan.sectionId, sessionId: receipt.sessionId, amountPaidAtomic: receipt.amountPaidAtomic, operationId });
+    emit({ type: isFree ? "free_read.completed" : "payment.completed", articleId: article.articleId, sectionId: plan.sectionId, sessionId: receipt.sessionId, amountPaidAtomic: receipt.amountPaidAtomic, operationId });
     if (BigInt(receipt.amountPaidAtomic) > sessionCap || spent + BigInt(receipt.amountPaidAtomic) > BigInt(maxSpendAtomic)) {
-      throw new CliError("BUDGET_INVARIANT", "Payment receipt exceeds the approved cumulative budget.");
+      throw new CliError("BUDGET_INVARIANT", "Receipt exceeds the approved cumulative budget.");
     }
     spent += BigInt(receipt.amountPaidAtomic);
     wordsRead += receipt.wordsRead;
@@ -525,7 +537,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
     emit({ type: "receipt.verified", receiptId: stored.receiptId, sectionId: plan.sectionId, cumulativeSpendAtomic: `${spent}` });
     const adequate = plan.expectedValue >= 0.75 && receipt.wordsRead >= plan.minimumUsefulWords;
     if (lastBundleWords !== receipt.wordsRead) {
-      emit({ type: "strategy.reassessed", trigger: "paid_section", adequatelyAnswered: adequate, remainingAtomic: `${BigInt(maxSpendAtomic) - spent}`, inferenceSource: "seller_metadata_plus_purchase_completion" });
+      emit({ type: "strategy.reassessed", trigger: isFree ? "free_section" : "paid_section", adequatelyAnswered: adequate, remainingAtomic: `${BigInt(maxSpendAtomic) - spent}`, inferenceSource: "seller_metadata_plus_read_completion" });
     }
     if (adequate) break;
   }
@@ -537,7 +549,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
     selectedArticle: articleJson(article),
     events,
     navigation,
-    wallet: {
+    wallet: isFree ? undefined : {
       chain,
       environment,
       circleWalletAddress,
@@ -553,7 +565,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
       receiptIds: storedReceipts.map((stored) => stored.receiptId),
       receipts: storedReceipts.map((stored) => finalReceiptJson({ receipt: stored.receipt, article, receiptId: stored.receiptId, goal, approvedBudgetUsdc, circleWalletAddress })),
       completed: events.some((event) => event.type === "strategy.reassessed" && event.adequatelyAnswered === true),
-      stopReason: spent >= BigInt(maxSpendAtomic)
+      stopReason: !isFree && spent >= BigInt(maxSpendAtomic)
         ? "budget_reached"
         : events.some((event) => event.type === "strategy.reassessed" && event.adequatelyAnswered === true)
           ? "goal_adequately_answered"
@@ -645,6 +657,7 @@ export function finalReceiptJson(input: {
     buyerWalletAddress && input.circleWalletAddress && buyerWalletAddress.toLowerCase() !== input.circleWalletAddress.toLowerCase();
   return {
     articleId: input.article.articleId,
+    accessMode: input.article.accessMode ?? "paid",
     title: input.article.title,
     author: input.article.author,
     sessionId: input.receipt.sessionId,

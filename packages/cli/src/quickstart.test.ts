@@ -160,6 +160,7 @@ test("final receipt schema includes buyer/Circle wallet mismatch explanation", (
 
   assert.deepEqual(Object.keys(shaped), [
     "articleId",
+    "accessMode",
     "title",
     "author",
     "sessionId",
@@ -243,6 +244,7 @@ function article(input: {
     title: "Rubicon Field Notes",
     author: "Ada",
     state: "live",
+    accessMode: "paid",
     totalWords: 2,
     pricePerWordAtomic: input.pricePerWordAtomic ?? "1",
     maxArticlePriceAtomic: `${BigInt(input.pricePerWordAtomic ?? "1") * 2n}` as `${bigint}`,

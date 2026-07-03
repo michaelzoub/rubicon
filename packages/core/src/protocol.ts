@@ -1,5 +1,5 @@
 import type { AtomicAmount } from "./money.js";
-import type { ArticleState } from "./contract.js";
+import type { ArticleAccessMode, ArticleState } from "./contract.js";
 import type { WordUsageReport } from "./pricing.js";
 import type { SessionState } from "./session.js";
 
@@ -19,6 +19,8 @@ export interface ArticleSummary {
   title: string;
   author: string;
   state: ArticleState;
+  /** Explicit access policy. Absent only on responses from pre-free-support gateways; treat as paid. */
+  accessMode?: ArticleAccessMode;
   totalWords: number;
   pricePerWordAtomic: AtomicAmount;
   /** Maximum possible total price to read the whole article. */
@@ -159,6 +161,8 @@ export interface SessionAuthorizationRequired {
 export interface StartSessionResponse {
   sessionId: string;
   state: SessionState;
+  /** Explicit access policy. Absent only on responses from pre-free-support gateways; treat as paid. */
+  accessMode?: ArticleAccessMode;
   article: ArticleSummary;
   navigation: ArticleNavigation;
   /** Price the creator earns for one word. */
@@ -211,7 +215,7 @@ export interface StreamPaymentResponse {
   wordsDelivered: number;
   paidAtomic: AtomicAmount;
   completed: boolean;
-  /** Canonical, per-word settlement receipt. Present whenever a word is released. */
+  /** Canonical settlement receipt for paid delivery. Absent for free content. */
   payment?: WordPaymentReceipt;
   authorizationMode?: AuthorizationMode;
   remainingAuthorizedAtomic?: AtomicAmount;

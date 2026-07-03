@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { AtomicAmount } from "./money.js";
 import type { Budget } from "./protocol.js";
+import type { ArticleAccessMode } from "./contract.js";
 
 export type SessionState = "open" | "active" | "completed" | "aborted" | "expired";
 
@@ -14,6 +15,7 @@ export interface SessionRecord {
   id: string;
   articleId: string;
   creatorId: string;
+  accessMode: ArticleAccessMode;
   conversationId?: string;
   goal?: string;
   sectionId?: string;
@@ -22,7 +24,8 @@ export interface SessionRecord {
   pricePerWordAtomic: bigint;
   gatewayFeeBps: number;
   /** Trusted settlement recipient, copied from the verified creator wallet. */
-  sellerWallet: `0x${string}`;
+  /** Paid settlement recipient. Free sessions intentionally have no wallet. */
+  sellerWallet?: `0x${string}`;
   metadata: Record<string, unknown>;
   state: SessionState;
   /** Words covered by accepted metering/settlement, regardless of authorization scope. */
@@ -42,13 +45,14 @@ export function createSession(input: {
   id?: string;
   articleId: string;
   creatorId: string;
+  accessMode: ArticleAccessMode;
   conversationId?: string;
   goal?: string;
   sectionId?: string;
   budget: Budget;
   pricePerWordAtomic: bigint;
   gatewayFeeBps: number;
-  sellerWallet: `0x${string}`;
+  sellerWallet?: `0x${string}`;
   metadata?: Record<string, unknown>;
   ttlMs: number;
 }): SessionRecord {
@@ -57,6 +61,7 @@ export function createSession(input: {
     id: input.id ?? randomUUID(),
     articleId: input.articleId,
     creatorId: input.creatorId,
+    accessMode: input.accessMode,
     conversationId: input.conversationId,
     goal: input.goal,
     sectionId: input.sectionId,
@@ -95,6 +100,9 @@ export function recordWordPayment(session: SessionRecord, amountAtomic: AtomicAm
 export function recordWordDelivery(session: SessionRecord): SessionRecord {
   session.wordsDelivered += 1;
   session.updatedAt = new Date();
+  if (session.state === "open") {
+    session.state = "active";
+  }
   return session;
 }
 

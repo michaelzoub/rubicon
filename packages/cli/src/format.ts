@@ -20,6 +20,7 @@ export function articleJson(article: ArticleSummary): Record<string, unknown> {
     creatorId: article.creatorId,
     creatorUsername: article.creatorUsername,
     state: article.state,
+    accessMode: article.accessMode,
     totalWords: article.totalWords,
     pricePerWordAtomic: article.pricePerWordAtomic,
     maxArticlePriceAtomic: article.maxArticlePriceAtomic,

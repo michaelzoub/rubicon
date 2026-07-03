@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import type {
   ArticleSection,
+  ArticleAccessMode,
   ArticleState,
   ArticleSummary,
   CreatorWallet,
@@ -23,6 +24,7 @@ import type {
   LedgerRepository,
   PublishedArticleRepository,
   RecordWordDeliveryInput,
+  RecordFreeWordDeliveryInput,
   RecordWordDeliveryResult,
   UpdatePaymentSettlementInput,
 } from "./types.js";
@@ -145,6 +147,7 @@ interface ArticleRow {
   title: string;
   author: string;
   state: ArticleState;
+  access_mode: ArticleAccessMode;
   price_per_word_atomic: string;
   max_article_price_atomic: string | null;
   total_words: number;
@@ -178,6 +181,7 @@ function toArticleRecord(row: ArticleRow, sections: ArticleSection[]): ArticleRe
     title: row.title,
     author: row.author,
     state: row.state,
+    accessMode: row.access_mode,
     pricePerWordAtomic: BigInt(row.price_per_word_atomic),
     maxArticlePriceAtomic: row.max_article_price_atomic ? BigInt(row.max_article_price_atomic) : undefined,
     totalWords: words.length,
@@ -205,7 +209,7 @@ function toSection(row: SectionRow): ArticleSection {
 }
 
 const ARTICLE_SELECT = `
-  SELECT a.id, a.creator_id, c.username AS creator_username, a.title, a.author, a.state,
+  SELECT a.id, a.creator_id, c.username AS creator_username, a.title, a.author, a.state, a.access_mode,
          a.price_per_word_atomic, a.max_article_price_atomic, a.total_words, a.revision,
          a.seller_agent_config, a.body, a.created_at, a.updated_at
   FROM articles a
@@ -284,16 +288,17 @@ export class PostgresLedgerRepository implements LedgerRepository {
   async createSession(session: SessionRecord): Promise<void> {
     await this.pool.query(
       `INSERT INTO stream_sessions
-         (id, article_id, creator_id, conversation_id, state, goal, section_id,
+         (id, article_id, creator_id, conversation_id, state, access_mode, goal, section_id,
           price_per_word_atomic, gateway_fee_bps, seller_wallet, budget_atomic,
           words_paid, words_delivered, paid_atomic, payment_required, metadata, created_at, updated_at, expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
       [
         session.id,
         session.articleId,
         session.creatorId,
         session.conversationId ?? null,
         session.state,
+        session.accessMode,
         session.goal ?? null,
         session.sectionId ?? null,
         `${session.pricePerWordAtomic}`,
@@ -319,11 +324,12 @@ export class PostgresLedgerRepository implements LedgerRepository {
       creator_id: string;
       conversation_id: string | null;
       state: SessionRecord["state"];
+      access_mode: SessionRecord["accessMode"];
       goal: string | null;
       section_id: string | null;
       price_per_word_atomic: string;
       gateway_fee_bps: number;
-      seller_wallet: string;
+      seller_wallet: string | null;
       budget_atomic: string;
       words_paid: number;
       words_delivered: number;
@@ -342,13 +348,14 @@ export class PostgresLedgerRepository implements LedgerRepository {
       id: row.id,
       articleId: row.article_id,
       creatorId: row.creator_id,
+      accessMode: row.access_mode,
       conversationId: row.conversation_id ?? undefined,
       goal: row.goal ?? undefined,
       sectionId: row.section_id ?? undefined,
       budget: { currency: "USDC", maxAmountAtomic: row.budget_atomic as `${bigint}` },
       pricePerWordAtomic: BigInt(row.price_per_word_atomic),
       gatewayFeeBps: row.gateway_fee_bps,
-      sellerWallet: row.seller_wallet as `0x${string}`,
+      sellerWallet: (row.seller_wallet ?? undefined) as `0x${string}` | undefined,
       metadata: row.metadata ?? {},
       state: row.state,
       wordsPaid: row.words_paid,
@@ -466,7 +473,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
       settlement_id: string | null;
       settlement_ids: string[] | null;
       buyer_wallet_address: `0x${string}` | null;
-      payment_id: string;
+      payment_id: string | null;
       transfer_id: string | null;
       created_at: string;
     }>(
@@ -474,7 +481,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
               p.creator_id, p.creator_amount_atomic, p.rubicon_fee_atomic, p.network, p.pay_to,
               p.transaction_hash, p.transaction_hashes, p.settlement_id, p.settlement_ids,
               p.buyer_wallet_address, p.transfer_id
-       FROM word_deliveries d JOIN word_payments p ON p.payment_id = d.payment_id
+       FROM word_deliveries d LEFT JOIN word_payments p ON p.payment_id = d.payment_id
        WHERE d.idempotency_key = $1`,
       [key],
     );
@@ -490,10 +497,10 @@ export class PostgresLedgerRepository implements LedgerRepository {
         sequence: row.sequence,
         word: row.word,
         priceAtomic: row.price_atomic as `${bigint}`,
-        paymentId: row.payment_id,
+        paymentId: row.payment_id ?? undefined,
         createdAt: row.created_at,
       },
-      payment: {
+      payment: row.payment_id ? {
         paymentId: row.payment_id,
         sessionId: row.session_id,
         articleId: row.article_id,
@@ -510,7 +517,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
         buyerWalletAddress: row.buyer_wallet_address ?? undefined,
         transferId: row.transfer_id ?? undefined,
         createdAt: row.created_at,
-      },
+      } : undefined,
     };
   }
 
@@ -629,6 +636,51 @@ export class PostgresLedgerRepository implements LedgerRepository {
         buyerWalletAddress: input.buyerWalletAddress,
         transferId: input.transferId,
         createdAt,
+      },
+    };
+  }
+
+  async recordFreeWordDelivery(input: RecordFreeWordDeliveryInput): Promise<RecordWordDeliveryResult> {
+    const inserted = await this.pool.query<{ created_at: string }>(
+      `INSERT INTO word_deliveries
+         (id, session_id, article_id, sequence, word, price_atomic, payment_id, idempotency_key)
+       VALUES ($1,$2,$3,$4,$5,'0',NULL,$6)
+       ON CONFLICT DO NOTHING
+       RETURNING created_at`,
+      [randomUUID(), input.sessionId, input.articleId, input.sequence, input.word, input.idempotencyKey],
+    );
+    if (inserted.rowCount === 0) {
+      const existing = await this.getDeliveryByIdempotencyKey(input.idempotencyKey);
+      if (existing) return existing;
+      const bySequence = await this.pool.query<{ word: string; created_at: string }>(
+        "SELECT word, created_at FROM word_deliveries WHERE session_id = $1 AND sequence = $2",
+        [input.sessionId, input.sequence],
+      );
+      const row = bySequence.rows[0];
+      if (row) {
+        return {
+          duplicate: true,
+          delivery: {
+            sessionId: input.sessionId,
+            articleId: input.articleId,
+            sequence: input.sequence,
+            word: row.word,
+            priceAtomic: "0",
+            createdAt: row.created_at,
+          },
+        };
+      }
+      throw new Error("word_delivery_conflict");
+    }
+    return {
+      duplicate: false,
+      delivery: {
+        sessionId: input.sessionId,
+        articleId: input.articleId,
+        sequence: input.sequence,
+        word: input.word,
+        priceAtomic: "0",
+        createdAt: inserted.rows[0]?.created_at ?? new Date().toISOString(),
       },
     };
   }

@@ -18,6 +18,7 @@ export interface SafeArticleContext {
   title: string;
   author: string;
   totalWords: number;
+  accessMode: "free" | "paid";
   pricePerWordAtomic: string;
   maxArticlePriceAtomic: string;
   sections: SafeSectionContext[];

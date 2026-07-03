@@ -41,6 +41,68 @@ test("buy never invokes payment when minimum useful content exceeds the cap", as
   assert.equal(fixture.runs.length, 0);
 });
 
+test("buy reads an explicit free article with a zero cap and never invokes Circle", async () => {
+  const freeArticle: ArticleSummary = {
+    articleId: "article_1",
+    creatorId: "creator_1",
+    creatorUsername: "creator",
+    title: "Useful Field Guide",
+    author: "Ada",
+    state: "live",
+    accessMode: "free",
+    totalWords: 10,
+    pricePerWordAtomic: "0",
+    maxArticlePriceAtomic: "0",
+    sections: [{ sectionId: "practical", heading: "Practical details", level: 1, wordStart: 0, wordCount: 10 }],
+  };
+  const circleCalls: string[][] = [];
+  const fixture = setup([assessment("practical", 0.9, 2)], {
+    article: freeArticle,
+    paymentMode: "circle-cli",
+    budgetAtomic: "0",
+  });
+  const result = await runBuy(fixture.runtime, {
+    circleRunner: async (_command, args) => {
+      circleCalls.push(args);
+      throw new Error("free read invoked Circle");
+    },
+  });
+  const outcome = result.result as {
+    amountPaidAtomic: string;
+    amountPaidUsdc: string;
+    wordsRead: number;
+    purchasedInformation: string;
+    receipts: Array<{
+      amountPaidAtomic: string;
+      amountPaidUsdc: string;
+      paymentIds: string[];
+      settlementIds: string[];
+      transactionHashes: string[];
+      buyerWalletAddress?: string;
+      circleWalletAddress?: string;
+    }>;
+  };
+  assert.equal(circleCalls.length, 0);
+  assert.equal(fixture.runs[0]?.maxSpendAtomic, "0");
+  assert.equal(outcome.amountPaidAtomic, "0");
+  assert.equal(outcome.amountPaidUsdc, "0");
+  assert.equal(outcome.wordsRead, 10);
+  assert.equal(outcome.purchasedInformation, "practical purchased content");
+  const freeReceipt = outcome.receipts[0]!;
+  assert.equal(freeReceipt.amountPaidAtomic, "0");
+  assert.equal(freeReceipt.amountPaidUsdc, "0");
+  assert.deepEqual(freeReceipt.paymentIds, []);
+  assert.deepEqual(freeReceipt.settlementIds, []);
+  assert.deepEqual(freeReceipt.transactionHashes, []);
+  assert.equal(freeReceipt.buyerWalletAddress, undefined);
+  assert.equal(freeReceipt.circleWalletAddress, undefined);
+  assert.equal((result as { wallet?: unknown }).wallet, undefined);
+  const events = result.events as Array<{ type: string }>;
+  assert.ok(events.some((event) => event.type === "free_read.started"));
+  assert.ok(events.some((event) => event.type === "free_read.completed"));
+  assert.ok(!events.some((event) => event.type === "payment.started" || event.type === "payment.completed"));
+});
+
 test("buy rejects a receipt that would exceed the approved cumulative cap", async () => {
   const fixture = setup([assessment("practical", 0.6, 1), assessment("counterarguments", 0.6, 1)], { maliciousOvercharge: true });
   await assert.rejects(() => runBuy(fixture.runtime), (error) => error instanceof CliError && error.code === "BUDGET_INVARIANT");
@@ -326,7 +388,7 @@ function assessment(sectionId: string, expectedValue: number, minimumUsefulWords
 
 function cryptoArticle(): ArticleSummary {
   return {
-    articleId: "article_crypto", creatorId: "creator_1", creatorUsername: "creator", title: "Crypto Market Cycles", author: "Satoshi", state: "live",
+    articleId: "article_crypto", creatorId: "creator_1", creatorUsername: "creator", title: "Crypto Market Cycles", author: "Satoshi", state: "live", accessMode: "paid",
     totalWords: 500, pricePerWordAtomic: "400", maxArticlePriceAtomic: "200000",
     sections: [
       { sectionId: "bitcoin-halving", heading: "Bitcoin halving history", level: 1, wordStart: 0, wordCount: 250 },
@@ -337,7 +399,7 @@ function cryptoArticle(): ArticleSummary {
 
 function decentralizedTrainingArticle(): ArticleSummary {
   return {
-    articleId: "article_training", creatorId: "creator_1", creatorUsername: "creator", title: "Scaling Decentralized Training", author: "Ada", state: "live",
+    articleId: "article_training", creatorId: "creator_1", creatorUsername: "creator", title: "Scaling Decentralized Training", author: "Ada", state: "live", accessMode: "paid",
     totalWords: 500, pricePerWordAtomic: "400", maxArticlePriceAtomic: "200000",
     sections: [
       { sectionId: "distributed-optimization", heading: "Distributed optimization", level: 1, wordStart: 0, wordCount: 250 },
@@ -350,7 +412,7 @@ function setup(assessments: SellerSectionAssessment[], options: { price?: `${big
   process.env.HOME = mkdtempSync(join(tmpdir(), "rubicon-buy-test-"));
   const price = options.price ?? "1";
   const article: ArticleSummary = options.article ?? {
-    articleId: "article_1", creatorId: "creator_1", creatorUsername: "creator", title: "Useful Field Guide", author: "Ada", state: "live",
+    articleId: "article_1", creatorId: "creator_1", creatorUsername: "creator", title: "Useful Field Guide", author: "Ada", state: "live", accessMode: "paid",
     totalWords: 30, pricePerWordAtomic: price, maxArticlePriceAtomic: `${BigInt(price) * 30n}`,
     sections: [
       { sectionId: "intro", heading: "Introduction", level: 1, wordStart: 0, wordCount: 10 },

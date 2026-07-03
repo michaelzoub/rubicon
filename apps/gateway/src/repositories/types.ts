@@ -1,5 +1,6 @@
 import type {
   ArticleSection,
+  ArticleAccessMode,
   ArticleState,
   ArticleSummary,
   CreatorWallet,
@@ -22,6 +23,7 @@ export interface ArticleRecord {
   title: string;
   author: string;
   state: ArticleState;
+  accessMode: ArticleAccessMode;
   pricePerWordAtomic: bigint;
   maxArticlePriceAtomic?: bigint;
   totalWords: number;
@@ -76,7 +78,16 @@ export interface RecordWordDeliveryResult {
   /** True when an existing record matched the idempotency key (retry). */
   duplicate: boolean;
   delivery: WordDeliveryRecord;
-  payment: PaymentActivity;
+  /** Present only for paid delivery. */
+  payment?: PaymentActivity;
+}
+
+export interface RecordFreeWordDeliveryInput {
+  sessionId: string;
+  articleId: string;
+  sequence: number;
+  word: string;
+  idempotencyKey: string;
 }
 
 /**
@@ -107,6 +118,8 @@ export interface LedgerRepository {
    * releases. Enforces unique (sessionId, sequence) and unique idempotencyKey.
    */
   recordWordDelivery(input: RecordWordDeliveryInput): Promise<RecordWordDeliveryResult>;
+  /** Atomically record usage for free content without creating any payment row. */
+  recordFreeWordDelivery(input: RecordFreeWordDeliveryInput): Promise<RecordWordDeliveryResult>;
 
   listDeliveries(sessionId: string): Promise<WordDeliveryRecord[]>;
   listPayments(sessionId: string): Promise<PaymentActivity[]>;

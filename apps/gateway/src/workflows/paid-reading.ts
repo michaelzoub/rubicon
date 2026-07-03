@@ -21,7 +21,7 @@ interface PaidReadingWorkflowOptions {
   publish: (event: GatewayEvent) => void;
 }
 
-/** Owns server-side reading state and paid-session lifecycle transitions. */
+/** Owns server-side reading state and session lifecycle transitions. */
 export class PaidReadingWorkflow {
   private readonly streamStates = new Map<string, StreamState>();
 
@@ -54,7 +54,9 @@ export class PaidReadingWorkflow {
     session.state = "completed";
     await this.options.ledger.saveSession(session);
     this.streamStates.delete(session.id);
-    await this.options.paymentVerifier.flush?.().catch(() => {});
+    if (session.accessMode === "paid") {
+      await this.options.paymentVerifier.flush?.().catch(() => {});
+    }
     this.options.publish({
       type: "article.completed",
       sessionId: session.id,
@@ -69,7 +71,9 @@ export class PaidReadingWorkflow {
     session.state = reason === "budget_exhausted" ? "expired" : "aborted";
     await this.options.ledger.saveSession(session);
     this.streamStates.delete(session.id);
-    await this.options.paymentVerifier.flush?.().catch(() => {});
+    if (session.accessMode === "paid") {
+      await this.options.paymentVerifier.flush?.().catch(() => {});
+    }
     this.options.publish({ type: "session.aborted", sessionId: session.id, reason });
   }
 
@@ -85,10 +89,12 @@ export class PaidReadingWorkflow {
 
 /** Domain decisions and response construction for paid-reading workflows. */
 export function authorizedWordCount(maxAmountAtomic: `${bigint}`, wordPaymentAtomic: `${bigint}`): number {
+  if (BigInt(wordPaymentAtomic) === 0n) return Number.MAX_SAFE_INTEGER;
   return safeNumber(BigInt(maxAmountAtomic) / BigInt(wordPaymentAtomic));
 }
 
 export function affordableWordCount(session: SessionRecord, wordPaymentAtomic: bigint): number {
+  if (wordPaymentAtomic === 0n) return Number.MAX_SAFE_INTEGER;
   const remaining = BigInt(session.budget.maxAmountAtomic) - session.paidAtomic;
   return remaining <= 0n ? 0 : safeNumber(remaining / wordPaymentAtomic);
 }

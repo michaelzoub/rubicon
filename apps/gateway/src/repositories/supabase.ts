@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
-import type { ArticleSection, ArticleState, ArticleSummary, CreatorWallet, SellerAgentConfig } from "@rubicon-caliga/core";
+import type { ArticleAccessMode, ArticleSection, ArticleState, ArticleSummary, CreatorWallet, SellerAgentConfig } from "@rubicon-caliga/core";
 import { PUBLIC_ARTICLE_STATE } from "@rubicon-caliga/core";
 import { createRequire } from "node:module";
 import { toCaip2Network } from "../chain.js";
@@ -55,6 +55,7 @@ interface ArticleRow {
   title: string;
   author: string;
   state: ArticleState;
+  access_mode: ArticleAccessMode;
   price_per_word_atomic: string;
   max_article_price_atomic: string | null;
   total_words: number;
@@ -133,6 +134,7 @@ const ARTICLE_SUMMARY_SELECT = `
   title,
   author,
   state,
+  access_mode,
   price_per_word_atomic,
   max_article_price_atomic,
   total_words,
@@ -150,6 +152,7 @@ const ARTICLE_FULL_SELECT = `
   title,
   author,
   state,
+  access_mode,
   price_per_word_atomic,
   max_article_price_atomic,
   total_words,
@@ -247,6 +250,7 @@ function toArticleRecord(row: ArticleRow): ArticleRecord {
     title: row.title,
     author: row.author,
     state: row.state,
+    accessMode: row.access_mode,
     pricePerWordAtomic: BigInt(row.price_per_word_atomic),
     maxArticlePriceAtomic: row.max_article_price_atomic ? BigInt(row.max_article_price_atomic) : undefined,
     totalWords: words.length,
@@ -275,6 +279,7 @@ function toArticleSummary(row: ArticleRow): ArticleSummary {
     title: row.title,
     author: row.author,
     state: row.state,
+    accessMode: row.access_mode,
     totalWords: row.total_words,
     pricePerWordAtomic: `${pricePerWordAtomic}`,
     maxArticlePriceAtomic: `${maxPrice}`,
