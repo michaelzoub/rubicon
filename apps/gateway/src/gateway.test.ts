@@ -917,6 +917,28 @@ test("chunk stream clamps bundle to explicit maxWords", async () => {
   await app.close();
 });
 
+test("chunk stream can authorize a complete article larger than the legacy 256-word limit", async () => {
+  const words = Array.from({ length: 300 }, (_, index) => `long${index + 1}`);
+  const { app } = setup({ articles: [plainArticle({ body: words.join(" ") })] });
+  const session = await startSession(app, "art-plain", `${PRICE * 300n}`);
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/stream`,
+    payload: {
+      paymentPayload: { amountAtomic: `${PRICE * 300n}` },
+      maxWords: 300,
+      idempotencyKey: "whole-article",
+    },
+  });
+  assert.equal(res.statusCode, 200, res.body);
+  const body = res.json() as { words: Array<{ word: string }>; payment: { amountAtomic: string; wordsDelivered: number }; completed: boolean };
+  assert.equal(body.words.length, 300);
+  assert.equal(body.payment.amountAtomic, `${PRICE * 300n}`);
+  assert.equal(body.payment.wordsDelivered, 300);
+  assert.equal(body.completed, true);
+  await app.close();
+});
+
 test("3: stopping after 137 words charges exactly 137 × price per word", async () => {
   const { app, ledger } = setup();
   const session = await startSession(app);

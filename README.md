@@ -104,12 +104,14 @@ directly:
 ```bash
 pnpm --filter @rubicon-caliga/cli build
 pnpm dev:cli -- buy --first --goal "find pricing" --max-usdc 0.10 --json
+pnpm dev:cli -- buy --first --goal "find pricing" --max-usdc 0.10 --granularity 10 --json
 ```
 
 The CLI is a thin wrapper around `@rubicon-caliga/agent-sdk`. Its primary `buy`
 command autonomously performs seller-guided section selection, cumulative
 budget enforcement, wallet readiness checks, strategic paid reads, and verified
-local receipt persistence. It also supports lower-level discovery and debugging
+local receipt persistence. Buyers can select `--granularity word|10|section|article`
+to choose the payment/delivery unit. It also supports lower-level discovery and debugging
 commands and `~/.rubicon/config.json`. It does not implement
 creator dashboard functionality. See [docs/cli.md](./docs/cli.md).
 

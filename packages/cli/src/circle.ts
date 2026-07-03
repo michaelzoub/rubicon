@@ -6,7 +6,7 @@ const execFileAsync = promisify(execFile);
 export type CircleRunner = (command: string, args: string[]) => Promise<string>;
 
 export interface CircleErrorInfo {
-  code: "network_unavailable" | "otp_expired" | "not_logged_in" | "missing_cli" | "command_failed";
+  code: "network_unavailable" | "otp_expired" | "terms_not_accepted" | "not_logged_in" | "missing_cli" | "command_failed";
   message: string;
   guidance: string;
 }
@@ -22,24 +22,70 @@ export interface CircleBalanceInfo {
   raw?: unknown;
 }
 
+export const CIRCLE_NPX_PACKAGE = "@circle-fin/cli";
+
 export function defaultCircleCommand(): string {
   return process.env.CIRCLE_CLI_COMMAND ?? "circle";
 }
 
+export function npxCircleArgs(args: string[]): string[] {
+  return ["-y", "--package", CIRCLE_NPX_PACKAGE, "circle", ...args];
+}
+
+export interface CircleInvocation {
+  file: string;
+  args: string[];
+  options: { maxBuffer: number; windowsVerbatimArguments?: boolean };
+}
+
+export function buildCircleInvocation(command: string, args: string[], platform: NodeJS.Platform = process.platform): CircleInvocation {
+  const maxBuffer = 1024 * 1024;
+  if (platform !== "win32" || /[\\/.]/.test(command)) {
+    return { file: command, args, options: { maxBuffer } };
+  }
+  // npm exposes CLI entry points as .cmd shims on Windows, and Node refuses to
+  // spawn those without a shell, so bare commands route through cmd.exe.
+  const escaped = [escapeCmdCommand(command), ...args.map(escapeCmdArg)].join(" ");
+  return {
+    file: "cmd.exe",
+    args: ["/d", "/s", "/c", `"${escaped}"`],
+    options: { maxBuffer, windowsVerbatimArguments: true },
+  };
+}
+
+function escapeCmdCommand(command: string): string {
+  return /[\s()%!^"<>&|]/.test(command) ? `"${command}"` : command;
+}
+
+function escapeCmdArg(value: string): string {
+  let arg = value.replace(/(\\*)"/g, '$1$1\\"');
+  arg = arg.replace(/(\\*)$/, "$1$1");
+  return `"${arg}"`.replace(/[()%!^"<>&|]/g, "^$&");
+}
+
+async function execCircle(command: string, args: string[]): Promise<string> {
+  const invocation = buildCircleInvocation(command, args);
+  const { stdout } = await execFileAsync(invocation.file, invocation.args, invocation.options);
+  return stdout;
+}
+
 export async function runCircleCli(command: string, args: string[]): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(command, args, { maxBuffer: 1024 * 1024 });
-    return stdout;
+    return await execCircle(command, args);
   } catch (error) {
-    if (shouldRetryCircleCliFallback(command, error)) {
-      try {
-        const { stdout } = await execFileAsync("circle-cli", args, { maxBuffer: 1024 * 1024 });
-        return stdout;
-      } catch (fallbackError) {
-        throw classifyCircleError(fallbackError);
+    if (!shouldRetryCircleCliFallback(command, error)) throw classifyCircleError(error);
+    try {
+      return await execCircle("circle-cli", args);
+    } catch (fallbackError) {
+      if (isMissingBinary(fallbackError) && process.env.RUBICON_NO_NPX_FALLBACK !== "1") {
+        try {
+          return await execCircle("npx", npxCircleArgs(args));
+        } catch (npxError) {
+          throw classifyCircleError(npxError);
+        }
       }
+      throw classifyCircleError(fallbackError);
     }
-    throw classifyCircleError(error);
   }
 }
 
@@ -66,17 +112,23 @@ export function classifyCircleError(error: unknown): Error & { circle?: CircleEr
       message: "Circle OTP request id is invalid or expired.",
       guidance: "Start a fresh Circle auth OTP flow, then rerun the Rubicon command after login completes.",
     };
+  } else if (lower.includes("terms") && (lower.includes("accept") || lower.includes("agree"))) {
+    info = {
+      code: "terms_not_accepted",
+      message: "Circle terms must be accepted before payments can run.",
+      guidance: "Run `npx -y --package @circle-fin/cli circle terms accept` (or the exact terms command reported in the Circle output) in this same execution context, then rerun the original Rubicon command.",
+    };
   } else if (lower.includes("login") || lower.includes("logged in") || lower.includes("unauthorized") || lower.includes("auth")) {
     info = {
       code: "not_logged_in",
       message: "Circle CLI is not logged in.",
-      guidance: "Run Circle CLI login/auth again, then rerun Rubicon. If an OTP flow was interrupted, start a fresh OTP init.",
+      guidance: "Run `rubicon login <email>` (add --testnet for Arc Testnet articles) to start Circle OTP login, complete it with `rubicon login --request <id> --otp <code>`, then rerun this command.",
     };
   } else if (lower.includes("enoent") || lower.includes("not found")) {
     info = {
       code: "missing_cli",
       message: "Circle CLI was not found.",
-      guidance: "Install Circle CLI and make sure the `circle` or `circle-cli` binary is on PATH.",
+      guidance: "Install Circle CLI, or rely on the automatic `npx -y --package @circle-fin/cli circle ...` fallback; set CIRCLE_CLI_COMMAND to a custom binary path if needed.",
     };
   } else {
     info = {
@@ -91,7 +143,10 @@ export function classifyCircleError(error: unknown): Error & { circle?: CircleEr
 }
 
 function shouldRetryCircleCliFallback(command: string, error: unknown): boolean {
-  if (command !== "circle") return false;
+  return command === "circle" && isMissingBinary(error);
+}
+
+function isMissingBinary(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const stderr = isRecord(error) && typeof error.stderr === "string" ? error.stderr : "";
   const output = `${message}\n${stderr}`.toLowerCase();
@@ -111,11 +166,59 @@ export async function circleVersion(input: { command?: string; runner?: CircleRu
   return (await runner(command, ["--version"])).trim();
 }
 
-export async function circleAuthStatus(input: { command?: string; runner?: CircleRunner } = {}): Promise<unknown> {
+export async function circleAuthStatus(input: { command?: string; runner?: CircleRunner; testnet?: boolean } = {}): Promise<unknown> {
   const command = input.command ?? defaultCircleCommand();
   const runner = input.runner ?? runCircleCli;
-  const output = await runner(command, ["wallet", "status", "--type", "agent", "--output", "json"]);
+  const args = ["wallet", "status", "--type", "agent"];
+  if (input.testnet) args.push("--testnet");
+  args.push("--output", "json");
+  const output = await runner(command, args);
   return parseMaybeJson(output);
+}
+
+export interface CircleLoginInitResult {
+  requestId?: string;
+  raw: unknown;
+}
+
+export async function circleLoginInit(input: {
+  email: string;
+  testnet: boolean;
+  command?: string;
+  runner?: CircleRunner;
+}): Promise<CircleLoginInitResult> {
+  const command = input.command ?? defaultCircleCommand();
+  const runner = input.runner ?? runCircleCli;
+  const args = ["wallet", "login", input.email, "--type", "agent"];
+  if (input.testnet) args.push("--testnet");
+  args.push("--init");
+  const raw = parseMaybeJson(await runner(command, args));
+  return { requestId: parseLoginRequestId(raw), raw };
+}
+
+export async function circleLoginComplete(input: {
+  requestId: string;
+  otp: string;
+  testnet: boolean;
+  command?: string;
+  runner?: CircleRunner;
+}): Promise<unknown> {
+  const command = input.command ?? defaultCircleCommand();
+  const runner = input.runner ?? runCircleCli;
+  const args = ["wallet", "login", "--type", "agent"];
+  if (input.testnet) args.push("--testnet");
+  args.push("--request", input.requestId, "--otp", input.otp);
+  return parseMaybeJson(await runner(command, args));
+}
+
+function parseLoginRequestId(raw: unknown): string | undefined {
+  const direct = findString(raw, ["requestId", "request_id", "data.requestId", "data.request_id", "data.id", "id"]);
+  if (direct) return direct;
+  if (typeof raw === "string") {
+    const match = raw.match(/request[ _-]?id[^A-Za-z0-9]{0,4}([A-Za-z0-9][A-Za-z0-9-]{5,})/i);
+    return match?.[1];
+  }
+  return undefined;
 }
 
 export async function circleAgentWallet(input: {

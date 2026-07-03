@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Polygres authorship graph</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background:#0c0d10; color:#f4f3ef; }
+    * { box-sizing: border-box; }
+    body { margin:0; }
+    main { width:min(1120px, calc(100% - 32px)); margin:0 auto; padding:48px 0 80px; }
+    header { display:flex; justify-content:space-between; gap:24px; align-items:end; padding-bottom:24px; border-bottom:1px solid #34363d; }
+    h1 { font-size:clamp(30px, 5vw, 56px); letter-spacing:-.045em; margin:0; max-width:760px; line-height:1; }
+    .eyebrow, .meta, th { color:#9ea2ad; text-transform:uppercase; letter-spacing:.12em; font-size:12px; }
+    .badge { border:1px solid #50535d; border-radius:999px; padding:9px 12px; white-space:nowrap; }
+    .graph { margin-top:32px; display:grid; grid-template-columns:1fr 100px 1.45fr; gap:0; }
+    .column { border:1px solid #34363d; min-width:0; }
+    .column h2 { margin:0; padding:14px 16px; border-bottom:1px solid #34363d; font-size:14px; font-weight:600; }
+    .nodes { padding:10px; display:grid; gap:8px; }
+    .node { padding:14px; border:1px solid #34363d; background:#15171c; min-height:68px; }
+    .node strong { display:block; font-size:14px; overflow-wrap:anywhere; }
+    .node span { color:#9ea2ad; font-size:12px; display:block; margin-top:5px; }
+    .arrows { display:flex; align-items:center; justify-content:center; color:#ff7a59; font-size:34px; }
+    section { margin-top:42px; }
+    h3 { font-size:20px; margin:0 0 14px; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { text-align:left; padding:12px; border:1px solid #34363d; }
+    .yes { color:#7ee787; } .no { color:#777b85; }
+    code { color:#ff9d83; }
+    @media (max-width:760px) { header { align-items:start; flex-direction:column; } .graph { grid-template-columns:1fr; } .arrows { transform:rotate(90deg); height:70px; } table { display:block; overflow:auto; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><div class="eyebrow">pgGraph test app</div><h1>Names become one-way authorship edges.</h1></div>
+    <div class="badge" id="threshold">Loading…</div>
+  </header>
+  <div class="graph">
+    <div class="column"><h2>users.username</h2><div class="nodes" id="users"></div></div>
+    <div class="arrows">→</div>
+    <div class="column"><h2>articles.author</h2><div class="nodes" id="articles"></div></div>
+  </div>
+  <section><h3>Materialized edges</h3><table><thead><tr><th>From user</th><th>To article author</th><th>Score</th><th>Direction</th></tr></thead><tbody id="edges"></tbody></table></section>
+  <section><h3>All candidate pairs</h3><table><thead><tr><th>Username</th><th>Author</th><th>Score</th><th>Accepted</th></tr></thead><tbody id="candidates"></tbody></table></section>
+</main>
+<script>
+fetch('./data.json').then(r => r.json()).then(data => {
+  threshold.textContent = `Threshold ≥ ${data.threshold.toFixed(2)}`;
+  users.innerHTML = data.users.map(u => `<div class="node"><strong>${u.username}</strong><span>${u.id}</span></div>`).join('');
+  articles.innerHTML = data.articles.map(a => `<div class="node"><strong>${a.author}</strong><span>${a.title}</span></div>`).join('');
+  edges.innerHTML = data.edges.map(e => `<tr><td><code>${e.username}</code></td><td>${e.author}</td><td>${e.score.toFixed(4)}</td><td>outgoing →</td></tr>`).join('');
+  candidates.innerHTML = data.candidates.map(c => `<tr><td>${c.username}</td><td>${c.author}</td><td>${c.score.toFixed(4)}</td><td class="${c.accepted?'yes':'no'}">${c.accepted?'yes':'no'}</td></tr>`).join('');
+});
+</script>
+</body>
+</html>

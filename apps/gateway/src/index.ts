@@ -2,7 +2,7 @@ import { createGateway } from "./server.js";
 import { ACTIVE_X402_NETWORK, GATEWAY_API_URL, toCaip2Network } from "./chain.js";
 import { CircleX402PaymentVerifier } from "./payments/x402-circle.js";
 import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
-import { InMemoryLedgerRepository } from "./repositories/in-memory.js";
+import { InMemoryLedgerRepository, InMemoryPublishedArticleRepository } from "./repositories/in-memory.js";
 import { createSupabaseClientFromEnv, SupabasePublishedArticleRepository } from "./repositories/supabase.js";
 import type { LedgerRepository, PublishedArticleRepository } from "./repositories/types.js";
 import { DefaultSellerAgent } from "./seller-agent/seller-agent.js";
@@ -22,8 +22,13 @@ if (await installKeepAliveDispatcher()) {
 let articleRepository: PublishedArticleRepository;
 let ledger: LedgerRepository;
 
-articleRepository = new SupabasePublishedArticleRepository(createSupabaseClientFromEnv());
-console.log("[gateway] using Supabase for published articles");
+if (process.env.RUBICON_ARTICLES === "demo") {
+  articleRepository = createDemoArticleRepository();
+  console.log("[gateway] using in-memory demo article (RUBICON_ARTICLES=demo)");
+} else {
+  articleRepository = new SupabasePublishedArticleRepository(createSupabaseClientFromEnv());
+  console.log("[gateway] using Supabase for published articles");
+}
 
 const databaseUrl = process.env.DATABASE_URL;
 if (databaseUrl) {
@@ -97,6 +102,44 @@ const gateway = createGateway({
 });
 
 await gateway.listen({ port, host: "0.0.0.0" });
+
+function createDemoArticleRepository(): InMemoryPublishedArticleRepository {
+  const creatorId = process.env.DEMO_CREATOR_ID ?? "creator_demo";
+  return new InMemoryPublishedArticleRepository({
+    articles: [
+      {
+        id: process.env.DEMO_ARTICLE_ID ?? "article_demo",
+        creatorId,
+        creatorUsername: process.env.DEMO_CREATOR_USERNAME ?? "demo",
+        title: "Field Guide to Metered Reading",
+        author: process.env.DEMO_AUTHOR ?? "Rubicon Demo",
+        pricePerWordAtomic: BigInt(process.env.PRICE_PER_WORD_ATOMIC ?? "1"),
+        body: [
+          "# Field Guide to Metered Reading",
+          "",
+          "## Summary",
+          "Rubicon streams paid articles word by word so buyer agents pay only for the words they actually receive under one cumulative budget cap.",
+          "",
+          "## How sessions work",
+          "A buyer opens a session with a hard spending cap, the gateway returns payment terms, and each delivered bundle is settled against that authorization before the next one starts.",
+          "",
+          "## Practical details",
+          "Receipts record the amount paid, words read, and settlement identifiers so an agent can verify after the fact exactly what its budget bought.",
+          "",
+          "## Conclusion",
+          "Metered reading keeps autonomous purchases inspectable: a fixed cap going in, verifiable receipts coming out, and no payment ever exceeding the remaining budget.",
+        ].join("\n"),
+      },
+    ],
+    wallets: [
+      {
+        creatorId,
+        address: (process.env.DEMO_CREATOR_WALLET ?? "0x2222222222222222222222222222222222222222") as `0x${string}`,
+        network: ACTIVE_X402_NETWORK,
+      },
+    ],
+  });
+}
 
 function createSellerAgent(): DefaultSellerAgent {
   const apiKey = process.env.OPENAI_API_KEY;

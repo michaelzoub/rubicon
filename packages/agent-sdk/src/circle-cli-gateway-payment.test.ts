@@ -180,3 +180,14 @@ test("requires explicit wallet address when multiple Agent Wallets are present",
     /Multiple Circle Agent Wallets found/,
   );
 });
+
+test("buildCircleInvocation routes bare commands through cmd.exe on win32 only", async () => {
+  const { buildCircleInvocation } = await import("./circle-cli-gateway-payment.js");
+  const win = buildCircleInvocation("circle", ["wallet", "list"], "win32");
+  assert.equal(win.file, "cmd.exe");
+  assert.deepEqual(win.args.slice(0, 3), ["/d", "/s", "/c"]);
+  assert.equal(win.options.windowsVerbatimArguments, true);
+
+  const posix = buildCircleInvocation("circle", ["wallet", "list"], "linux");
+  assert.deepEqual({ file: posix.file, args: posix.args }, { file: "circle", args: ["wallet", "list"] });
+});

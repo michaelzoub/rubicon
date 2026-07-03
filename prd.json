@@ -1,0 +1,173 @@
+{
+  "project": "Rubicon",
+  "branchName": "ralph/agent-setup-friction",
+  "description": "Remove agent setup friction in the CLI and SDK so a fresh agent can go from zero to a completed capped purchase with the fewest commands, no silent waits, and no OTP loops.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Emit immediate startup JSON event in CLI",
+      "description": "As a calling agent, I want the CLI to emit a JSON startup event immediately so I can distinguish npx/package startup from a hung payment.",
+      "acceptanceCriteria": [
+        "When --json is passed, main() in packages/cli/src/index.ts writes {\"type\":\"startup\",\"message\":\"loading Rubicon CLI\"} to stdout before reading config or constructing the client",
+        "The startup event is emitted for buy, quickstart-read, doctor, and read commands",
+        "No startup event is emitted without --json",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Fail fast on unsupported Node versions",
+      "description": "As an agent on an older Node runtime, I want a clear error instead of a cryptic SyntaxError from the JSON import attribute so I can fix my environment quickly.",
+      "acceptanceCriteria": [
+        "packages/cli/package.json declares an engines field with the minimum supported Node version",
+        "The JSON import attribute in packages/cli/src/index.ts (import packageJson ... with { type: \"json\" }) is replaced with a mechanism that works on Node 18+ (e.g. createRequire or readFile), or a top-of-file runtime version check prints a clear error naming the required Node version",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Make --first optional for rubicon buy",
+      "description": "As a calling agent, I want rubicon buy --goal ... --max-usdc ... to work without the ceremonial --first flag so the primary command has no avoidable failure mode.",
+      "acceptanceCriteria": [
+        "rubicon buy --goal \"x\" --max-usdc 0.10 --json succeeds without --first (first-article selection remains the default behavior)",
+        "--first is still accepted and behaves identically",
+        "The MISSING_FIRST error in packages/cli/src/quickstart.ts is removed",
+        "Help text in showHelp() shows --first as optional or omits it",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Pass --testnet to Circle auth status checks for testnet chains",
+      "description": "As an agent buying an ARC-TESTNET article, I want the CLI to check the testnet Circle session (not the mainnet one) so a successful testnet login is not misreported as NOT_LOGGED_IN.",
+      "acceptanceCriteria": [
+        "circleAuthStatus in packages/cli/src/circle.ts accepts a testnet/environment option and appends --testnet to the circle wallet status arguments when set",
+        "runBuy and runDoctor in packages/cli/src/quickstart.ts pass the testnet option when the resolved chain/environment is testnet (ARC-TESTNET)",
+        "A unit test asserts the circle wallet status invocation includes --testnet when chain is ARC-TESTNET and omits it for mainnet",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "This is the root cause of the OTP loop the hosted skill.md spends ~20 lines teaching agents to work around."
+    },
+    {
+      "id": "US-005",
+      "title": "Auto-fallback to npx when Circle CLI is not on PATH (CLI package)",
+      "description": "As an agent in a fresh npx context without Circle CLI installed, I want Rubicon to invoke Circle via npx automatically so setup does not dead-end on missing_cli.",
+      "acceptanceCriteria": [
+        "runCircleCli in packages/cli/src/circle.ts, on ENOENT for both circle and circle-cli, retries via npx -y --package @circle-fin/cli circle <args> before classifying the error",
+        "The npx fallback is skippable via an env var (e.g. RUBICON_NO_NPX_FALLBACK=1) and respects an existing CIRCLE_CLI_COMMAND override",
+        "missing_cli guidance text mentions the npx form npx -y --package @circle-fin/cli circle ... instead of only 'Install Circle CLI'",
+        "A unit test with an injected runner asserts the npx fallback arguments",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Windows-safe Circle CLI invocation",
+      "description": "As a Windows agent, I want Circle CLI calls to resolve npm's circle.cmd shim so payments work without POSIX assumptions.",
+      "acceptanceCriteria": [
+        "runCircleCli in packages/cli/src/circle.ts and runCircleCli in packages/agent-sdk/src/circle-cli-gateway-payment.ts resolve the circle.cmd/.exe shim on win32 (e.g. execFile with shell:true on win32, or explicit .cmd resolution) instead of assuming execFile(\"circle\") works",
+        "Non-Windows behavior is unchanged",
+        "A unit test covers the win32 command resolution path (platform injected or mocked)",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "skill.md warns third-party wrappers about exactly this bug, but Rubicon's own runners have it."
+    },
+    {
+      "id": "US-007",
+      "title": "Add rubicon login command wrapping Circle OTP flow",
+      "description": "As a calling agent, I want rubicon login <email> and rubicon login --request <id> --otp <code> so first-time auth is two rubicon commands instead of a separate npx package with four manual steps.",
+      "acceptanceCriteria": [
+        "rubicon login <email> [--testnet] --json initiates Circle OTP login via the Circle CLI runner (with npx fallback) and prints JSON containing the request id",
+        "rubicon login --request <id> --otp <code> [--testnet] --json completes login and prints a JSON success/failure result",
+        "--testnet defaults to true when the configured/default chain is ARC-TESTNET",
+        "The OTP code is never written to config or echoed back in output beyond the success result",
+        "Command appears in showHelp() usage",
+        "Unit tests with an injected Circle runner cover init and completion argument construction",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Classify Circle Terms errors with a structured code and exact command",
+      "description": "As a calling agent, I want terms-acceptance failures to surface as TERMS_NOT_ACCEPTED with the exact command to run so I can recover without parsing free text.",
+      "acceptanceCriteria": [
+        "classifyCircleError in packages/cli/src/circle.ts detects terms/agreement acceptance output and returns a terms_not_accepted code with guidance containing the exact circle terms command to run",
+        "runBuy surfaces this as CliError code TERMS_NOT_ACCEPTED with the command in the message",
+        "A unit test feeds a terms-required Circle error string and asserts the classification",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "NOT_LOGGED_IN errors name the exact rubicon login recovery command",
+      "description": "As a calling agent that hit NOT_LOGGED_IN, I want the JSON error to include the exact next command (rubicon login <email> with the right --testnet flag) so recovery needs no runbook lookup.",
+      "acceptanceCriteria": [
+        "not_logged_in guidance in packages/cli/src/circle.ts references rubicon login <email> [--testnet] instead of generic 'Run Circle CLI login/auth again'",
+        "The --json error object for NOT_LOGGED_IN from rubicon buy includes a recovery field or guidance string containing the rubicon login command with --testnet when the article chain is testnet",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "Depends on US-007."
+    },
+    {
+      "id": "US-010",
+      "title": "Default SDK baseUrl to the hosted gateway",
+      "description": "As an SDK user following the README quickstart, I want the client to target the hosted gateway by default so the first snippet works without running a local gateway.",
+      "acceptanceCriteria": [
+        "RubiconClient in packages/agent-sdk/src/agent-client.ts defaults baseUrl to the hosted gateway URL (same value as the CLI's HOSTED_GATEWAY_URL) instead of http://localhost:8787",
+        "packages/agent-sdk/README.md quickstart and baseUrl docs reflect the new default and show how to point at a local gateway",
+        "Tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "title": "Sync the repo's stale skill.md with the published v2 runbook",
+      "description": "As a maintainer, I want the repo's skill.md to match the published 2.x runbook so agents never read the contradictory v1.1.0 rules (e.g. 'Never accept Circle Terms' vs 'run terms yourself').",
+      "acceptanceCriteria": [
+        "/skill.md at the repo root matches the 2.0.3 content currently published in rubicon-marketing/public/skill.md, updated for changes made in earlier stories (rubicon login, optional --first, startup event now real)",
+        "The OTP-loop workaround section is simplified to reflect the --testnet status fix from US-004",
+        "Pinned CLI version references use the current packages/cli/package.json version",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": "Root skill.md rewritten as v2.1.0 (rubicon login recovery, optional --first, real startup event, cli 0.1.8). The rubicon-app and rubicon-marketing copies live in sibling repos and must be synced there after npm publish of cli 0.1.8."
+    }
+  ]
+}

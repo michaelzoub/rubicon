@@ -124,7 +124,7 @@ test("hosted buyer flow uses only Circle 0.0.6-compatible wallet commands and st
   const final = output.result as Record<string, unknown>;
   assert.equal(calls.some((args) => args[0] === "auth"), false);
   assert.equal(calls.some((args) => args[0] === "gateway" && args[1] === "faucet"), false);
-  assert.equal(calls.some((args) => args[0] === "wallet" && args[1] === "status" && args.includes("--type") && args.includes("agent")), true);
+  assert.equal(calls.some((args) => args[0] === "wallet" && args[1] === "status" && args.includes("--type") && args.includes("agent") && args.includes("--testnet")), true);
   assert.ok(BigInt(String(final.amountPaidAtomic)) <= 10_000n);
   assert.equal(final.approvedBudgetUsdc, "0.01");
   assert.equal(final.articleId, "article_1");

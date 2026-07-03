@@ -108,6 +108,7 @@ The primary buyer workflow is one command:
 
 ```bash
 rubicon buy --first --goal "<exact goal>" --max-usdc 0.10 --json
+rubicon buy --first --goal "<exact goal>" --max-usdc 0.10 --granularity 10 --json
 ```
 
 It selects the first relevant live article, performs hidden wallet readiness
@@ -192,6 +193,10 @@ rubicon read <article-id> --max-usdc 0.10 --section section-22 --stop-after-sect
 rubicon read <article-id> --max-usdc 0.10 --section section-22 --stream-mode bundled
 rubicon read <article-id> --max-usdc 0.10 --section section-22 --chunk-words 32
 rubicon read <article-id> --max-usdc 0.10 --section section-22 --per-word
+rubicon read <article-id> --max-usdc 0.10 --granularity word
+rubicon read <article-id> --max-usdc 0.10 --granularity 10
+rubicon read <article-id> --section section-22 --max-usdc 0.10 --granularity section
+rubicon read <article-id> --max-usdc 1.00 --granularity article
 rubicon read <article-id> --max-usdc 0.10 --max-words 50
 rubicon read <article-id> --max-atomic 100000
 ```
@@ -210,6 +215,12 @@ default is 32 words. `--fast` and `--mode batch` remain compatibility aliases fo
 batch-friendly reads. Use `--stream-mode word`, `--per-word`, or `--mode word`
 when you explicitly want the old one-word authorization and `article.word`
 events for debugging or strict metering.
+
+`--granularity` is the unified buyer-facing control. It accepts `word`, any
+positive word count, `section`, or `article`. Word/count modes pay and deliver
+in the selected unit. Section/article modes use one payment for the complete
+selected range and fail before payment if the explicit budget cannot cover it.
+They cannot be mixed with `--max-words` or the legacy stream/chunk flags.
 
 Without `--json`, words stream as they arrive. At the end, the CLI prints a
 compact receipt summary with session id, article id, words read, amount paid,

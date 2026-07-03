@@ -1,0 +1,304 @@
+{
+  "threshold": 0.64,
+  "users": [
+    {
+      "id": "user_ada",
+      "username": "ada_lovelace"
+    },
+    {
+      "id": "user_grace",
+      "username": "grace.hopper"
+    },
+    {
+      "id": "user_michael",
+      "username": "michael-zoub"
+    },
+    {
+      "id": "user_theo",
+      "username": "theo_codes"
+    }
+  ],
+  "articles": [
+    {
+      "id": "article_analytical",
+      "title": "Notes on the Analytical Engine",
+      "author": "Ada Lovelace"
+    },
+    {
+      "id": "article_poetical",
+      "title": "A Poetical Science",
+      "author": "ada-lovelace"
+    },
+    {
+      "id": "article_compilers",
+      "title": "Compilers and Clear Thinking",
+      "author": "Grace M. Hopper"
+    },
+    {
+      "id": "article_graphs",
+      "title": "Graph Thinking in Postgres",
+      "author": "Michael Zoub"
+    },
+    {
+      "id": "article_interfaces",
+      "title": "Interfaces That Explain Themselves",
+      "author": "Theo Codes"
+    },
+    {
+      "id": "article_noise",
+      "title": "A Field Guide to Mushrooms",
+      "author": "Robin Forest"
+    }
+  ],
+  "edges": [
+    {
+      "userId": "user_ada",
+      "username": "ada_lovelace",
+      "articleId": "article_analytical",
+      "author": "Ada Lovelace",
+      "score": 1.0,
+      "accepted": true
+    },
+    {
+      "userId": "user_ada",
+      "username": "ada_lovelace",
+      "articleId": "article_poetical",
+      "author": "ada-lovelace",
+      "score": 1.0,
+      "accepted": true
+    },
+    {
+      "userId": "user_grace",
+      "username": "grace.hopper",
+      "articleId": "article_compilers",
+      "author": "Grace M. Hopper",
+      "score": 1.0,
+      "accepted": true
+    },
+    {
+      "userId": "user_michael",
+      "username": "michael-zoub",
+      "articleId": "article_graphs",
+      "author": "Michael Zoub",
+      "score": 1.0,
+      "accepted": true
+    },
+    {
+      "userId": "user_theo",
+      "username": "theo_codes",
+      "articleId": "article_interfaces",
+      "author": "Theo Codes",
+      "score": 1.0,
+      "accepted": true
+    }
+  ],
+  "candidates": [
+    {
+      "userId": "user_ada",
+      "username": "ada_lovelace",
+      "articleId": "article_analytical",
+      "author": "Ada Lovelace",
+      "score": 1.0,
+      "accepted": true
+    },
+    {
+      "userId": "user_ada",
+      "username": "ada_lovelace",
+      "articleId": "article_poetical",
+      "author": "ada-lovelace",
+      "score": 1.0,
+      "accepted": true
+    },
+    {
+      "userId": "user_grace",
+      "username": "grace.hopper",
+      "articleId": "article_compilers",
+      "author": "Grace M. Hopper",
+      "score": 1.0,
+      "accepted": true
+    },
+    {
+      "userId": "user_michael",
+      "username": "michael-zoub",
+      "articleId": "article_graphs",
+      "author": "Michael Zoub",
+      "score": 1.0,
+      "accepted": true
+    },
+    {
+      "userId": "user_theo",
+      "username": "theo_codes",
+      "articleId": "article_interfaces",
+      "author": "Theo Codes",
+      "score": 1.0,
+      "accepted": true
+    },
+    {
+      "userId": "user_theo",
+      "username": "theo_codes",
+      "articleId": "article_noise",
+      "author": "Robin Forest",
+      "score": 0.14,
+      "accepted": false
+    },
+    {
+      "userId": "user_ada",
+      "username": "ada_lovelace",
+      "articleId": "article_compilers",
+      "author": "Grace M. Hopper",
+      "score": 0.1301,
+      "accepted": false
+    },
+    {
+      "userId": "user_grace",
+      "username": "grace.hopper",
+      "articleId": "article_analytical",
+      "author": "Ada Lovelace",
+      "score": 0.1301,
+      "accepted": false
+    },
+    {
+      "userId": "user_grace",
+      "username": "grace.hopper",
+      "articleId": "article_poetical",
+      "author": "ada-lovelace",
+      "score": 0.1301,
+      "accepted": false
+    },
+    {
+      "userId": "user_theo",
+      "username": "theo_codes",
+      "articleId": "article_analytical",
+      "author": "Ada Lovelace",
+      "score": 0.105,
+      "accepted": false
+    },
+    {
+      "userId": "user_theo",
+      "username": "theo_codes",
+      "articleId": "article_poetical",
+      "author": "ada-lovelace",
+      "score": 0.105,
+      "accepted": false
+    },
+    {
+      "userId": "user_theo",
+      "username": "theo_codes",
+      "articleId": "article_graphs",
+      "author": "Michael Zoub",
+      "score": 0.105,
+      "accepted": false
+    },
+    {
+      "userId": "user_ada",
+      "username": "ada_lovelace",
+      "articleId": "article_graphs",
+      "author": "Michael Zoub",
+      "score": 0.0955,
+      "accepted": false
+    },
+    {
+      "userId": "user_grace",
+      "username": "grace.hopper",
+      "articleId": "article_graphs",
+      "author": "Michael Zoub",
+      "score": 0.0955,
+      "accepted": false
+    },
+    {
+      "userId": "user_michael",
+      "username": "michael-zoub",
+      "articleId": "article_analytical",
+      "author": "Ada Lovelace",
+      "score": 0.0955,
+      "accepted": false
+    },
+    {
+      "userId": "user_michael",
+      "username": "michael-zoub",
+      "articleId": "article_poetical",
+      "author": "ada-lovelace",
+      "score": 0.0955,
+      "accepted": false
+    },
+    {
+      "userId": "user_michael",
+      "username": "michael-zoub",
+      "articleId": "article_compilers",
+      "author": "Grace M. Hopper",
+      "score": 0.0955,
+      "accepted": false
+    },
+    {
+      "userId": "user_ada",
+      "username": "ada_lovelace",
+      "articleId": "article_interfaces",
+      "author": "Theo Codes",
+      "score": 0.07,
+      "accepted": false
+    },
+    {
+      "userId": "user_grace",
+      "username": "grace.hopper",
+      "articleId": "article_interfaces",
+      "author": "Theo Codes",
+      "score": 0.07,
+      "accepted": false
+    },
+    {
+      "userId": "user_michael",
+      "username": "michael-zoub",
+      "articleId": "article_interfaces",
+      "author": "Theo Codes",
+      "score": 0.07,
+      "accepted": false
+    },
+    {
+      "userId": "user_theo",
+      "username": "theo_codes",
+      "articleId": "article_compilers",
+      "author": "Grace M. Hopper",
+      "score": 0.07,
+      "accepted": false
+    },
+    {
+      "userId": "user_ada",
+      "username": "ada_lovelace",
+      "articleId": "article_noise",
+      "author": "Robin Forest",
+      "score": 0.0636,
+      "accepted": false
+    },
+    {
+      "userId": "user_grace",
+      "username": "grace.hopper",
+      "articleId": "article_noise",
+      "author": "Robin Forest",
+      "score": 0.0636,
+      "accepted": false
+    },
+    {
+      "userId": "user_michael",
+      "username": "michael-zoub",
+      "articleId": "article_noise",
+      "author": "Robin Forest",
+      "score": 0.0636,
+      "accepted": false
+    }
+  ],
+  "traversals": {
+    "user_ada": [
+      "article_analytical|articles|1|[\"authored\"]",
+      "article_poetical|articles|1|[\"authored\"]"
+    ],
+    "user_grace": [
+      "article_compilers|articles|1|[\"authored\"]"
+    ],
+    "user_michael": [
+      "article_graphs|articles|1|[\"authored\"]"
+    ],
+    "user_theo": [
+      "article_interfaces|articles|1|[\"authored\"]"
+    ]
+  }
+}

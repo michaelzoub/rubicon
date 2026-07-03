@@ -50,6 +50,12 @@ export interface ReadReceipt {
   stopReason: "article_completed" | "stop_condition" | "budget_reached" | "max_words" | "aborted";
 }
 
+/**
+ * Buyer-selected payment/delivery unit. A number streams that many words per
+ * payment; `section` and `article` authorize the entire selected range once.
+ */
+export type ReadGranularity = number | "section" | "article";
+
 export type RubiconReadEvent =
   | { type: "session.started"; session: StartSessionResponse }
   | { type: "seller.message"; content: string; recommendedSectionId?: string }
@@ -102,6 +108,8 @@ export interface ReadOptions {
   maxWords?: number;
   /** Number of words to authorize and deliver per gateway round trip when supported. */
   chunkWords?: number;
+  /** Preferred payment/delivery unit. Cannot be combined with chunkWords or word stream mode. */
+  granularity?: ReadGranularity;
   /** Default is bundled. Use word for legacy one-word events/payments. */
   streamMode?: StreamMode;
   /** Return true to stop reading once enough information has been collected. */
@@ -118,6 +126,9 @@ export interface RunOptions extends ReadOptions {
   onWord?: (word: string, state: { text: string; wordsRead: number; amountPaidAtomic: `${bigint}` }) => void | Promise<void>;
 }
 
+/** Hosted Rubicon gateway used when no `baseUrl` is configured. */
+export const HOSTED_GATEWAY_URL = "https://rubicon-caligagateway-production.up.railway.app";
+
 /**
  * High-level buyer-agent client for Rubicon. `read()` runs the entire
  * authorize -> word -> usage loop until a stop condition is met, so application
@@ -130,7 +141,7 @@ export class RubiconClient {
 
   constructor(private readonly options: RubiconClientOptions) {
     this.fetcher = options.fetch ?? fetch;
-    this.baseUrl = options.baseUrl ?? "http://localhost:8787";
+    this.baseUrl = options.baseUrl ?? HOSTED_GATEWAY_URL;
     this.paymentEngine = options.paymentEngine ?? new StaticPaymentEngine();
   }
 
@@ -274,6 +285,7 @@ export class RubiconClient {
    * words, running usage, and a final completion event carrying the receipt.
    */
   async *read(options: ReadOptions): AsyncGenerator<RubiconReadEvent, ReadReceipt> {
+    validateGranularityOptions(options);
     const budget: Budget =
       options.budget ??
       (options.maxSpendAtomic
@@ -286,7 +298,7 @@ export class RubiconClient {
     // Let the seller agent recommend a starting section if the buyer has a goal
     // and did not pick one explicitly.
     let conversationId = options.conversationId;
-    let sectionId = options.sectionId;
+    let sectionId = options.granularity === "article" ? "full-article" : options.sectionId;
     if (options.goal && !conversationId) {
       const conversation = await this.startConversation({
         articleId: options.articleId,
@@ -303,6 +315,9 @@ export class RubiconClient {
         };
         sectionId = sectionId ?? seller.recommendedSectionId;
       }
+    }
+    if (options.granularity === "section" && !sectionId) {
+      throw new Error("section granularity requires sectionId or a goal that selects a section");
     }
 
     const session = await this.startSession({
@@ -323,9 +338,19 @@ export class RubiconClient {
     const settlementIds: string[] = [];
     const payments: WordPaymentReceipt[] = [];
     const streamMode = options.streamMode ?? "bundled";
-    const bundleWords = normalizeBundleWords(options.chunkWords);
+    const bundleWords = resolveBundleWords(options.granularity, options.chunkWords, session, sectionId);
     const useBundles = streamMode === "bundled" && typeof this.paymentEngine.createChunkPayment === "function";
     const selectedWordLimit = selectedRangeWordLimit(session, sectionId);
+    if (
+      (options.granularity === "section" || options.granularity === "article") &&
+      selectedWordLimit !== undefined &&
+      budgetAtomic < wordPaymentAtomic * BigInt(selectedWordLimit)
+    ) {
+      await this.abort(session.sessionId, "budget_reached").catch(() => {});
+      throw new Error(
+        `${options.granularity} granularity requires a budget covering all ${selectedWordLimit} words`,
+      );
+    }
     let bundleSequence = 0;
     let stopReason: ReadReceipt["stopReason"] = "article_completed";
     let completed = false;
@@ -527,6 +552,34 @@ function normalizeBundleWords(chunkWords: number | undefined): number {
   if (chunkWords === undefined) return 32;
   if (!Number.isInteger(chunkWords) || chunkWords < 1) return 1;
   return Math.min(chunkWords, 256);
+}
+
+function resolveBundleWords(
+  granularity: ReadGranularity | undefined,
+  chunkWords: number | undefined,
+  session: StartSessionResponse,
+  sectionId: string | undefined,
+): number {
+  if (typeof granularity === "number") return normalizeBundleWords(granularity);
+  if (granularity === "section" || granularity === "article") {
+    return selectedRangeWordLimit(session, sectionId) ?? session.article.totalWords;
+  }
+  return normalizeBundleWords(chunkWords);
+}
+
+function validateGranularityOptions(options: ReadOptions): void {
+  if (options.granularity !== undefined && options.chunkWords !== undefined) {
+    throw new Error("granularity cannot be combined with chunkWords");
+  }
+  if (options.granularity !== undefined && options.streamMode === "word") {
+    throw new Error("granularity cannot be combined with word stream mode");
+  }
+  if ((options.granularity === "section" || options.granularity === "article") && options.maxWords !== undefined) {
+    throw new Error(`${options.granularity} granularity cannot be combined with maxWords`);
+  }
+  if (typeof options.granularity === "number" && (!Number.isInteger(options.granularity) || options.granularity < 1)) {
+    throw new Error("numeric granularity must be a positive integer");
+  }
 }
 
 function selectedRangeWordLimit(session: StartSessionResponse, sectionId: string | undefined): number | undefined {

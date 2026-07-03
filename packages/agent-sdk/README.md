@@ -30,6 +30,7 @@ const receipt = await rubicon.run({
   articleId: "live-article-id-from-repository",
   goal: "Find the resale-fee clause",
   maxSpendAtomic: "20000",
+  granularity: 10,
   stopWhen: ({ text, wordsRead, amountPaid }) => wordsRead > 50 || /resale fee/i.test(text),
   onWord: (word) => {
     process.stdout.write(`${word} `);
@@ -39,10 +40,26 @@ const receipt = await rubicon.run({
 console.log("\nreceipt:", receipt);
 ```
 
-`baseUrl` defaults to `http://localhost:8787`. In development, omitting
-`paymentEngine` uses `StaticPaymentEngine`, which works against a dev-mode
-gateway. For real Arc Testnet settlement without raw private keys, pass
-`CircleCliGatewayPaymentEngine`.
+`granularity` is the caller's payment/delivery unit:
+
+- `1` streams and pays one word at a time; `10` uses ten-word units (any
+  positive integer is accepted).
+- `"section"` pays for the selected section in one unit. Pass `sectionId`, or
+  pass `goal` and let the seller agent select it.
+- `"article"` selects and pays for the complete article in one unit.
+
+Section/article granularity is all-or-nothing: the SDK refuses to start payment
+unless `maxSpendAtomic` covers the complete selected range. Hard budget checks
+remain in force for every mode. `chunkWords` remains available as a legacy
+alias for numeric bundling.
+
+`baseUrl` defaults to the hosted Rubicon gateway
+(`https://rubicon-caligagateway-production.up.railway.app`), so the snippet
+above works without running anything locally; pass
+`baseUrl: "http://localhost:8787"` to target a local dev gateway. In
+development, omitting `paymentEngine` uses `StaticPaymentEngine`, which works
+against a dev-mode gateway. For real Arc Testnet settlement without raw private
+keys, pass `CircleCliGatewayPaymentEngine`.
 
 ## `run(options)`
 

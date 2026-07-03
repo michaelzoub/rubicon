@@ -6,6 +6,7 @@ import { parseUsdcToAtomic, settlementNetworkInfo, type ArticleSectionSummary, t
 import { parseArgs, booleanFlag, stringFlag, type ParsedArgs } from "./args.js";
 import { configPath, HOSTED_GATEWAY_URL, readConfig, writeConfig, type RubiconCliConfig } from "./config.js";
 import { CliError, toCliError } from "./errors.js";
+import { assertNoLegacyGranularityConflict, granularityFlag } from "./granularity.js";
 import {
   articleJson,
   formatAtomic,
@@ -20,9 +21,14 @@ import {
   receiptSummaryJson,
 } from "./format.js";
 import { selectPaymentEngine, type PaymentMode } from "./payments.js";
+import { createRequire } from "node:module";
+import { runLogin } from "./login.js";
 import { runBuy, runDoctor, runQuickstartRead } from "./quickstart.js";
 import { listReceipts, loadReceipt, saveReceipt } from "./receipts.js";
-import packageJson from "../package.json" with { type: "json" };
+
+// createRequire instead of a JSON import attribute so older Node versions fail
+// with the engines message rather than a SyntaxError before any output.
+const packageJson = createRequire(import.meta.url)("../package.json") as { version: string };
 
 interface Runtime {
   parsed: ParsedArgs;
@@ -35,9 +41,14 @@ interface Runtime {
   client: RubiconClient;
 }
 
+const STARTUP_EVENT_COMMANDS = new Set(["buy", "quickstart-read", "doctor", "read", "login"]);
+
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
   const json = booleanFlag(parsed.flags, "json");
+  if (json && STARTUP_EVENT_COMMANDS.has(parsed.positionals[0] ?? "")) {
+    printJson({ type: "startup", message: "loading Rubicon CLI" });
+  }
 
   try {
     const config = await readConfig();
@@ -61,7 +72,10 @@ async function main(): Promise<void> {
   } catch (error) {
     const cliError = toCliError(error);
     if (json) {
-      printJson({ success: false, error: { code: cliError.code, message: cliError.message } });
+      printJson({
+        success: false,
+        error: { code: cliError.code, message: cliError.message, ...(cliError.recovery ? { recovery: cliError.recovery } : {}) },
+      });
     } else {
       process.stderr.write(`Error: ${cliError.message}\n`);
     }
@@ -92,6 +106,10 @@ async function dispatch(runtime: Runtime): Promise<void> {
   }
   if (command === "buy") {
     printJson(await runBuy(runtime));
+    return;
+  }
+  if (command === "login") {
+    printJson(await runLogin({ parsed: runtime.parsed, config: runtime.config }));
     return;
   }
   if (command === "repository") {
@@ -198,12 +216,20 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
   const sectionId = sectionFlag(runtime.parsed);
   const stopAfterSection = booleanFlag(runtime.parsed.flags, "stop-after-section");
   const summary = booleanFlag(runtime.parsed.flags, "summary") || booleanFlag(runtime.parsed.flags, "receipt-summary");
-  const chunkWords = chunkWordsFlag(runtime.parsed);
-  const streamMode = streamModeFlag(runtime.parsed);
+  const granularity = granularityFlag(runtime.parsed);
+  assertNoLegacyGranularityConflict(runtime.parsed, granularity);
+  const chunkWords = granularity === undefined ? chunkWordsFlag(runtime.parsed) : undefined;
+  const streamMode = granularity === undefined ? streamModeFlag(runtime.parsed) : "bundled";
   const maxWordsFlag = stringFlag(runtime.parsed.flags, "max-words");
   const maxWords = maxWordsFlag === undefined ? undefined : Number(maxWordsFlag);
   if (maxWords !== undefined && (!Number.isInteger(maxWords) || maxWords < 1)) {
     throw new CliError("INVALID_MAX_WORDS", "--max-words must be a positive integer.");
+  }
+  if ((granularity === "section" || granularity === "article") && maxWords !== undefined) {
+    throw new CliError("MULTIPLE_GRANULARITIES", `--granularity ${granularity} cannot be combined with --max-words.`);
+  }
+  if (granularity === "section" && !sectionId && !goal) {
+    throw new CliError("MISSING_SECTION", "--granularity section requires --section/--section-id or --goal.");
   }
   if (stopAfterSection && !sectionId && !goal) {
     throw new CliError("MISSING_SECTION", "--stop-after-section requires --section/--section-id or --goal.");
@@ -213,7 +239,7 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
   }
 
   if (booleanFlag(runtime.parsed.flags, "dry-run")) {
-    await dryRun(runtime, articleId, maxSpendAtomic, goal, maxWords, sectionId, stopAfterSection, chunkWords, streamMode);
+    await dryRun(runtime, articleId, maxSpendAtomic, goal, maxWords, sectionId, stopAfterSection, chunkWords, streamMode, granularity);
     return;
   }
 
@@ -240,6 +266,7 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
     maxSpendAtomic,
     maxWords,
     chunkWords,
+    granularity,
     streamMode,
     metadata: stopAfterSection ? { stopAfterSection: true } : undefined,
   });
@@ -332,10 +359,11 @@ async function dryRun(
   stopAfterSection: boolean,
   chunkWords: number | undefined,
   streamMode: StreamMode,
+  granularity: import("@rubicon-caliga/agent-sdk/agent-client").ReadGranularity | undefined,
 ): Promise<void> {
   const article = await findArticle(runtime, articleId);
   const navigation = goal && !sectionId ? await runtime.client.getNavigation(articleId, goal).catch(() => undefined) : undefined;
-  const effectiveSectionId = sectionId ?? navigation?.navigation.sellerAgent.recommendedSectionId;
+  const effectiveSectionId = granularity === "article" ? "full-article" : sectionId ?? navigation?.navigation.sellerAgent.recommendedSectionId;
   const effectiveSection = effectiveSectionId ? findSection(article, effectiveSectionId) : undefined;
   const estimatedWords = Math.min(maxWords ?? Number.MAX_SAFE_INTEGER, effectiveSection?.wordCount ?? article.totalWords);
   const estimatedMaxCostAtomic = BigInt(article.pricePerWordAtomic) * BigInt(estimatedWords);
@@ -372,6 +400,7 @@ async function dryRun(
       readStartsAt: effectiveSectionId ? `section:${effectiveSectionId}` : "full-article",
       stopAfterSection,
       chunkWords,
+      granularity,
       streamMode,
       fundingMethod,
       estimatedMax: budgetSufficiency,
@@ -401,6 +430,7 @@ async function dryRun(
       sectionId ? `Section: ${sectionId}` : undefined,
       stopAfterSection ? "Stop after section: yes" : undefined,
       `Stream mode: ${streamMode}`,
+      granularity !== undefined ? `Granularity: ${granularity === 1 ? "word" : granularity}` : undefined,
       streamMode === "bundled" ? `Bundle words: ${chunkWords ?? 32}` : undefined,
       "",
       humanArticle(article),
@@ -614,13 +644,15 @@ function matchesQuery(article: ArticleSummary, query: string): boolean {
 
 function showHelp(json: boolean): void {
   const usage = [
-    "rubicon buy --first --goal \"<goal>\" --max-usdc 0.10 --json",
+    "rubicon buy --goal \"<goal>\" --max-usdc 0.10 [--granularity word|10|section|article] --json",
+    "rubicon login <email> [--testnet] --json",
+    "rubicon login --request <request-id> --otp <code> [--testnet] --json",
     "rubicon repository",
     "rubicon doctor --json",
     "rubicon search \"<query>\"",
     "rubicon article show <article-id>",
     "rubicon article navigation <article-id> --goal \"<goal>\"",
-    "rubicon read <article-id> --max-usdc 0.10 [--goal \"...\"] [--section <section-id>] [--stop-after-section] [--stream-mode bundled|word] [--chunk-words 32] [--per-word] [--max-words 50] [--summary] [--dry-run]",
+    "rubicon read <article-id> --max-usdc 0.10 [--goal \"...\"] [--section <section-id>] [--granularity word|10|section|article] [--max-words 50] [--summary] [--dry-run]",
     "rubicon receipts list [--limit 10] [--summary]",
     "rubicon receipts show <receipt-id> [--summary]",
     "rubicon config show",
