@@ -1,4 +1,11 @@
-import { parseUsdcToAtomic, settlementNetworkInfo, type ArticleSummary, type StreamMode } from "@rubicon-caliga/core";
+import {
+  parseUsdcToAtomic,
+  settlementNetworkInfo,
+  type ArticleNavigation,
+  type ArticleSummary,
+  type ConversationMessage,
+  type StreamMode,
+} from "@rubicon-caliga/core";
 import type { ReadGranularity, ReadReceipt, RubiconClient } from "@rubicon-caliga/agent-sdk/agent-client";
 import { stringFlag, type ParsedArgs } from "./args.js";
 import {
@@ -31,6 +38,7 @@ export interface CommandDeps {
   circleRunner?: CircleRunner;
   circleCommand?: string;
   cliVersion?: string;
+  onProgress?: (event: Record<string, unknown>) => void;
 }
 
 interface CheckResult {
@@ -130,6 +138,66 @@ export async function runQuickstartRead(runtime: CommandRuntime, deps: CommandDe
   return runBuy(runtime, deps);
 }
 
+/**
+ * Hard goal-fit gate: the seller's expectedValue is its 0..1 estimate that a
+ * section answers the buyer's exact goal. Below this floor the purchase is far
+ * more likely to be wasted spend than useful information (the thermodynamics
+ * incident shipped at 0.12), so the buyer must stop with zero spend instead of
+ * buying fallback content just because it is the only catalog entry.
+ */
+export const MIN_GOAL_FIT_EXPECTED_VALUE = 0.35;
+
+/** Seller statements that declare the article cannot serve the buyer's goal. */
+const SELLER_NO_FIT_PATTERN =
+  /(unrelated|not related|irrelevant|not relevant|unlikely to (be )?(relevant|help|answer)|cannot answer|can'?t answer|does ?not (cover|address|answer)|doesn'?t (cover|address|answer)|off-?topic|no relevant (section|content))/i;
+
+export interface GoalFitAssessment {
+  metadataRelevance: number;
+  bestSellerExpectedValue?: number;
+  minimumExpectedValue: number;
+  sellerIndicatedIrrelevant: boolean;
+  sufficient: boolean;
+  reason?: "no_direct_metadata_match" | "seller_declared_unrelated" | "below_relevance_threshold" | "missing_seller_assessment";
+}
+
+export function assessGoalFit(input: {
+  article: ArticleSummary;
+  goal: string;
+  navigation: ArticleNavigation;
+  messages: ConversationMessage[];
+}): GoalFitAssessment {
+  const metadataRelevance = articleRelevance(input.article, input.goal);
+  const sellerText = [
+    ...input.messages.filter((message) => message.role === "seller").map((message) => message.content),
+    input.navigation.sellerAgent.rationale,
+    ...(input.navigation.sellerAgent.sectionAssessments ?? []).map((assessment) => assessment.rationale),
+  ].join("\n");
+  const sellerIndicatedIrrelevant = SELLER_NO_FIT_PATTERN.test(sellerText);
+  const assessments = input.navigation.sellerAgent.sectionAssessments;
+  const bestSellerExpectedValue = assessments?.length
+    ? Math.max(...assessments.map((assessment) => assessment.expectedValue))
+    : undefined;
+  const base = {
+    metadataRelevance,
+    bestSellerExpectedValue,
+    minimumExpectedValue: MIN_GOAL_FIT_EXPECTED_VALUE,
+    sellerIndicatedIrrelevant,
+  };
+  if (metadataRelevance === 0) {
+    return { ...base, sufficient: false, reason: "no_direct_metadata_match" };
+  }
+  if (sellerIndicatedIrrelevant) {
+    return { ...base, sufficient: false, reason: "seller_declared_unrelated" };
+  }
+  if (bestSellerExpectedValue !== undefined && bestSellerExpectedValue < MIN_GOAL_FIT_EXPECTED_VALUE) {
+    return { ...base, sufficient: false, reason: "below_relevance_threshold" };
+  }
+  if (bestSellerExpectedValue === undefined) {
+    return { ...base, sufficient: false, reason: "missing_seller_assessment" };
+  }
+  return { ...base, sufficient: true };
+}
+
 export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): Promise<Record<string, unknown>> {
   const goal = stringFlag(runtime.parsed.flags, "goal");
   if (!goal) throw new CliError("MISSING_GOAL", "rubicon buy requires --goal.");
@@ -138,24 +206,87 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
   assertNoLegacyGranularityConflict(runtime.parsed, granularity);
   const approvedBudgetUsdc = formatAtomic(maxSpendAtomic);
   const events: Array<Record<string, unknown>> = [];
+  const emit = (event: Record<string, unknown>): void => {
+    events.push(event);
+    deps.onProgress?.(event);
+  };
   const wroteGatewayConfig = await ensureGatewayConfig(runtime);
   const repository = await runtime.client.getRepository();
-  const article = [...repository.articles]
-    .filter((candidate) => candidate.state === "live")
+  const liveArticles = repository.articles.filter((candidate) => candidate.state === "live");
+  const availableTitles = liveArticles.map((candidate) => candidate.title);
+  const article = [...liveArticles]
+    .filter((candidate) => articleRelevance(candidate, goal) > 0)
     .sort((left, right) => articleRelevance(right, goal) - articleRelevance(left, goal))[0];
+  if (!article && liveArticles.length > 0) {
+    emit({ type: "goalfit.gate", decision: "stop_zero_spend", reason: "no_direct_metadata_match", availableTitles });
+    return noRelevantArticleResult({ runtime, wroteGatewayConfig, goal, approvedBudgetUsdc, availableTitles, events });
+  }
   if (!article) throw new CliError("NO_ARTICLES", "No public articles are available from the configured gateway.");
-  events.push({ type: "article.selected", articleId: article.articleId, basis: "safe_metadata_relevance" });
+  emit({
+    type: "article.selected",
+    articleId: article.articleId,
+    basis: "safe_metadata_relevance",
+    provisional: true,
+    metadataRelevance: articleRelevance(article, goal),
+  });
 
+  emit({ type: "seller.consultation.started", articleId: article.articleId });
   const consultation = await runtime.client.startConversation({
     articleId: article.articleId,
     goal,
     message: `For the exact goal "${goal}", rank the best sections, their expected value, minimum useful word count, and alternatives. Prefer concise self-contained sections and preserve budget for conclusions, counterarguments, or practical details when useful.`,
   });
   const navigation = consultation.navigation;
-  events.push({ type: "seller.consulted", conversationId: consultation.conversationId, inferenceSource: "safe_metadata", sellerAgent: navigation.sellerAgent });
-  const ranked = granularity === "article"
+  emit({ type: "seller.consultation.completed", conversationId: consultation.conversationId, inferenceSource: "safe_metadata", sellerAgent: navigation.sellerAgent });
+
+  const goalFit = assessGoalFit({ article, goal, navigation, messages: consultation.messages ?? [] });
+  emit({
+    type: "goalfit.gate",
+    articleId: article.articleId,
+    metadataRelevance: goalFit.metadataRelevance,
+    bestSellerExpectedValue: goalFit.bestSellerExpectedValue,
+    minimumExpectedValue: goalFit.minimumExpectedValue,
+    sellerIndicatedIrrelevant: goalFit.sellerIndicatedIrrelevant,
+    decision: goalFit.sufficient ? "proceed" : "stop_zero_spend",
+    reason: goalFit.reason,
+  });
+  if (!goalFit.sufficient) {
+    const explanation = goalFit.reason === "seller_declared_unrelated"
+      ? "The seller agent stated the available content cannot serve this goal."
+      : goalFit.reason === "missing_seller_assessment"
+        ? "The seller agent did not provide a relevance assessment, so payment was not authorized."
+        : `The seller agent's best expected value (${goalFit.bestSellerExpectedValue}) is below the ${goalFit.minimumExpectedValue} relevance floor.`;
+    return {
+      success: true,
+      outcome: "NO_RELEVANT_ARTICLE",
+      gatewayUrl: runtime.gatewayUrl,
+      gatewayConfigured: wroteGatewayConfig || Boolean(runtime.config.gatewayUrl || process.env.RUBICON_GATEWAY_URL),
+      candidateArticle: articleJson(article),
+      availableTitles,
+      events,
+      navigation,
+      result: {
+        outcome: "NO_RELEVANT_ARTICLE",
+        goal,
+        approvedBudgetUsdc,
+        amountPaidAtomic: "0",
+        amountPaidUsdc: formatAtomic("0"),
+        wordsRead: 0,
+        purchasedInformation: "",
+        receiptIds: [],
+        receipts: [],
+        completed: false,
+        stopReason: "no_relevant_article",
+        goalFit,
+        availableTitles,
+        report: `No sufficiently relevant article was found for goal "${goal}". ${explanation} No paid session was created, no payment requirement was issued, and none of the approved ${approvedBudgetUsdc} USDC budget was spent. A budget is permission to spend up to that amount, not an instruction to spend it.`,
+      },
+    };
+  }
+  const purchaseOne = /\bpurchase\s+(?:exactly\s+)?one\b/i.test(goal);
+  const ranked = (granularity === "article"
     ? [{ sectionId: "full-article", expectedValue: 1, minimumUsefulWords: article.totalWords, rationale: "Buyer selected the complete article.", score: 1 / article.totalWords }]
-    : rankSectionPlans(article, navigation.sellerAgent);
+    : rankSectionPlans(article, navigation.sellerAgent)).slice(0, purchaseOne ? 1 : undefined);
   if (ranked.length === 0) throw new CliError("NO_RELEVANT_SECTIONS", "The seller agent did not identify a purchasable section.");
 
   const networkInfo = settlementNetworkInfo(article.paymentTerms?.network);
@@ -206,7 +337,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
     const remaining = BigInt(maxSpendAtomic) - spent;
     const affordableWords = Number(remaining / BigInt(article.pricePerWordAtomic));
     if (affordableWords < 1 || affordableWords < plan.minimumUsefulWords) {
-      events.push({ type: "section.skipped", sectionId: plan.sectionId, reason: "insufficient_remaining_budget", remainingAtomic: `${remaining}` });
+      emit({ type: "section.skipped", sectionId: plan.sectionId, reason: "insufficient_remaining_budget", remainingAtomic: `${remaining}` });
       continue;
     }
     const sectionWords = plan.sectionId === "full-article"
@@ -216,7 +347,8 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
     const maxWords = Math.min(sectionWords, Math.max(plan.minimumUsefulWords, affordableWords - reserveWords));
     const sessionCap = BigInt(maxWords) * BigInt(article.pricePerWordAtomic);
     if (sessionCap > remaining) throw new CliError("BUDGET_INVARIANT", "Refusing payment because the section cap exceeds the remaining approved budget.");
-    events.push({ type: "section.selected", sectionId: plan.sectionId, expectedValue: plan.expectedValue, minimumUsefulWords: plan.minimumUsefulWords, informationValuePerPaidWord: plan.score, sessionCapAtomic: `${sessionCap}` });
+    emit({ type: "section.selected", sectionId: plan.sectionId, expectedValue: plan.expectedValue, minimumUsefulWords: plan.minimumUsefulWords, informationValuePerPaidWord: plan.score, sessionCapAtomic: `${sessionCap}` });
+    emit({ type: "payment.started", articleId: article.articleId, sectionId: plan.sectionId, maxSpendAtomic: `${sessionCap}` });
     let lastBundleWords = 0;
     const receipt = await runtime.client.run({
       articleId: article.articleId,
@@ -232,7 +364,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
         if (event.type !== "article.bundle") return;
         lastBundleWords = event.wordsRead;
         const adequate = plan.expectedValue >= 0.75 && event.wordsRead >= plan.minimumUsefulWords;
-        events.push({
+        emit({
           type: "strategy.reassessed",
           trigger: "paid_bundle",
           sectionId: plan.sectionId,
@@ -245,6 +377,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
         ? undefined
         : ({ wordsRead: currentWords }) => plan.expectedValue >= 0.75 && currentWords >= plan.minimumUsefulWords,
     });
+    emit({ type: "payment.completed", articleId: article.articleId, sectionId: plan.sectionId, sessionId: receipt.sessionId, amountPaidAtomic: receipt.amountPaidAtomic });
     if (BigInt(receipt.amountPaidAtomic) > sessionCap || spent + BigInt(receipt.amountPaidAtomic) > BigInt(maxSpendAtomic)) {
       throw new CliError("BUDGET_INVARIANT", "Payment receipt exceeds the approved cumulative budget.");
     }
@@ -252,16 +385,18 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
     wordsRead += receipt.wordsRead;
     purchasedText = [purchasedText, receipt.text].filter(Boolean).join("\n\n");
     visited.add(plan.sectionId);
+    emit({ type: "receipt.verification.started", sessionId: receipt.sessionId, sectionId: plan.sectionId });
     const stored = await saveReceipt(receipt);
     const verified = await loadReceipt(stored.receiptId);
     if (verified.receipt.amountPaidAtomic !== receipt.amountPaidAtomic || verified.receipt.sessionId !== receipt.sessionId) {
       throw new CliError("RECEIPT_VERIFICATION_FAILED", `Saved receipt ${stored.receiptId} could not be verified.`);
     }
     storedReceipts.push(stored);
-    events.push({ type: "receipt.verified", receiptId: stored.receiptId, sectionId: plan.sectionId, cumulativeSpendAtomic: `${spent}` });
+    emit({ type: "receipt.verification.completed", receiptId: stored.receiptId, sessionId: receipt.sessionId, sectionId: plan.sectionId, cumulativeSpendAtomic: `${spent}` });
+    emit({ type: "receipt.verified", receiptId: stored.receiptId, sectionId: plan.sectionId, cumulativeSpendAtomic: `${spent}` });
     const adequate = plan.expectedValue >= 0.75 && receipt.wordsRead >= plan.minimumUsefulWords;
     if (lastBundleWords !== receipt.wordsRead) {
-      events.push({ type: "strategy.reassessed", trigger: "paid_section", adequatelyAnswered: adequate, remainingAtomic: `${BigInt(maxSpendAtomic) - spent}`, inferenceSource: "seller_metadata_plus_purchase_completion" });
+      emit({ type: "strategy.reassessed", trigger: "paid_section", adequatelyAnswered: adequate, remainingAtomic: `${BigInt(maxSpendAtomic) - spent}`, inferenceSource: "seller_metadata_plus_purchase_completion" });
     }
     if (adequate) break;
   }
@@ -297,13 +432,48 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
   };
 }
 
+function noRelevantArticleResult(input: {
+  runtime: CommandRuntime;
+  wroteGatewayConfig: boolean;
+  goal: string;
+  approvedBudgetUsdc: string;
+  availableTitles: string[];
+  events: Array<Record<string, unknown>>;
+}): Record<string, unknown> {
+  const titles = input.availableTitles.length > 0 ? input.availableTitles.join("; ") : "none";
+  return {
+    success: true,
+    outcome: "NO_RELEVANT_ARTICLE",
+    gatewayUrl: input.runtime.gatewayUrl,
+    gatewayConfigured: input.wroteGatewayConfig || Boolean(input.runtime.config.gatewayUrl || process.env.RUBICON_GATEWAY_URL),
+    availableTitles: input.availableTitles,
+    events: input.events,
+    result: {
+      outcome: "NO_RELEVANT_ARTICLE",
+      goal: input.goal,
+      approvedBudgetUsdc: input.approvedBudgetUsdc,
+      amountPaidAtomic: "0",
+      amountPaidUsdc: formatAtomic("0"),
+      wordsRead: 0,
+      purchasedInformation: "",
+      receiptIds: [],
+      receipts: [],
+      completed: false,
+      stopReason: "no_relevant_article",
+      availableTitles: input.availableTitles,
+      report: `No live article directly matches goal "${input.goal}". Available titles: ${titles}. No purchase session was created, no payment was attempted, and exactly 0 USDC was spent.`,
+    },
+  };
+}
+
 function granularityForBuy(granularity: ReadGranularity | undefined, maxWords: number): ReadGranularity {
   if (granularity === "section" || granularity === "article") return granularity;
   return Math.min(typeof granularity === "number" ? granularity : 32, maxWords);
 }
 
 function articleRelevance(article: ArticleSummary, goal: string): number {
-  const terms = goal.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2);
+  const stopWords = new Set(["and", "are", "article", "about", "explain", "find", "for", "from", "how", "into", "one", "purchase", "summarize", "the", "this", "what", "with"]);
+  const terms = goal.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2 && !stopWords.has(term));
   const text = [article.title, ...article.sections.map((section) => section.heading)].join(" ").toLowerCase();
   return terms.filter((term) => text.includes(term)).length;
 }
@@ -313,6 +483,7 @@ function rankSectionPlans(article: ArticleSummary, seller: Awaited<ReturnType<Ru
   return assessments.flatMap((assessment) => {
     const section = article.sections.find((candidate) => candidate.sectionId === assessment.sectionId);
     if (!section || section.sectionId === "full-article") return [];
+    if (assessment.expectedValue < MIN_GOAL_FIT_EXPECTED_VALUE) return [];
     const minimumUsefulWords = Math.max(1, Math.min(section.wordCount, assessment.minimumUsefulWords));
     return [{ ...assessment, minimumUsefulWords, score: assessment.expectedValue / minimumUsefulWords }];
   }).sort((left, right) => right.score - left.score || right.expectedValue - left.expectedValue);

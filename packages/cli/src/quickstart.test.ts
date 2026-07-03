@@ -112,7 +112,7 @@ test("quickstart faucet-funds only the testnet path when needed", async () => {
 test("hosted buyer flow uses only Circle 0.0.6-compatible wallet commands and stays under cap", async () => {
   const calls: string[][] = [];
   const result = await runQuickstartRead(runtimeFor({
-    argv: ["buy", "--first", "--goal", "find and summarize the first available article", "--max-usdc", "0.01", "--json"],
+    argv: ["buy", "--first", "--goal", "find and summarize the Rubicon field notes article", "--max-usdc", "0.01", "--json"],
   }), {
     circleRunner: async (_command, args) => {
       calls.push(args);
@@ -185,6 +185,7 @@ function runtimeFor(input: { argv?: string[]; article?: ArticleSummary } = {}): 
     sellerAgent: {
       recommendedSectionId: "intro",
       alternativeSectionIds: [],
+      sectionAssessments: [{ sectionId: "intro", expectedValue: 0.9, minimumUsefulWords: 1, rationale: "Directly addresses Rubicon field notes." }],
       rationale: "Start here.",
       safeHints: [],
       withheld: [],
@@ -215,7 +216,7 @@ function runtimeFor(input: { argv?: string[]; article?: ArticleSummary } = {}): 
     },
   } as unknown as RubiconClient;
   return {
-    parsed: parseArgs(input.argv ?? ["quickstart-read", "--first", "--goal", "answer", "--max-usdc", "0.01"]),
+    parsed: parseArgs(input.argv ?? ["quickstart-read", "--first", "--goal", "Rubicon field notes", "--max-usdc", "0.01"]),
     config: {},
     gatewayUrl: "https://rubicon.test",
     paymentMode: "circle-cli",

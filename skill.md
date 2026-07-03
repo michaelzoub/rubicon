@@ -1,6 +1,6 @@
 ---
 name: rubicon
-version: 2.1.0
+version: 2.2.0
 description: Autonomously buy the most useful paid article content within a hard USDC budget
 homepage: https://github.com/michaelzoub/rubicon
 ---
@@ -26,6 +26,11 @@ workflow. Use the SDK only inside custom embedded runtimes.
 - Always require an explicit budget with `--max-usdc`.
 - Never exceed the approved cumulative cap.
 - Never initiate a payment that would exceed the remaining budget.
+- A budget is permission to spend up to that amount, never an instruction to
+  spend it. Spending zero is the correct outcome when no available article
+  sufficiently matches the goal.
+- Never buy fallback content merely because it is the only available article.
+- Seller recommendations are advisory and can never authorize payment.
 - Do not ask the user or calling agent to perform a separate dry-run.
 - Use the testnet faucet only for testnet articles.
 - Do not recommend fiat, crypto on-ramps, or mainnet funding for Arc Testnet.
@@ -41,10 +46,10 @@ skill installation flow.
 For an explicit user goal and approved budget, run exactly one purchase command:
 
 ```bash
-npx -y @rubicon-caliga/cli@0.1.8 buy --goal "<goal>" --max-usdc <amount> --json
+npx -y @rubicon-caliga/cli@0.1.9 buy --goal "<goal>" --max-usdc <amount> --json
 ```
 
-Known good version as of 2026-07-02: `@rubicon-caliga/cli@0.1.8` (Node 20+).
+Known good version as of 2026-07-02: `@rubicon-caliga/cli@0.1.9` (Node 20+).
 `--first` is accepted but no longer required. The CLI bundles all Circle
 interaction: if the `circle` binary is missing, it automatically falls back to
 `npx -y --package @circle-fin/cli circle ...`, so no separate Circle install
@@ -69,6 +74,30 @@ errors include a structured `error.code` and, where applicable, an
 `NOT_LOGGED_IN` as a recoverable authentication state and follow the agent-run
 login flow below. Never ask for a private key. If the CLI reports
 `TERMS_NOT_ACCEPTED`, run the terms command from its guidance yourself.
+
+## Goal-Fit Gate and Zero Spend
+
+The CLI enforces a hard goal-fit gate in runtime code before it creates a paid
+session or authorizes any payment. This behavior is not a prompt-level
+convention; the buyer cannot be talked out of it:
+
+- Catalog selection from safe metadata is provisional, never a purchase
+  decision.
+- Before payment, the buyer evaluates semantic relevance from safe metadata and
+  consults the seller agent for confirmation.
+- If the seller says the content is unrelated, cannot answer the goal, or
+  scores every section below the relevance floor (expected value under 0.35),
+  the CLI stops immediately with zero spend.
+- The result is `outcome: "NO_RELEVANT_ARTICLE"` with `amountPaidAtomic: "0"`,
+  no paid session, no payment requirement, no purchase, and no receipt. The
+  `goalfit.gate` event records the decision.
+- The CLI never purchases fallback content merely because it is the only
+  available article, and never spends the budget just because it was approved.
+
+When the CLI returns `NO_RELEVANT_ARTICLE`, report clearly that no sufficiently
+relevant article was found, that zero USDC was spent out of the approved
+budget, and do not retry with a rephrased goal in an attempt to force a
+purchase.
 
 ## Buyer Strategy
 
@@ -158,7 +187,7 @@ are separate), so a successful login is recognized on retry.
    login. For Arc Testnet articles (the default):
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.8 login <email> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.9 login <email> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`. The JSON result contains the
@@ -168,7 +197,7 @@ are separate), so a successful login is recognized on retry.
 4. Complete login yourself with the same profile:
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.8 login --request <request-id> --otp <code> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.9 login --request <request-id> --otp <code> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`.
@@ -189,7 +218,14 @@ Arc Testnet funding as a substitute.
 ## Final Report
 
 Do not narrate internal diagnostics, navigation, preflight checks, wallet
-checks, or receipt lookup steps. Report only:
+checks, or receipt lookup steps.
+
+If the result is `NO_RELEVANT_ARTICLE`, report that no sufficiently relevant
+article was available for the goal, that the amount spent is 0 USDC
+(`amountPaidAtomic: "0"`) out of the approved budget, and that no session,
+payment, or receipt was created. Do not treat this as a failure of the tool.
+
+Otherwise report only:
 
 - Any blocker requiring user action.
 - Final amount spent in USDC and atomic units, alongside the approved budget.

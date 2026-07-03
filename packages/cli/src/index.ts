@@ -101,11 +101,11 @@ async function dispatch(runtime: Runtime): Promise<void> {
     return;
   }
   if (command === "quickstart-read") {
-    printJson(await runQuickstartRead(runtime));
+    printJson(await runQuickstartRead(runtime, { onProgress: runtime.json ? (event) => printJsonEvent("progress", event) : undefined }));
     return;
   }
   if (command === "buy") {
-    printJson(await runBuy(runtime));
+    printJson(await runBuy(runtime, { onProgress: runtime.json ? (event) => printJsonEvent("progress", event) : undefined }));
     return;
   }
   if (command === "login") {
