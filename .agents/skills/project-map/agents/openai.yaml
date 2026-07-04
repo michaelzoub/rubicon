@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Map"
+  short_description: "Orient agents to the Rubicon repository"
+  default_prompt: "Use the project map before changing Rubicon code."

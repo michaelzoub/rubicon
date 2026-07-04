@@ -1,73 +1,195 @@
-# Rubicon — Pay-Per-Word Content for AI Agents
+# Rubicon
 
-Rubicon is the backend infrastructure for pay-per-word content consumption by AI
-agents. A **buyer agent** opens a budgeted reading session, authorizes a maximum
-USDC spend, and pays for the **exact words** it actually receives; a server-side
-**seller agent** represents the
-article, helps the buyer find the right section without leaking unpaid content,
-and controls the paid stream in budget-safe word bundles. The buyer can stop the instant
-it has enough information and pays for exactly the words it received.
+Rubicon is backend infrastructure for AI agents to buy creator articles with
+exact per-word USDC metering. A buyer agent opens a capped session, receives
+only the words it is authorized to read, and gets a receipt for the exact words
+delivered.
 
-Rubicon is still pay per word. The change is where payment work happens:
-CLI/API reads authorize bundled words by default, with explicit one-word mode
-available for debugging or strict metering. The gateway meters delivered words
-exactly, withholds content beyond the authorized budget, article/section bounds,
-or stop conditions, and records bundled payment receipts with per-word detail.
-Creators earn according to the exact number of words delivered.
+The seller agent helps the buyer find the right article section without leaking
+paid content. The gateway, not the seller agent, controls paid word release,
+budget enforcement, settlement, events, and receipts.
 
-## Packages
+## What is in this repo
 
-- `apps/gateway` — Fastify public agent API: article repository, seller agent,
-  word-level billing, persistence, and SSE events.
-- `packages/agent-sdk` — buyer-agent SDK with a high-level `read()` loop.
-- `packages/core` — shared protocol types, word-level pricing, session
-  primitives, and the API contract shared with rubicon-marketing.
-- `examples/agent-client` — a local buyer agent that reads an article.
+| Path | Purpose |
+| --- | --- |
+| `apps/gateway` | Fastify API for discovery, navigation, sessions, paid streaming, payment verification, persistence, and SSE events. |
+| `packages/core` | Shared protocol, API contracts, pricing, money, network, and session primitives. |
+| `packages/agent-sdk` | Buyer SDK that runs discovery, seller guidance, session creation, payment authorization, streaming, aborts, and receipts. |
+| `packages/cli` | `rubicon` terminal client built on the SDK, including autonomous `buy`, discovery, config, Circle readiness, and local receipts. |
+| `examples/agent-client` | Minimal local buyer-agent example. |
+| `docs` | Deeper protocol, CLI, architecture, and local testing notes. |
 
-Creator authentication, article CRUD, wallet settings, and the dashboard live in
-the separate Next.js app
-[rubicon-marketing](https://github.com/michaelzoub/rubicon-marketing). The
-gateway reads public article metadata from Supabase with the anon role and RLS;
-Rubicon does not implement a creator dashboard API.
+Creator auth, article CRUD, wallet settings, and dashboard UI live in the
+separate
+[rubicon-marketing](https://github.com/michaelzoub/rubicon-marketing) app. This
+repo reads public creator/article data and owns runtime sessions, payments,
+deliveries, receipts, and buyer-facing clients.
 
-## Gateway fee
+## Architecture
 
-The Rubicon gateway fee is **0 bps**. Creators receive the full per-word price,
-excluding only unavoidable external network/payment-provider costs.
+```mermaid
+flowchart LR
+  Buyer[Buyer agent or app]
+  CLI[packages/cli]
+  SDK[packages/agent-sdk]
+  Core[packages/core shared contracts]
+  Gateway[apps/gateway Fastify API]
+  Seller[Seller agent guidance]
+  Workflow[Paid-reading workflow]
+  Articles[(Supabase live articles or demo repository)]
+  Ledger[(Postgres ledger or in-memory ledger)]
+  Payments[Circle x402 / Arc or development verifier]
+  Wallet[Creator wallet]
 
-## Quick Start (development)
+  Buyer --> CLI
+  Buyer --> SDK
+  CLI --> SDK
+  SDK --> Core
+  SDK --> Gateway
+  Gateway --> Core
+  Gateway --> Seller
+  Gateway --> Workflow
+  Gateway --> Articles
+  Workflow --> Payments
+  Workflow --> Ledger
+  Payments --> Wallet
+```
 
-Development mode requires Supabase credentials for article reads. The payment
-path can still use the no-money payment shim:
+```mermaid
+sequenceDiagram
+  participant Buyer as Buyer agent
+  participant SDK as CLI / SDK
+  participant API as Gateway API
+  participant Seller as Seller agent
+  participant Workflow as Paid-reading workflow
+  participant Pay as Payment verifier
+  participant Ledger as Ledger
+
+  Buyer->>SDK: goal, article, budget cap
+  SDK->>API: GET /v1/repository or /v1/articles
+  alt buyer has a query or goal
+    SDK->>API: GET /v1/articles/:id/navigation?goal=...
+    API->>Seller: choose safe section hints
+    Seller-->>API: navigation without unpaid text
+    SDK->>API: optional seller conversation
+  else buyer already knows what to read
+    SDK->>API: skip guidance and use article/range
+  end
+  SDK->>API: POST /v1/sessions
+  API->>Workflow: create capped session
+  SDK->>API: POST /v1/sessions/:id/stream
+  Workflow->>Pay: verify bundled authorization
+  Pay-->>Workflow: approved amount/range
+  Workflow->>Ledger: record delivery and payment
+  Workflow-->>SDK: metered words or bundle
+  API-->>Buyer: receipt when stopped, completed, aborted, or budget-limited
+```
+
+## How reading works
+
+1. The buyer discovers articles through `GET /v1/repository` or
+   `GET /v1/articles`.
+2. If the buyer has a question or goal, it can ask navigation endpoints or the
+   seller conversation API for a safe section recommendation.
+3. The buyer opens `POST /v1/sessions` with a hard USDC cap.
+4. Paid articles return authorization terms. Free articles use the same session
+   surface with `accessMode: "free"` and need no payment authorization.
+5. The preferred delivery path is
+   `POST /v1/sessions/:sessionId/stream`, which authorizes and delivers bundled
+   words by default.
+6. The gateway meters exact words, records payment detail, emits SSE events at
+   `GET /v1/sessions/:sessionId/events`, and returns receipts.
+7. Buyers can stop early with a stop condition or
+   `POST /v1/sessions/:sessionId/abort`.
+
+The legacy `POST /v1/sessions/:sessionId/payments` route remains available for
+explicit one-word payment/debugging flows.
+
+## Gateway internals
+
+```mermaid
+flowchart TB
+  Routes[Fastify routes]
+  Auth[Optional bearer auth on /v1/*]
+  Repo[PublishedArticleRepository]
+  Seller[SellerAgent navigation and Q&A]
+  Session[SessionStore]
+  Workflow[PaidReadingWorkflow]
+  Verifier[PaymentVerifier]
+  Events[EventBus and SSE]
+  Ledger[LedgerRepository]
+
+  Routes --> Auth
+  Auth --> Repo
+  Auth --> Seller
+  Auth --> Session
+  Auth --> Workflow
+  Workflow --> Verifier
+  Workflow --> Ledger
+  Workflow --> Events
+  Routes --> Events
+```
+
+The gateway chooses its runtime adapters from environment variables:
+
+| Concern | Production path | Local/demo path |
+| --- | --- | --- |
+| Articles | Supabase public/live articles | `RUBICON_ARTICLES=demo` in-memory article |
+| Runtime data | `DATABASE_URL` Postgres ledger | In-memory ledger |
+| Payments | `RUBICON_PAYMENTS=circle` Circle x402 / Arc verifier | Development verifier |
+| Seller model | `OPENAI_API_KEY` OpenAI Responses API | Deterministic fallback seller agent |
+| API auth | `RUBICON_AGENT_API_KEY` bearer auth on `/v1/*` | unset for public local API |
+
+## API surface
+
+| Route | Purpose |
+| --- | --- |
+| `GET /health` | Public health check. |
+| `GET /v1/endpoints` | Endpoint discovery. |
+| `GET /v1/repository`, `GET /v1/articles` | List readable articles. |
+| `GET /v1/articles/:articleId/navigation` | Safe navigation hints for a buyer goal. |
+| `POST /v1/seller-agent/conversations` | Start seller-guided Q&A. |
+| `POST /v1/seller-agent/conversations/:conversationId/messages` | Continue seller-guided Q&A. |
+| `POST /v1/sessions` | Create a capped read session. |
+| `POST /v1/sessions/:sessionId/stream` | Preferred bundled payment and delivery route. |
+| `POST /v1/sessions/:sessionId/payments` | Legacy one-word payment route. |
+| `GET /v1/sessions/:sessionId/payments` | Inspect payment requirements. |
+| `GET /v1/sessions/:sessionId/events` | Observe typed server-sent events. |
+| `POST /v1/sessions/:sessionId/abort` | Stop a session and finalize usage. |
+
+## Quick start
+
+Install dependencies:
 
 ```bash
 pnpm install
-cp .env.example .env
-# Fill SUPABASE_URL and the anon/publishable Supabase key in .env or .env.local.
+```
+
+Run the no-money local demo:
+
+```bash
+RUBICON_ARTICLES=demo \
+RUBICON_PAYMENTS=development \
+RUBICON_AGENT_API_KEY= \
+DATABASE_URL= \
 pnpm dev:gateway
 ```
 
-In another terminal, run the buyer agent:
+In another terminal:
 
 ```bash
-pnpm dev:agent
+pnpm dev:cli -- buy --first --goal "find pricing" --max-usdc 0.10 --json
 ```
 
-Manual flow:
+For live article reads, set Supabase environment values instead of
+`RUBICON_ARTICLES=demo`:
 
 ```bash
-curl -s http://localhost:8787/v1/repository
-curl -s "http://localhost:8787/v1/articles/<live-article-id>/navigation?goal=how%20billing%20works"
-curl -s -X POST http://localhost:8787/v1/seller-agent/conversations \
-  -H "content-type: application/json" \
-  -d '{"articleId":"<live-article-id>","goal":"how billing works","message":"where do you explain pricing?"}'
+cp .env.example .env
+# Fill SUPABASE_URL and a Supabase service-role, anon, or publishable key.
+pnpm dev:gateway
 ```
-
-Open a session with `POST /v1/sessions`, authorize the session cap with Circle /
-Arc, then consume the stream until the buyer stops, the article ends, or the
-authorized budget is exhausted. The legacy `POST /v1/sessions/:id/payments`
-route remains the chunk fallback for environments that cannot yet hold a
-session-level authorization.
 
 ## Buyer SDK
 
@@ -83,23 +205,17 @@ const receipt = await rubicon.run({
   goal: "Find the resale-fee clause",
   maxSpendAtomic: "20000",
   stopWhen: ({ text, wordsRead }) => wordsRead > 50 || /resale fee/i.test(text),
-  onWord: (word) => {
-    process.stdout.write(`${word} `);
-  },
+  onWord: (word) => process.stdout.write(`${word} `),
 });
 
 console.log("\nreceipt:", receipt);
 ```
 
-The SDK runs the entire seller conversation → session authorization → metered
-word stream → final usage settlement loop until a stop condition is met, with
-budget enforcement, early stopping, abort, and a final receipt. Developers never
-drive a payment flow per word by hand.
+`RubiconClient.run()` handles the full loop: repository/navigation, optional
+seller guidance, session creation, payment authorization, bundled streaming,
+stop conditions, aborts, and a final receipt.
 
 ## CLI
-
-Terminal-native agents can use the Rubicon CLI instead of importing the SDK
-directly:
 
 ```bash
 pnpm --filter @rubicon-caliga/cli build
@@ -107,69 +223,81 @@ pnpm dev:cli -- buy --first --goal "find pricing" --max-usdc 0.10 --json
 pnpm dev:cli -- buy --first --goal "find pricing" --max-usdc 0.10 --granularity 10 --json
 ```
 
-The CLI is a thin wrapper around `@rubicon-caliga/agent-sdk`. Its primary `buy`
-command autonomously performs seller-guided section selection, cumulative
-budget enforcement, wallet readiness checks, strategic paid reads, and verified
-local receipt persistence. Buyers can select `--granularity word|10|section|article`
-to choose the payment/delivery unit. It also supports lower-level discovery and debugging
-commands and `~/.rubicon/config.json`. It does not implement
-creator dashboard functionality. See [docs/cli.md](./docs/cli.md).
+The CLI is a terminal-native wrapper around the SDK. It supports autonomous
+buying, lower-level repository/search/article commands, Circle wallet readiness,
+local config at `~/.rubicon/config.json`, and verified local receipts.
 
-## Production storage
+Buyers can choose `--granularity word|10|section|article`. Bundled reads emit
+`article.bundle` events by default; explicit word mode emits `article.word`.
 
-Set `SUPABASE_URL` and a Supabase key so the gateway can read `live` articles,
-creators, sections, and verified wallets. The gateway is a trusted server-side
-process, so it accepts `SUPABASE_SERVICE_ROLE_KEY` (preferred when set — it reads
-directly, bypassing RLS). An anon/publishable key
-(`SUPABASE_ANON_KEY` / `SUPABASE_PUBLISHABLE_KEY` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
-also works when RLS policies grant the anon role access to live articles. Set
-`DATABASE_URL` when you also want runtime sessions, word deliveries, payments,
-and earnings persisted in Postgres. Apply migrations:
+## Payments and receipts
+
+```mermaid
+flowchart LR
+  Cap[Buyer max USDC cap]
+  Terms[Gateway payment terms]
+  Auth[Circle x402 / Arc authorization]
+  Delivery[Authorized word bundle]
+  Meter[Exact per-word metering]
+  Receipt[Final receipt]
+  Creator[Creator payout wallet]
+
+  Cap --> Terms --> Auth --> Delivery --> Meter --> Receipt
+  Meter --> Creator
+```
+
+The gateway fee defaults to **0 bps**. Creators receive the full per-word price,
+excluding external network or payment-provider costs.
+
+For real Circle / Arc payments:
+
+1. Create and fund a Circle Agent Wallet.
+2. Set `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET`, `CIRCLE_AGENT_WALLET_ID`, and
+   `RUBICON_PAYMENTS=circle`.
+3. Ensure each live article resolves to a verified creator wallet.
+4. Set `CIRCLE_FACILITATOR_URL` for the target network.
+
+## Persistence and deployment
+
+Set `DATABASE_URL` to persist sessions, word deliveries, payments, earnings, and
+settlement receipts in Postgres:
 
 ```bash
 DATABASE_URL=postgres://... pnpm --filter @rubicon-caliga/gateway migrate
 ```
 
-Only articles with `state = live` are consumable by buyer agents.
+Without `DATABASE_URL`, runtime data is in memory and disappears on restart.
+Only articles with `state = live` are consumable by buyer agents in Supabase
+mode.
 
-## Real Circle / Arc payments
+The gateway binds `0.0.0.0:$PORT` or `0.0.0.0:$GATEWAY_PORT`. On Railway, keep
+the service target port aligned with `PORT` and prefer the Supabase connection
+pooler URL for `DATABASE_URL`.
 
-1. Create and fund a Circle Agent Wallet with the Circle Agent Stack.
-2. Set `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET`, `CIRCLE_AGENT_WALLET_ID`, and `RUBICON_PAYMENTS=circle`.
-3. Ensure each live article resolves to a verified creator wallet.
-4. Set `CIRCLE_FACILITATOR_URL` for the target network.
-
-The target path creates Circle / Arc-compatible bundled authorizations, streams
-only words covered by the remaining budget and selected article range, and
-records the final amount from actual words delivered. Explicit word mode remains
-available when a buyer needs one authorization per delivered word.
-
-## Railway deployment
-
-The gateway binds `0.0.0.0:$PORT` (`apps/gateway/src/index.ts`). Set `PORT=8080`
-and keep the Railway service's target port aligned to **8080** so the edge proxy
-and the app agree. A target-port mismatch returns
-`502 "Application failed to respond"` even when the container is healthy and
-listening. The app always honors `process.env.PORT` for the bind, so no
-application-code change is needed — only the env/target port must match.
-
-For runtime persistence on Railway, set `DATABASE_URL` to the Supabase connection
-pooler string, not the direct `db.<project-ref>.supabase.co:5432` string. The
-direct host is IPv6-only and commonly fails from Railway with `ENETUNREACH` on
-port 5432, which prevents sessions, word payments, and settlement receipts from
-being persisted. Use the Supabase Dashboard connection-pooling URL. If Node
-rejects the pooler certificate chain with `SELF_SIGNED_CERT_IN_CHAIN`, use
-`sslmode=no-verify` unless you also configure the Supabase CA certificate:
+## Development commands
 
 ```bash
-DATABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=no-verify
+pnpm build
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm dev:gateway
+pnpm dev:agent
+pnpm dev:cli
 ```
+
+Gateway and many SDK/core tests execute compiled `dist` output, so run
+`pnpm build` before `pnpm test` when validating code changes.
 
 ## Docs
 
 See [docs/architecture.md](./docs/architecture.md),
-[docs/cli.md](./docs/cli.md), and
-[docs/protocol.md](./docs/protocol.md). To test an unpublished SDK from another
-local agent project, use
+[docs/server-endpoint-architecture.md](./docs/server-endpoint-architecture.md),
+[docs/cli.md](./docs/cli.md), and [docs/protocol.md](./docs/protocol.md). To
+test an unpublished SDK from another local agent project, use
 [docs/local-agent-test.md](./docs/local-agent-test.md). For a public agent setup
 file, use [skill.md](./skill.md).
+
+If a change moves important routes, shared components, analytics, auth, imports,
+payments, APIs, database schema, SDK exports, or dashboard structure, update
+`.agents/skills/project-map/SKILL.md`.
