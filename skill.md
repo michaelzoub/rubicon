@@ -1,6 +1,6 @@
 ---
 name: rubicon
-version: 2.5.0
+version: 2.6.0
 description: Autonomously read relevant free or paid article content within a hard USDC budget
 homepage: https://github.com/michaelzoub/rubicon
 ---
@@ -47,10 +47,10 @@ skill installation flow.
 For an explicit user goal and approved budget, run exactly one purchase command:
 
 ```bash
-npx -y @rubicon-caliga/cli@0.1.13 buy --goal "<goal>" --max-usdc <amount> --json
+npx -y @rubicon-caliga/cli@0.1.14 buy --goal "<goal>" --max-usdc <amount> --json
 ```
 
-Known good version as of 2026-07-06: `@rubicon-caliga/cli@0.1.13` (Node 20+).
+Known good version as of 2026-07-06: `@rubicon-caliga/cli@0.1.14` (Node 20+).
 `--first` is accepted but no longer required. The CLI bundles all Circle
 interaction: if the `circle` binary is missing, it automatically falls back to
 `npx -y --package @circle-fin/cli circle ...`, so no separate Circle install
@@ -208,7 +208,7 @@ are separate), so a successful login is recognized on retry.
    login. For Arc Testnet articles (the default):
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.13 login <email> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.14 login <email> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`. The JSON result contains the
@@ -218,7 +218,7 @@ are separate), so a successful login is recognized on retry.
 4. Complete login yourself with the same profile:
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.13 login --request <request-id> --otp <code> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.14 login --request <request-id> --otp <code> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`.
@@ -231,10 +231,19 @@ expires, start a fresh request and ask for the new code. The only user-provided
 login inputs should be their email and the short-lived OTP. Never request
 private keys. For terms, run the required command yourself.
 
-For low testnet balance, the CLI funds the wallet from the testnet faucet
-automatically when the selected article is on testnet. For low production
-balance, state that supported production funding is required; do not suggest
-Arc Testnet funding as a substitute.
+For low testnet balance, the CLI first checks the wallet's existing usable
+funding — the Gateway-backed payment balance Rubicon actually spends from, not
+the Agent Wallet display balance, which can read zero while the Gateway payment
+path is funded — and calls the Arc Testnet faucet only when that usable balance
+cannot cover the pending payment. It does not faucet on every buy. If the faucet
+is rate limited (429), the CLI rechecks the usable balance: any positive usable
+balance still funds the read and the purchase continues, and only a wallet with
+no usable funds stops with a structured `FUNDING_RATE_LIMITED` error that spends
+zero, preserves the original `--max-usdc` cap in its retry command, and includes
+a retry-after recommendation. On `FUNDING_RATE_LIMITED`, wait the suggested
+interval, then re-run the identical buy command with the same goal and cap. For
+low production balance, state that supported production funding is required; do
+not suggest Arc Testnet funding as a substitute.
 
 ### Interrupted or ambiguous payment
 

@@ -342,15 +342,72 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
         configuredAddress: runtime.config.agentWalletAddress ?? envAddress("CIRCLE_AGENT_WALLET_ADDRESS"),
       });
       circleWalletAddress = wallet.address;
+      // Usable funding is the Gateway-backed payment balance Rubicon actually
+      // spends from, not the Agent Wallet display balance (which can read 0 even
+      // when the Gateway payment path is funded). Only the pending payment needs
+      // covering: the faucet exists to unblock a purchase, not to top the wallet
+      // up to the discretionary --max-usdc cap, so a wallet that already holds
+      // enough usable USDC for the imminent read never triggers a drip.
+      const requiredAtomic = cheapestMinimumCostAtomic;
       let balance = await circleGatewayBalance({ ...circleInput(runtime, deps), chain, address: wallet.address });
       balanceAtomic = balance.balanceAtomic;
-      if (BigInt(balance.balanceAtomic) < BigInt(maxSpendAtomic)) {
-        if (environment !== "testnet") {
-          throw new CliError("INSUFFICIENT_FUNDS", "Wallet balance is below the dry-run estimate. Refusing to suggest mainnet funding for this article.");
+      emit({
+        type: "funding.check",
+        source: "gateway_payment_balance",
+        chain,
+        balanceAtomic,
+        requiredAtomic: `${requiredAtomic}`,
+        sufficient: BigInt(balanceAtomic) >= requiredAtomic,
+      });
+      if (BigInt(balance.balanceAtomic) < requiredAtomic) {
+        if (!testnet) {
+          throw new CliError("INSUFFICIENT_FUNDS", "Wallet balance is below the pending payment. Refusing to suggest mainnet funding for this article.");
         }
-        await circleGatewayFaucet({ ...circleInput(runtime, deps), chain, address: wallet.address });
+        emit({ type: "funding.faucet.requested", chain, address: wallet.address, requiredAtomic: `${requiredAtomic}` });
+        let faucetError: unknown;
+        try {
+          await circleGatewayFaucet({ ...circleInput(runtime, deps), chain, address: wallet.address });
+        } catch (error) {
+          // A rate-limited faucet is not fatal on its own: the wallet may already
+          // hold enough usable Gateway funds from an earlier drip. Only a 429 is
+          // recoverable this way; other faucet failures still surface normally.
+          if (!isFaucetRateLimited(error)) throw error;
+          faucetError = error;
+          emit({ type: "funding.faucet.rate_limited", chain, retryAfterSeconds: faucetRetryAfterSeconds(error) });
+        }
+        // Recheck usable funding after the drip attempt (or after a 429) before
+        // deciding whether the pending payment can proceed.
         balance = await circleGatewayBalance({ ...circleInput(runtime, deps), chain, address: wallet.address });
         balanceAtomic = balance.balanceAtomic;
+        emit({
+          type: "funding.check",
+          source: "gateway_payment_balance",
+          chain,
+          balanceAtomic,
+          requiredAtomic: `${requiredAtomic}`,
+          sufficient: BigInt(balanceAtomic) >= requiredAtomic,
+          afterFaucet: true,
+        });
+        // A rate-limited faucet only blocks the purchase when the wallet has no
+        // usable funds at all. Any positive Gateway balance is worth spending —
+        // the per-section budget loop clamps each read to what remains — so a
+        // 429 with money already in the wallet must not abort the buy.
+        if (faucetError && BigInt(balance.balanceAtomic) <= 0n) {
+          const retryAfterSeconds = faucetRetryAfterSeconds(faucetError);
+          throw new CliError(
+            "FUNDING_RATE_LIMITED",
+            `The Arc Testnet faucet is rate limited and the wallet has no usable Gateway payment balance (${formatAtomic(balanceAtomic)} USDC) to cover the pending payment of ${formatAtomic(`${requiredAtomic}`)} USDC. No payment or session was created and 0 USDC of the approved ${approvedBudgetUsdc} USDC budget was spent. Retry after about ${retryAfterSeconds}s once the faucet cooldown clears.`,
+            1,
+            `rubicon buy --goal "${goal}" --max-usdc ${approvedBudgetUsdc} --json`,
+            {
+              chain,
+              requiredAtomic: `${requiredAtomic}`,
+              balanceAtomic,
+              retryAfterSeconds,
+              approvedBudgetUsdc,
+            },
+          );
+        }
       }
     } catch (error) {
       if (error instanceof CliError) throw error;
@@ -763,4 +820,29 @@ function envAddress(name: string): `0x${string}` | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Fallback faucet cooldown when the 429 response carries no explicit hint. */
+const DEFAULT_FAUCET_RETRY_AFTER_SECONDS = 60;
+
+function faucetErrorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const record = typeof error === "object" && error !== null ? (error as Record<string, unknown>) : undefined;
+  const stdout = typeof record?.stdout === "string" ? record.stdout : "";
+  const stderr = typeof record?.stderr === "string" ? record.stderr : "";
+  return [message, stdout, stderr].filter(Boolean).join("\n");
+}
+
+/** True when a faucet failure is a rate limit (HTTP 429) rather than a hard error. */
+function isFaucetRateLimited(error: unknown): boolean {
+  const text = faucetErrorText(error).toLowerCase();
+  return text.includes("429") || text.includes("rate limit") || text.includes("too many requests");
+}
+
+/** Best-effort retry-after recommendation parsed from the faucet error, in seconds. */
+function faucetRetryAfterSeconds(error: unknown): number {
+  const text = faucetErrorText(error);
+  const match = text.match(/retry[- ]?after[^0-9]{0,8}(\d+)/i) ?? text.match(/(\d+)\s*(?:s|sec|secs|seconds)\b/i);
+  const parsed = match ? Number.parseInt(match[1]!, 10) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_FAUCET_RETRY_AFTER_SECONDS;
 }

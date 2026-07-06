@@ -477,3 +477,122 @@ function setup(assessments: SellerSectionAssessment[], options: { price?: `${big
 function receipt(sectionId: string, words: number, amount: `${bigint}`, index: number): ReadReceipt {
   return { sessionId: `session_${index}`, articleId: "article_1", conversationId: "conversation_1", wordsRead: words, amountPaidAtomic: amount, payments: [], transactionHashes: [], settlementIds: [], text: `${sectionId} purchased content`, completed: words >= 10, stopReason: words >= 10 ? "article_completed" : "max_words" };
 }
+
+// --- Conditional testnet funding regression tests -------------------------
+//
+// The buyer must fund from the testnet faucet only when the usable Gateway
+// payment balance cannot cover the pending payment, never on every buy, and it
+// must survive a rate-limited (429) faucet whenever the wallet already holds
+// usable funds.
+
+const BUYER_WALLET = "0xb161c2306a4f58ca41c4c0b10544d953c8af26b7";
+
+const FAUCET_429 = Object.assign(new Error("Faucet drip failed (429): API rate limit error"), { code: 1 });
+
+function fundingRunner(options: { balances: `${bigint}`[]; onFaucet?: () => void }) {
+  const calls: Array<{ command: string; args: string[] }> = [];
+  let balanceIndex = 0;
+  const runner = async (command: string, args: string[]): Promise<string> => {
+    calls.push({ command, args });
+    if (args[0] === "wallet" && args[1] === "status") return JSON.stringify({ status: "active", loggedIn: true });
+    if (args[0] === "wallet" && args[1] === "list") return JSON.stringify({ wallets: [{ address: BUYER_WALLET }] });
+    if (args[0] === "gateway" && args[1] === "balance") {
+      const value = options.balances[Math.min(balanceIndex, options.balances.length - 1)]!;
+      balanceIndex += 1;
+      return JSON.stringify({ data: { balanceAtomic: value } });
+    }
+    if (args[0] === "wallet" && args[1] === "fund") {
+      options.onFaucet?.();
+      return JSON.stringify({ ok: true, funded: true });
+    }
+    return JSON.stringify({ ok: true });
+  };
+  const faucetCalls = () => calls.filter((call) => call.args[0] === "wallet" && call.args[1] === "fund").length;
+  return { runner, calls, faucetCalls };
+}
+
+function testnetArticle(options: { minimumUsefulWords?: number } = {}): ArticleSummary {
+  return {
+    articleId: "article_1", creatorId: "creator_1", creatorUsername: "creator", title: "Useful Field Guide", author: "Ada", state: "live", accessMode: "paid",
+    totalWords: 30, pricePerWordAtomic: "1", maxArticlePriceAtomic: "30",
+    paymentTerms: {
+      asset: "USDC", network: "eip155:5042002", networkLabel: "Arc Testnet", circleChain: "ARC-TESTNET", environment: "testnet",
+      payTo: "0x0000000000000000000000000000000000000001", pricePerWordAtomic: "1", meteringUnit: "word",
+    },
+    sections: [
+      { sectionId: "intro", heading: "Introduction", level: 1, wordStart: 0, wordCount: 10 },
+      { sectionId: "practical", heading: "Practical details", level: 1, wordStart: 10, wordCount: 10 },
+      { sectionId: "counterarguments", heading: "Counterarguments", level: 1, wordStart: 20, wordCount: 10 },
+    ],
+  };
+}
+
+function fundingFixture(minimumUsefulWords = 1) {
+  return setup([assessment("practical", 0.9, minimumUsefulWords)], {
+    article: testnetArticle(),
+    paymentMode: "circle-cli",
+    goal: "practical answer",
+  });
+}
+
+test("funding: an existing sufficient Gateway balance never triggers a faucet drip", async () => {
+  const fixture = fundingFixture();
+  const circle = fundingRunner({ balances: ["1000000"] });
+  const result = await runBuy(fixture.runtime, { circleRunner: circle.runner });
+  assert.equal(circle.faucetCalls(), 0);
+  assert.equal(fixture.runs.length, 1);
+  assert.ok(BigInt((result.result as { amountPaidAtomic: string }).amountPaidAtomic) > 0n);
+});
+
+test("funding: an insufficient balance triggers exactly one faucet call, then the buy proceeds", async () => {
+  const fixture = fundingFixture();
+  const circle = fundingRunner({ balances: ["0", "1000000"] });
+  const result = await runBuy(fixture.runtime, { circleRunner: circle.runner });
+  assert.equal(circle.faucetCalls(), 1);
+  assert.equal(fixture.runs.length, 1);
+  assert.ok(BigInt((result.result as { amountPaidAtomic: string }).amountPaidAtomic) > 0n);
+});
+
+test("funding: a faucet 429 with any positive usable balance still lets the spend happen", async () => {
+  // Pending payment needs 5 atomic, but the wallet only holds 2 after the 429.
+  // Per the buyer contract, a rate-limited faucet must not abort a purchase the
+  // wallet can partially fund — the budget loop clamps each read to what remains.
+  const fixture = fundingFixture(5);
+  const circle = fundingRunner({ balances: ["0", "2"], onFaucet: () => { throw FAUCET_429; } });
+  const result = await runBuy(fixture.runtime, { circleRunner: circle.runner });
+  assert.equal(circle.faucetCalls(), 1);
+  assert.equal(fixture.runs.length, 1);
+  assert.ok(BigInt((result.result as { amountPaidAtomic: string }).amountPaidAtomic) > 0n);
+  const events = result.events as Array<{ type: string }>;
+  assert.ok(events.some((event) => event.type === "funding.faucet.rate_limited"));
+});
+
+test("funding: a faucet 429 with no usable balance returns FUNDING_RATE_LIMITED with zero spend", async () => {
+  const fixture = fundingFixture();
+  const circle = fundingRunner({ balances: ["0", "0"], onFaucet: () => { throw FAUCET_429; } });
+  const failure = await runBuy(fixture.runtime, { circleRunner: circle.runner }).then(
+    () => assert.fail("expected FUNDING_RATE_LIMITED"),
+    (error) => error as CliError,
+  );
+  assert.ok(failure instanceof CliError);
+  assert.equal(failure.code, "FUNDING_RATE_LIMITED");
+  const details = failure.details as { retryAfterSeconds: number; approvedBudgetUsdc: string };
+  assert.ok(details.retryAfterSeconds > 0);
+  // The original cumulative cap is preserved in the recovery command.
+  assert.match(String(failure.recovery), /--max-usdc/);
+  assert.equal(circle.faucetCalls(), 1);
+  // Zero spend: no session and no receipt were created.
+  assert.equal(fixture.runs.length, 0);
+  assert.deepEqual(await listReceipts(), []);
+});
+
+test("funding: a valid Circle login is never treated as a login-recovery condition", async () => {
+  const fixture = fundingFixture();
+  const circle = fundingRunner({ balances: ["1000000"] });
+  const progress: Array<Record<string, unknown>> = [];
+  const result = await runBuy(fixture.runtime, { circleRunner: circle.runner, onProgress: (event) => progress.push(event) });
+  // The buy completes; nothing reclassified the valid session as NOT_LOGGED_IN.
+  assert.ok(BigInt((result.result as { amountPaidAtomic: string }).amountPaidAtomic) > 0n);
+  assert.ok(circle.calls.some((call) => call.args[0] === "wallet" && call.args[1] === "status"));
+  assert.ok(!progress.some((event) => String(event.type).includes("not_logged_in")));
+});
