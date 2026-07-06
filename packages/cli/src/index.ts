@@ -67,6 +67,7 @@ async function main(): Promise<void> {
       baseUrl: gatewayUrl,
       authorization: apiKey ? `Bearer ${apiKey}` : undefined,
       paymentEngine: payment.engine,
+      requestTimeoutMs: requestTimeoutMs(),
     });
     await dispatch({ parsed, json, config, gatewayUrl, apiKey, paymentMode: payment.mode, circleChain: payment.circleChain, client });
   } catch (error) {
@@ -546,6 +547,18 @@ async function findArticle(runtime: Runtime, articleId: string | undefined): Pro
   const article = repository.articles.find((candidate) => candidate.articleId === articleId);
   if (!article) throw new CliError("ARTICLE_NOT_FOUND", `Article not found: ${articleId}`);
   return article;
+}
+
+// A stalled gateway response must not hang the CLI indefinitely: an external
+// supervisor that kills a hung process emits no JSON and leaves the caller
+// with no evidence of whether a payment settled. Let operators tune the ceiling
+// via env var; the SDK applies its own 60s default when this is unset.
+function requestTimeoutMs(): number | undefined {
+  const raw = process.env.RUBICON_REQUEST_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return parsed;
 }
 
 function parseBudget(parsed: ParsedArgs): `${bigint}` {

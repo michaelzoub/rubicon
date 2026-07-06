@@ -1,6 +1,6 @@
 {
   "name": "@rubicon-caliga/cli",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Terminal-native Rubicon CLI for buyer agents consuming pay-per-word articles.",
   "license": "MIT",
   "engines": {

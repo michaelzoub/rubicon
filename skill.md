@@ -1,6 +1,6 @@
 ---
 name: rubicon
-version: 2.4.0
+version: 2.5.0
 description: Autonomously read relevant free or paid article content within a hard USDC budget
 homepage: https://github.com/michaelzoub/rubicon
 ---
@@ -47,10 +47,10 @@ skill installation flow.
 For an explicit user goal and approved budget, run exactly one purchase command:
 
 ```bash
-npx -y @rubicon-caliga/cli@0.1.12 buy --goal "<goal>" --max-usdc <amount> --json
+npx -y @rubicon-caliga/cli@0.1.13 buy --goal "<goal>" --max-usdc <amount> --json
 ```
 
-Known good version as of 2026-07-03: `@rubicon-caliga/cli@0.1.12` (Node 20+).
+Known good version as of 2026-07-06: `@rubicon-caliga/cli@0.1.13` (Node 20+).
 `--first` is accepted but no longer required. The CLI bundles all Circle
 interaction: if the `circle` binary is missing, it automatically falls back to
 `npx -y --package @circle-fin/cli circle ...`, so no separate Circle install
@@ -208,7 +208,7 @@ are separate), so a successful login is recognized on retry.
    login. For Arc Testnet articles (the default):
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.12 login <email> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.13 login <email> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`. The JSON result contains the
@@ -218,7 +218,7 @@ are separate), so a successful login is recognized on retry.
 4. Complete login yourself with the same profile:
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.12 login --request <request-id> --otp <code> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.13 login --request <request-id> --otp <code> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`.
@@ -235,6 +235,25 @@ For low testnet balance, the CLI funds the wallet from the testnet faucet
 automatically when the selected article is on testnet. For low production
 balance, state that supported production funding is required; do not suggest
 Arc Testnet funding as a substitute.
+
+### Interrupted or ambiguous payment
+
+If a paid read is interrupted before the gateway returns a completion receipt —
+a stalled or timed-out gateway response, or the process being cancelled after a
+payment started — the CLI stops with error code `PAYMENT_AMBIGUOUS` rather than
+reporting a misleading zero-spend success. The payment may or may not have
+settled. Gateway calls carry a request timeout (default 60s, override with
+`RUBICON_REQUEST_TIMEOUT_MS`) so a stalled response surfaces as this error
+instead of hanging indefinitely.
+
+Recovery is the exact `error.recovery`: re-run the identical `rubicon buy`
+command with the same goal and the same `--max-usdc` cap. This is safe and is
+the correct next step, not a reason to give up. Each purchase is tracked by a
+stable operation id (`error.details.operationId`), so a payment that already
+settled is detected and reused instead of being paid twice, and the original
+cumulative cap still applies across the retry. Do not raise, split, or reset the
+budget, and do not start a fresh command with a reworded goal. Report a blocker
+only if the identical re-run also returns `PAYMENT_AMBIGUOUS`.
 
 ## Final Report
 

@@ -509,6 +509,39 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
         { operationId, articleId: article.articleId, sectionId: plan.sectionId, sessionCapAtomic: `${sessionCap}`, budgetAtomic: maxSpendAtomic },
       );
     }
+    if (receipt.stopReason === "aborted") {
+      // A mid-stream network failure resolves read() with an "aborted" receipt
+      // instead of rejecting, so the catch above never fires. For a paid read
+      // the gateway may still have settled a chunk it never returned, so this is
+      // ambiguous, not a completed purchase: record it and surface it like any
+      // other ambiguous payment so the caller gets machine-readable JSON and an
+      // idempotent retry path rather than a misleading zero-spend "success".
+      await saveOperation({
+        ...operationRecord,
+        status: "ambiguous",
+        lastError: redactSecrets(`read aborted before the gateway returned a completion receipt (stopReason=aborted, wordsRead=${receipt.wordsRead}, amountPaidAtomic=${receipt.amountPaidAtomic})`),
+        updatedAt: new Date().toISOString(),
+      });
+      throw new CliError(
+        isFree ? "FREE_READ_FAILED" : "PAYMENT_AMBIGUOUS",
+        isFree
+          ? `Free read for section "${plan.sectionId}" of ${article.articleId} aborted before delivery completed.`
+          : `Payment for section "${plan.sectionId}" of ${article.articleId} aborted before the gateway confirmed a completion receipt (${receipt.wordsRead} words, ${formatAtomic(receipt.amountPaidAtomic)} USDC observed). The payment may or may not have settled.`,
+        1,
+        isFree
+          ? "Re-run the identical rubicon buy command. Free delivery is idempotent and does not enter settlement."
+          : "Re-run the identical rubicon buy command. The operation id is stable, so a payment that already completed is detected and reused instead of being paid twice, and the original cumulative budget cap still applies.",
+        {
+          operationId,
+          articleId: article.articleId,
+          sectionId: plan.sectionId,
+          sessionCapAtomic: `${sessionCap}`,
+          budgetAtomic: maxSpendAtomic,
+          observedAmountPaidAtomic: receipt.amountPaidAtomic,
+          observedWordsRead: receipt.wordsRead,
+        },
+      );
+    }
     emit({ type: isFree ? "free_read.completed" : "payment.completed", articleId: article.articleId, sectionId: plan.sectionId, sessionId: receipt.sessionId, amountPaidAtomic: receipt.amountPaidAtomic, operationId });
     if (BigInt(receipt.amountPaidAtomic) > sessionCap || spent + BigInt(receipt.amountPaidAtomic) > BigInt(maxSpendAtomic)) {
       throw new CliError("BUDGET_INVARIANT", "Receipt exceeds the approved cumulative budget.");

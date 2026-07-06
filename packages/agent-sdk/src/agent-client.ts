@@ -21,7 +21,16 @@ export interface RubiconClientOptions {
   /** Optional auth header value for the public agent API, e.g. "Bearer <token>". */
   authorization?: string;
   fetch?: typeof fetch;
+  /**
+   * Per-request timeout in milliseconds for gateway calls. A stalled response
+   * (including a payment POST whose body never completes) rejects instead of
+   * hanging the process indefinitely. Set to 0 to disable. Defaults to 60s.
+   */
+  requestTimeoutMs?: number;
 }
+
+/** Default per-request gateway timeout. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 export interface RepositoryResponse {
   repository: "articles";
@@ -138,15 +147,33 @@ export class RubiconClient {
   private readonly fetcher: typeof fetch;
   private readonly baseUrl: string;
   private readonly paymentEngine: AgentPaymentEngine;
+  private readonly requestTimeoutMs: number;
 
   constructor(private readonly options: RubiconClientOptions) {
     this.fetcher = options.fetch ?? fetch;
     this.baseUrl = options.baseUrl ?? HOSTED_GATEWAY_URL;
     this.paymentEngine = options.paymentEngine ?? new StaticPaymentEngine();
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+
+  /**
+   * Attach a request timeout so a stalled gateway response — notably a payment
+   * POST whose body never completes — rejects instead of hanging forever. The
+   * rejection lets callers record an ambiguous-payment state rather than being
+   * killed silently by an external supervisor after money may have moved.
+   */
+  private timeoutInit(init: RequestInit = {}): RequestInit {
+    if (!Number.isFinite(this.requestTimeoutMs) || this.requestTimeoutMs <= 0) return init;
+    const timeoutSignal = AbortSignal.timeout(this.requestTimeoutMs);
+    const signal =
+      init.signal && typeof AbortSignal.any === "function"
+        ? AbortSignal.any([init.signal, timeoutSignal])
+        : init.signal ?? timeoutSignal;
+    return { ...init, signal };
   }
 
   async getRepository(): Promise<RepositoryResponse> {
-    return this.readJson(await this.fetcher(`${this.baseUrl}/v1/repository`, { headers: this.headers() }));
+    return this.readJson(await this.fetcher(`${this.baseUrl}/v1/repository`, this.timeoutInit({ headers: this.headers() })));
   }
 
   async getNavigation(articleId: string, goal?: string): Promise<NavigationResponse> {
@@ -154,7 +181,7 @@ export class RubiconClient {
     if (goal) {
       url.searchParams.set("goal", goal);
     }
-    return this.readJson(await this.fetcher(url.toString(), { headers: this.headers() }));
+    return this.readJson(await this.fetcher(url.toString(), this.timeoutInit({ headers: this.headers() })));
   }
 
   async startConversation(input: {
@@ -163,11 +190,11 @@ export class RubiconClient {
     message?: string;
   }): Promise<StartConversationResponse> {
     return this.readJson(
-      await this.fetcher(`${this.baseUrl}/v1/seller-agent/conversations`, {
+      await this.fetcher(`${this.baseUrl}/v1/seller-agent/conversations`, this.timeoutInit({
         method: "POST",
         headers: this.headers({ "content-type": "application/json" }),
         body: JSON.stringify(input),
-      }),
+      })),
     );
   }
 
@@ -178,31 +205,31 @@ export class RubiconClient {
     return this.readJson(
       await this.fetcher(
         `${this.baseUrl}/v1/seller-agent/conversations/${conversationId}/messages`,
-        {
+        this.timeoutInit({
           method: "POST",
           headers: this.headers({ "content-type": "application/json" }),
           body: JSON.stringify({ message }),
-        },
+        }),
       ),
     );
   }
 
   async startSession(request: StartSessionRequest): Promise<StartSessionResponse> {
     return this.readJson(
-      await this.fetcher(`${this.baseUrl}/v1/sessions`, {
+      await this.fetcher(`${this.baseUrl}/v1/sessions`, this.timeoutInit({
         method: "POST",
         headers: this.headers({ "content-type": "application/json" }),
         body: JSON.stringify(request),
-      }),
+      })),
     );
   }
 
   async payForWord(sessionId: string, payment: Partial<StreamPaymentRequest> = {}): Promise<StreamPaymentResponse> {
-    const response = await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/payments`, {
+    const response = await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/payments`, this.timeoutInit({
       method: "POST",
       headers: this.headers({ "content-type": "application/json" }),
       body: JSON.stringify(payment),
-    });
+    }));
     if (!response.ok) {
       throw new Error(`Word payment rejected: ${response.status} ${await response.text()}`);
     }
@@ -210,11 +237,11 @@ export class RubiconClient {
   }
 
   async streamChunk(sessionId: string, payment: Partial<StreamPaymentRequest> = {}): Promise<StreamChunkResponse> {
-    const response = await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/stream`, {
+    const response = await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/stream`, this.timeoutInit({
       method: "POST",
       headers: this.headers({ "content-type": "application/json" }),
       body: JSON.stringify(payment),
-    });
+    }));
     if (!response.ok) {
       throw new Error(`Chunk stream rejected: ${response.status} ${await response.text()}`);
     }
@@ -222,11 +249,11 @@ export class RubiconClient {
   }
 
   async abort(sessionId: string, reason = "agent_cancelled"): Promise<void> {
-    await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/abort`, {
+    await this.fetcher(`${this.baseUrl}/v1/sessions/${sessionId}/abort`, this.timeoutInit({
       method: "POST",
       headers: this.headers({ "content-type": "application/json" }),
       body: JSON.stringify({ reason }),
-    });
+    }));
   }
 
   /** Subscribe to raw word-level server-sent events for observation/logging. */

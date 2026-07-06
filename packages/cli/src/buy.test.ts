@@ -237,6 +237,33 @@ test("buy retries safely after an ambiguous payment failure without duplicate pa
   assert.equal((await listReceipts()).length, 1);
 });
 
+test("buy treats a resolved-but-aborted read as an ambiguous payment instead of a zero-spend success", async () => {
+  const fixture = setup([assessment("practical", 0.9, 1)]);
+  const client = fixture.runtime.client as unknown as { run: (input: RunOptions) => Promise<ReadReceipt> };
+  client.run = async (input: RunOptions) => {
+    fixture.runs.push(input);
+    // A mid-stream network failure inside read() resolves with an "aborted"
+    // receipt (empty text, zero paid) rather than rejecting.
+    return {
+      sessionId: "session_aborted", articleId: "article_1", conversationId: "conversation_1",
+      wordsRead: 0, amountPaidAtomic: "0", payments: [], transactionHashes: [], settlementIds: [],
+      text: "", completed: false, stopReason: "aborted",
+    };
+  };
+
+  const failure = await runBuy(fixture.runtime).then(
+    () => assert.fail("expected PAYMENT_AMBIGUOUS"),
+    (error) => error as CliError,
+  );
+  assert.ok(failure instanceof CliError);
+  assert.equal(failure.code, "PAYMENT_AMBIGUOUS");
+  const operationId = (failure.details as { operationId: string }).operationId;
+  assert.ok(operationId.startsWith("op_"));
+  assert.equal((await loadOperation(operationId))?.status, "ambiguous");
+  // No misleading success receipt is persisted for an ambiguous payment.
+  assert.deepEqual(await listReceipts(), []);
+});
+
 test("buy reports wallet setup failures before payment", async () => {
   const fixture = setup([assessment("practical", 0.9, 1)], { paymentMode: "circle-cli" });
   await assert.rejects(

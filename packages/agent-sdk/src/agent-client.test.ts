@@ -163,6 +163,53 @@ test("run can consume chunk stream while preserving per-word receipt fields", as
   assert.deepEqual(receipt.settlementIds, ["settlement_chunk"]);
 });
 
+test("a stalled gateway payment response aborts via the request timeout instead of hanging", async () => {
+  let paymentAttempts = 0;
+  const fetcher = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const url = String(input);
+    if (url.endsWith("/v1/sessions")) {
+      return jsonResponse({
+        sessionId: "session_1",
+        state: "active",
+        article: article(),
+        navigation: navigation(),
+        pricePerWordAtomic: "1",
+        maxArticlePriceAtomic: "10",
+        conversationId: "conversation_1",
+        wordPaymentAtomic: "1",
+        gatewayFeeBps: 0,
+        paymentRequired: { scheme: "exact" },
+        expiresAt: "2026-06-18T12:00:00.000Z",
+        wordsPaid: 0,
+        wordsDelivered: 0,
+        paidAtomic: "0",
+      });
+    }
+    if (url.endsWith("/v1/sessions/session_1/payments")) {
+      paymentAttempts += 1;
+      // The client must attach a timeout AbortSignal so a stalled gateway body
+      // cannot hang forever. Reject with the same TimeoutError undici raises
+      // when that signal fires, deterministically (no wall-clock dependence).
+      assert.ok(init?.signal instanceof AbortSignal, "expected a request timeout signal on the payment request");
+      return Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  const client = new RubiconClient({
+    baseUrl: "http://rubicon.test",
+    paymentEngine,
+    fetch: fetcher,
+    requestTimeoutMs: 25,
+  });
+
+  const receipt = await client.run({ articleId: "article_1", maxSpendAtomic: "10" });
+  assert.equal(paymentAttempts, 1);
+  assert.equal(receipt.stopReason, "aborted");
+  assert.equal(receipt.wordsRead, 0);
+  assert.equal(receipt.amountPaidAtomic, "0");
+});
+
 test("free run accepts a zero cap, skips the payment engine, and returns an exact zero-spend receipt", async () => {
   let paymentCalls = 0;
   const rejectingPaymentEngine: AgentPaymentEngine = {
