@@ -1,6 +1,6 @@
 {
   "name": "@rubicon-caliga/cli",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Terminal-native Rubicon CLI for buyer agents consuming pay-per-word articles.",
   "license": "MIT",
   "engines": {
@@ -35,7 +35,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
-    "lint": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
     "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm run build"

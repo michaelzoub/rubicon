@@ -1,0 +1,10 @@
+dist
+node_modules
+coverage
+pnpm-lock.yaml
+*.tsbuildinfo
+polygres-test-app
+examples
+plans
+.agents
+.claude

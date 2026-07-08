@@ -350,18 +350,38 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
       // enough usable USDC for the imminent read never triggers a drip.
       const requiredAtomic = cheapestMinimumCostAtomic;
       let balance = await circleGatewayBalance({ ...circleInput(runtime, deps), chain, address: wallet.address });
+      assertGatewayProfileMatch(wallet.address, balance.reportedAddress);
       balanceAtomic = balance.balanceAtomic;
       emit({
         type: "funding.check",
         source: "gateway_payment_balance",
         chain,
+        address: wallet.address,
+        backingEOA: balance.backingEOA,
         balanceAtomic,
         requiredAtomic: `${requiredAtomic}`,
         sufficient: BigInt(balanceAtomic) >= requiredAtomic,
       });
       if (BigInt(balance.balanceAtomic) < requiredAtomic) {
         if (!testnet) {
-          throw new CliError("INSUFFICIENT_FUNDS", "Wallet balance is below the pending payment. Refusing to suggest mainnet funding for this article.");
+          // Funds may sit in the ordinary wallet without being deposited into
+          // Circle Gateway, which is what the payment path actually spends from.
+          // Surface a precise deposit-required recovery instead of a generic
+          // insufficient-funds error, and never auto-move mainnet funds.
+          throw new CliError(
+            "GATEWAY_DEPOSIT_REQUIRED",
+            `The Circle Gateway payment balance for ${wallet.address} on ${chain} is ${formatAtomic(balanceAtomic)} USDC, below the pending payment of ${formatAtomic(`${requiredAtomic}`)} USDC. Any USDC held in the wallet must be deposited into Circle Gateway before it can fund this read. No payment or session was created and 0 USDC of the approved ${approvedBudgetUsdc} USDC budget was spent.`,
+            1,
+            `circle gateway deposit --address ${wallet.address} --chain ${chain} --amount <usdc> --output json`,
+            {
+              chain,
+              address: wallet.address,
+              backingEOA: balance.backingEOA,
+              requiredAtomic: `${requiredAtomic}`,
+              balanceAtomic,
+              approvedBudgetUsdc,
+            },
+          );
         }
         emit({ type: "funding.faucet.requested", chain, address: wallet.address, requiredAtomic: `${requiredAtomic}` });
         let faucetError: unknown;
@@ -811,6 +831,22 @@ function circleInput(_runtime: CommandRuntime, deps: CommandDeps): { command?: s
 
 function isTestnetChain(chain: string): boolean {
   return /testnet/i.test(chain);
+}
+
+// The Gateway balance must describe the same depositor Rubicon is about to sign
+// with. A response scoped to a different address means the balance query ran
+// under a different Circle profile/auth context than the wallet resolution, so
+// the reported funds cannot be trusted for this purchase.
+function assertGatewayProfileMatch(walletAddress: `0x${string}`, reportedAddress?: `0x${string}`): void {
+  if (!reportedAddress) return;
+  if (reportedAddress.toLowerCase() === walletAddress.toLowerCase()) return;
+  throw new CliError(
+    "GATEWAY_PROFILE_MISMATCH",
+    `Circle reported a Gateway balance for ${reportedAddress}, but Rubicon resolved Agent Wallet ${walletAddress}. This usually means the balance query ran under a different Circle profile or authentication context than the signing wallet. Confirm a single logged-in Circle profile and rerun.`,
+    1,
+    undefined,
+    { walletAddress, reportedAddress },
+  );
 }
 
 function envAddress(name: string): `0x${string}` | undefined {

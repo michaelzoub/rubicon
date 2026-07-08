@@ -28,8 +28,26 @@ export interface CircleWalletInfo {
 export interface CircleBalanceInfo {
   balanceAtomic: `${bigint}`;
   backingEOA?: `0x${string}`;
+  /** Address Circle reported the balance for; used to detect a profile/wallet mismatch. */
+  reportedAddress?: `0x${string}`;
   raw?: unknown;
 }
+
+/**
+ * Maps a Circle CLI `--chain` value to the identifiers the Gateway balance
+ * response uses inside its per-network `balances[]` array (`network` label and
+ * CCTP `domain`). Circle Gateway reports a cross-chain `total` plus one entry
+ * per funded domain; spending settles on a specific domain, so the depositor's
+ * balance on the requested chain is the authoritative figure.
+ */
+interface GatewayChainDescriptor {
+  networkLabels: string[];
+  domain?: number;
+}
+
+const GATEWAY_CHAIN_DESCRIPTORS: Record<string, GatewayChainDescriptor> = {
+  "arc-testnet": { networkLabels: ["arc testnet", "arc-testnet"], domain: 26 },
+};
 
 export const CIRCLE_NPX_PACKAGE = "@circle-fin/cli";
 
@@ -322,8 +340,9 @@ export async function circleGatewayBalance(input: {
   const output = await invokeRunner(runner, command, ["gateway", "balance", "--address", input.address, "--chain", input.chain, "--output", "json"]);
   const raw = parseMaybeJson(output);
   return {
-    balanceAtomic: parseBalanceAtomic(raw),
+    balanceAtomic: parseBalanceAtomic(raw, input.chain),
     backingEOA: parseBackingEOA(raw),
+    reportedAddress: parseReportedAddress(raw),
     raw,
   };
 }
@@ -362,25 +381,71 @@ function parseWalletAddress(value: unknown): `0x${string}` {
   throw new Error("Multiple Circle Agent Wallets found; configure agent-wallet-address.");
 }
 
-function parseBalanceAtomic(value: unknown): `${bigint}` {
-  const direct =
-    findString(value, [
-      "data.balanceAtomic",
-      "data.availableAtomic",
-      "data.usdc.balanceAtomic",
-      "balanceAtomic",
-      "availableAtomic",
-      "usdc.balanceAtomic",
-    ]) ?? findNumber(value, ["data.balance", "data.available", "balance", "available"]);
-  if (typeof direct === "number") return `${BigInt(Math.trunc(direct * 1_000_000))}`;
-  if (direct && /^\d+$/.test(direct)) return direct as `${bigint}`;
-  if (direct && /^\d+(\.\d+)?$/.test(direct)) return `${decimalUsdcToAtomic(direct)}`;
+// Resolves the usable Gateway USDC balance to 6-decimal atomic units across the
+// shapes Circle CLI has emitted. Order matters: a chain-scoped decimal balance
+// is the amount actually spendable on the requested domain, so it wins over the
+// cross-chain `total`; pre-atomized integer fields (older/mock shapes) are still
+// honored, and a bare numeric `balance` is the last resort.
+function parseBalanceAtomic(value: unknown, chain?: string): `${bigint}` {
+  const atomic = findString(value, [
+    "data.balanceAtomic",
+    "data.availableAtomic",
+    "data.usdc.balanceAtomic",
+    "balanceAtomic",
+    "availableAtomic",
+    "usdc.balanceAtomic",
+  ]);
+  if (atomic && /^\d+$/.test(atomic)) return atomic as `${bigint}`;
+  if (atomic && isDecimalUsdc(atomic)) return `${decimalUsdcToAtomic(atomic)}`;
+
+  const chainBalance = findChainBalanceDecimal(value, chain);
+  if (chainBalance !== undefined) return `${decimalUsdcToAtomic(chainBalance)}`;
+
+  const total = findString(value, ["data.total", "total"]);
+  if (total && isDecimalUsdc(total)) return `${decimalUsdcToAtomic(total)}`;
+
+  const numeric = findNumber(value, ["data.balance", "data.available", "balance", "available"]);
+  if (typeof numeric === "number" && Number.isFinite(numeric)) return `${BigInt(Math.trunc(numeric * 1_000_000))}`;
   return "0";
+}
+
+// Picks the depositor's balance for the requested chain out of the per-network
+// `balances[]` array, matching on the Gateway network label or CCTP domain and
+// falling back to a lone entry when the chain is unambiguous.
+function findChainBalanceDecimal(value: unknown, chain?: string): string | undefined {
+  const balances = findArray(value, ["data.balances", "balances"]);
+  if (!balances) return undefined;
+  const records = balances.filter(isRecord);
+  if (records.length === 0) return undefined;
+  const descriptor = chain ? GATEWAY_CHAIN_DESCRIPTORS[chain.toLowerCase()] : undefined;
+  const match = records.find((entry) => chainBalanceMatches(entry, chain, descriptor)) ?? (records.length === 1 ? records[0] : undefined);
+  if (!match) return undefined;
+  const balance = findString(match, ["balance", "amount", "available"]);
+  if (balance && isDecimalUsdc(balance)) return balance;
+  const numeric = findNumber(match, ["balance", "amount", "available"]);
+  return typeof numeric === "number" && Number.isFinite(numeric) ? String(numeric) : undefined;
+}
+
+function chainBalanceMatches(entry: Record<string, unknown>, chain: string | undefined, descriptor: GatewayChainDescriptor | undefined): boolean {
+  const network = findString(entry, ["network", "chain", "networkLabel"]);
+  if (network && chain && network.toLowerCase() === chain.toLowerCase()) return true;
+  if (network && descriptor?.networkLabels.includes(network.toLowerCase())) return true;
+  const domain = findNumber(entry, ["domain"]);
+  return typeof domain === "number" && descriptor?.domain === domain;
 }
 
 function parseBackingEOA(value: unknown): `0x${string}` | undefined {
   const address = findString(value, ["data.backingEOA", "backingEOA", "data.backingEoa", "backingEoa"]);
   return address && isAddress(address) ? address : undefined;
+}
+
+function parseReportedAddress(value: unknown): `0x${string}` | undefined {
+  const address = findString(value, ["data.address", "address", "data.depositor", "depositor"]);
+  return address && isAddress(address) ? address : undefined;
+}
+
+function isDecimalUsdc(value: string): boolean {
+  return /^\d+(\.\d+)?$/.test(value.trim());
 }
 
 function parseMaybeJson(output: string): unknown {
@@ -393,10 +458,15 @@ function parseMaybeJson(output: string): unknown {
   }
 }
 
+// Safe decimal USDC -> 6-decimal atomic conversion: fractions longer than six
+// digits are truncated (never rounded up past the reported balance) so
+// "1.1382" resolves to exactly 1_138_200 atomic units.
 function decimalUsdcToAtomic(value: string): bigint {
-  const [whole = "0", fraction = ""] = value.split(".");
+  const trimmed = value.trim();
+  if (!isDecimalUsdc(trimmed)) return 0n;
+  const [whole = "0", fraction = ""] = trimmed.split(".");
   const padded = `${fraction}000000`.slice(0, 6);
-  return BigInt(whole) * 1_000_000n + BigInt(padded);
+  return BigInt(whole || "0") * 1_000_000n + BigInt(padded || "0");
 }
 
 function collectRecords(value: unknown): Record<string, unknown>[] {
@@ -415,6 +485,14 @@ function findString(value: unknown, paths: string[]): string | undefined {
   for (const path of paths) {
     const found = path.split(".").reduce<unknown>((current, part) => (isRecord(current) ? current[part] : undefined), value);
     if (typeof found === "string") return found;
+  }
+  return undefined;
+}
+
+function findArray(value: unknown, paths: string[]): unknown[] | undefined {
+  for (const path of paths) {
+    const found = path.split(".").reduce<unknown>((current, part) => (isRecord(current) ? current[part] : undefined), value);
+    if (Array.isArray(found)) return found;
   }
   return undefined;
 }

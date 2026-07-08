@@ -138,13 +138,16 @@ test("hosted buyer flow uses only Circle 0.0.6-compatible wallet commands and st
   assert.deepEqual((final.receipts as Array<Record<string, unknown>>)[0]?.paymentIds, ["payment_1"]);
 });
 
-test("quickstart refuses to suggest mainnet funding", async () => {
+test("quickstart refuses to auto-fund mainnet and asks for a Gateway deposit", async () => {
   await assert.rejects(
     () =>
       runQuickstartRead(runtimeFor({ article: article({ environment: "mainnet", network: "eip155:1", circleChain: "ETH" }) }), {
         circleRunner: async (_command, args) => circleOutput(args, "0"),
       }),
-    (error) => error instanceof CliError && error.code === "INSUFFICIENT_FUNDS" && /Refusing to suggest mainnet funding/.test(error.message),
+    (error) =>
+      error instanceof CliError &&
+      error.code === "GATEWAY_DEPOSIT_REQUIRED" &&
+      /deposited into Circle Gateway/.test(error.message),
   );
 });
 

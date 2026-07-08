@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local src/index.ts",
     "migrate": "tsx --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local src/migrate.ts",
-    "lint": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test dist/gateway.test.js dist/payments/*.test.js"
   },

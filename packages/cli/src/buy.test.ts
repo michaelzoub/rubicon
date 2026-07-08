@@ -596,3 +596,113 @@ test("funding: a valid Circle login is never treated as a login-recovery conditi
   assert.ok(circle.calls.some((call) => call.args[0] === "wallet" && call.args[1] === "status"));
   assert.ok(!progress.some((event) => String(event.type).includes("not_logged_in")));
 });
+
+// --- Circle CLI 0.0.6 gateway-balance shape regressions -------------------
+//
+// These exercise the exact JSON the real Circle CLI emits (decimal `total` plus
+// per-network `balances[]`), the shape that previously parsed to 0 and forced a
+// needless faucet call / FUNDING_RATE_LIMITED for an already-funded wallet.
+
+const REAL_BACKING_EOA = "0x92cb35294b2e8df793039a49bc94a476350477ed";
+
+function arcGatewayBalanceJson(options: { total?: string; balance?: string; address?: string } = {}): string {
+  return JSON.stringify({
+    data: {
+      message: `Gateway balance: ${options.total ?? "1.1382"} USDC`,
+      address: options.address ?? BUYER_WALLET,
+      backingEOA: REAL_BACKING_EOA,
+      total: options.total ?? "1.1382",
+      token: "USDC",
+      balances: [{ network: "Arc Testnet", domain: 26, balance: options.balance ?? "1.138200" }],
+    },
+  });
+}
+
+function realShapeRunner(options: { balanceJson?: (index: number) => string; onFaucet?: () => void } = {}) {
+  const calls: Array<{ command: string; args: string[] }> = [];
+  let balanceIndex = 0;
+  const runner = async (command: string, args: string[]): Promise<string> => {
+    calls.push({ command, args });
+    if (args[0] === "wallet" && args[1] === "status") return JSON.stringify({ status: "active", loggedIn: true });
+    if (args[0] === "wallet" && args[1] === "list") return JSON.stringify({ wallets: [{ address: BUYER_WALLET }] });
+    if (args[0] === "gateway" && args[1] === "balance") {
+      const json = options.balanceJson?.(balanceIndex) ?? arcGatewayBalanceJson();
+      balanceIndex += 1;
+      return json;
+    }
+    if (args[0] === "wallet" && args[1] === "fund") {
+      options.onFaucet?.();
+      return JSON.stringify({ ok: true, funded: true });
+    }
+    return JSON.stringify({ ok: true });
+  };
+  const faucetCalls = () => calls.filter((call) => call.args[0] === "wallet" && call.args[1] === "fund").length;
+  return { runner, calls, faucetCalls };
+}
+
+function mainnetArticle(): ArticleSummary {
+  return {
+    articleId: "article_1", creatorId: "creator_1", creatorUsername: "creator", title: "Useful Field Guide", author: "Ada", state: "live", accessMode: "paid",
+    totalWords: 30, pricePerWordAtomic: "1", maxArticlePriceAtomic: "30",
+    paymentTerms: {
+      asset: "USDC", network: "eip155:5042002", networkLabel: "Arc", circleChain: "ARC", environment: "mainnet",
+      payTo: "0x0000000000000000000000000000000000000001", pricePerWordAtomic: "1", meteringUnit: "word",
+    },
+    sections: [
+      { sectionId: "intro", heading: "Introduction", level: 1, wordStart: 0, wordCount: 10 },
+      { sectionId: "practical", heading: "Practical details", level: 1, wordStart: 10, wordCount: 10 },
+      { sectionId: "counterarguments", heading: "Counterarguments", level: 1, wordStart: 20, wordCount: 10 },
+    ],
+  };
+}
+
+test("funding: the real Circle 0.0.6 gateway shape recognizes 1.1382 USDC and skips the faucet", async () => {
+  const fixture = fundingFixture();
+  const circle = realShapeRunner();
+  const result = await runBuy(fixture.runtime, { circleRunner: circle.runner });
+  assert.equal(circle.faucetCalls(), 0);
+  assert.equal(fixture.runs.length, 1);
+  const wallet = result.wallet as { balanceAtomic: string; balanceUsdc: string };
+  assert.equal(wallet.balanceAtomic, "1138200");
+  assert.equal(wallet.balanceUsdc, "1.1382");
+  const events = result.events as Array<{ type: string; balanceAtomic?: string; sufficient?: boolean }>;
+  const check = events.find((event) => event.type === "funding.check");
+  assert.equal(check?.balanceAtomic, "1138200");
+  assert.equal(check?.sufficient, true);
+  assert.ok(BigInt((result.result as { amountPaidAtomic: string }).amountPaidAtomic) > 0n);
+});
+
+test("funding: a Gateway balance reported for a different profile fails GATEWAY_PROFILE_MISMATCH", async () => {
+  const fixture = fundingFixture();
+  const circle = realShapeRunner({
+    balanceJson: () => arcGatewayBalanceJson({ address: "0x00000000000000000000000000000000000000ff" }),
+  });
+  const failure = await runBuy(fixture.runtime, { circleRunner: circle.runner }).then(
+    () => assert.fail("expected GATEWAY_PROFILE_MISMATCH"),
+    (error) => error as CliError,
+  );
+  assert.ok(failure instanceof CliError);
+  assert.equal(failure.code, "GATEWAY_PROFILE_MISMATCH");
+  assert.equal(circle.faucetCalls(), 0);
+  assert.equal(fixture.runs.length, 0);
+});
+
+test("funding: an empty mainnet Gateway balance returns GATEWAY_DEPOSIT_REQUIRED without a faucet", async () => {
+  const fixture = setup([assessment("practical", 0.9, 1)], {
+    article: mainnetArticle(),
+    paymentMode: "circle-cli",
+    goal: "practical answer",
+  });
+  const circle = realShapeRunner({ balanceJson: () => arcGatewayBalanceJson({ total: "0", balance: "0.000000" }) });
+  const failure = await runBuy(fixture.runtime, { circleRunner: circle.runner }).then(
+    () => assert.fail("expected GATEWAY_DEPOSIT_REQUIRED"),
+    (error) => error as CliError,
+  );
+  assert.ok(failure instanceof CliError);
+  assert.equal(failure.code, "GATEWAY_DEPOSIT_REQUIRED");
+  assert.equal(circle.faucetCalls(), 0);
+  assert.equal(fixture.runs.length, 0);
+  const details = failure.details as { backingEOA: string; balanceAtomic: string };
+  assert.equal(details.balanceAtomic, "0");
+  assert.equal(details.backingEOA, REAL_BACKING_EOA);
+});

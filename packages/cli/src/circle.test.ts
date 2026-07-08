@@ -7,6 +7,7 @@ import {
   buildCircleInvocation,
   circleAuthStatus,
   circleCommandDiagnostics,
+  circleGatewayBalance,
   circleGuidance,
   circleLoginComplete,
   circleLoginInit,
@@ -15,6 +16,92 @@ import {
   redactSecrets,
   runCircleCli,
 } from "./circle.js";
+
+const BUYER_WALLET = "0xb161c2306a4f58ca41c4c0b10544d953c8af26b7";
+const BACKING_EOA = "0x92cb35294b2e8df793039a49bc94a476350477ed";
+
+// Exact Circle CLI 0.0.6 `gateway balance --output json` shape observed on Arc
+// Testnet for the funded buyer wallet. The balance decimal has full six-digit
+// precision while the aggregate `total` is trimmed.
+function arcGatewayBalanceOutput(overrides: { total?: string; balance?: string; address?: string } = {}): string {
+  return JSON.stringify({
+    data: {
+      message: `Gateway balance: ${overrides.total ?? "1.1382"} USDC`,
+      address: overrides.address ?? BUYER_WALLET,
+      backingEOA: BACKING_EOA,
+      total: overrides.total ?? "1.1382",
+      token: "USDC",
+      balances: [{ network: "Arc Testnet", domain: 26, balance: overrides.balance ?? "1.138200" }],
+    },
+  });
+}
+
+test("circleGatewayBalance recognizes a funded Arc Testnet balance as atomic units", async () => {
+  const runner = async () => arcGatewayBalanceOutput();
+  const info = await circleGatewayBalance({ runner, chain: "ARC-TESTNET", address: BUYER_WALLET });
+  assert.equal(info.balanceAtomic, "1138200");
+  assert.equal(info.backingEOA, BACKING_EOA);
+  assert.equal(info.reportedAddress, BUYER_WALLET);
+});
+
+test("circleGatewayBalance converts the trimmed aggregate total when balances are absent", async () => {
+  const runner = async () => JSON.stringify({ data: { total: "1.1382", backingEOA: BACKING_EOA, address: BUYER_WALLET } });
+  const info = await circleGatewayBalance({ runner, chain: "ARC-TESTNET", address: BUYER_WALLET });
+  assert.equal(info.balanceAtomic, "1138200");
+});
+
+test("circleGatewayBalance reports zero for an empty Gateway balance", async () => {
+  const runner = async () => arcGatewayBalanceOutput({ total: "0", balance: "0.000000" });
+  const info = await circleGatewayBalance({ runner, chain: "ARC-TESTNET", address: BUYER_WALLET });
+  assert.equal(info.balanceAtomic, "0");
+  assert.equal(info.backingEOA, BACKING_EOA);
+});
+
+test("circleGatewayBalance tolerates malformed/missing balance fields", async () => {
+  const cases = ["{}", JSON.stringify({ data: {} }), JSON.stringify({ data: { total: "not-a-number" } }), "garbage-not-json"];
+  for (const output of cases) {
+    const info = await circleGatewayBalance({ runner: async () => output, chain: "ARC-TESTNET", address: BUYER_WALLET });
+    assert.equal(info.balanceAtomic, "0");
+  }
+});
+
+test("circleGatewayBalance keeps the backing EOA distinct from the queried wallet address", async () => {
+  const runner = async () => arcGatewayBalanceOutput();
+  const info = await circleGatewayBalance({ runner, chain: "ARC-TESTNET", address: BUYER_WALLET });
+  assert.notEqual(info.reportedAddress?.toLowerCase(), info.backingEOA?.toLowerCase());
+  assert.equal(info.reportedAddress, BUYER_WALLET);
+  assert.equal(info.backingEOA, BACKING_EOA);
+});
+
+test("circleGatewayBalance surfaces a different-profile depositor address for mismatch detection", async () => {
+  const otherAddress = "0x00000000000000000000000000000000000000ff";
+  const runner = async () => arcGatewayBalanceOutput({ address: otherAddress });
+  const info = await circleGatewayBalance({ runner, chain: "ARC-TESTNET", address: BUYER_WALLET });
+  assert.equal(info.reportedAddress, otherAddress);
+});
+
+test("circleGatewayBalance selects the requested chain out of multiple funded domains", async () => {
+  const runner = async () =>
+    JSON.stringify({
+      data: {
+        total: "3.500000",
+        address: BUYER_WALLET,
+        backingEOA: BACKING_EOA,
+        balances: [
+          { network: "Base Sepolia", domain: 6, balance: "2.361800" },
+          { network: "Arc Testnet", domain: 26, balance: "1.138200" },
+        ],
+      },
+    });
+  const info = await circleGatewayBalance({ runner, chain: "ARC-TESTNET", address: BUYER_WALLET });
+  assert.equal(info.balanceAtomic, "1138200");
+});
+
+test("circleGatewayBalance decimal-to-atomic truncates beyond six fraction digits", async () => {
+  const runner = async () => arcGatewayBalanceOutput({ balance: "0.1234567" });
+  const info = await circleGatewayBalance({ runner, chain: "ARC-TESTNET", address: BUYER_WALLET });
+  assert.equal(info.balanceAtomic, "123456");
+});
 
 test("falls back to circle-cli when circle binary is missing", async () => {
   const binDir = mkdtempSync(join(tmpdir(), "rubicon-circle-bin-"));
