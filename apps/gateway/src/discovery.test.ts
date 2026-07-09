@@ -85,6 +85,46 @@ test("unauthenticated probe of the paid endpoint returns 402 before body validat
   }
 });
 
+test("x402scan schema-synthesized probe (placeholder budget cap) gets an x402 402 challenge", async () => {
+  // x402scan fills required fields from the OpenAPI schema, so a `type: string`
+  // budget cap arrives as a non-numeric placeholder. A paid deployment must
+  // answer such a probe with a real x402 challenge (accepts[]), never a 404.
+  const paid: ArticleFixture = {
+    id: "art-paid",
+    creatorId: "creator-a",
+    creatorUsername: "alice",
+    title: "Paid Guide",
+    author: "Alice",
+    state: "live",
+    accessMode: "paid",
+    pricePerWordAtomic: 100n,
+    body: "one two three four five",
+  };
+  const { app } = setup([paid]);
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/sessions",
+    payload: { articleId: "string", budget: { currency: "USDC", maxAmountAtomic: "string" } },
+  });
+  assert.equal(res.statusCode, 402);
+  const challenge = res.json() as any;
+  assert.ok(Array.isArray(challenge.accepts) && challenge.accepts.length > 0, "challenge carries accepts[]");
+  // Atomic units, never decimal dollars (x402scan "Malformed Runtime Amount").
+  assert.match(String(challenge.accepts[0].amount), /^\d+$/);
+  assert.ok(res.headers["payment-required"], "PAYMENT-REQUIRED header is set");
+});
+
+test("a well-formed open of an unknown article still 404s (not a discovery probe)", async () => {
+  const { app } = setup();
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/sessions",
+    payload: { articleId: "does-not-exist", budget: { currency: "USDC", maxAmountAtomic: "100" } },
+  });
+  assert.equal(res.statusCode, 404);
+  assert.equal((res.json() as any).error, "article_not_available");
+});
+
 test("word-range selection meters and delivers only the selected words", async () => {
   // Plain body so word indices are unambiguous: one=0 ... ten=9.
   const plain: ArticleFixture = {

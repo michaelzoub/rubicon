@@ -466,20 +466,86 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     },
   );
 
+  // Representative x402 402 challenge for discovery crawlers (e.g. x402scan) that
+  // probe POST /v1/sessions with a synthesized body. Built from a live *paid*
+  // article so the challenge's shape, network, asset and atomic amount match a
+  // real purchase; the per-article payTo and exact price are still resolved per
+  // real session. Cached briefly so repeated probes don't re-hit the payment
+  // facilitator. The ephemeral session is never persisted, remembered, or streamed.
+  let discoveryChallenge: { value: unknown; expires: number } | undefined;
+  async function buildDiscoveryChallenge(): Promise<unknown> {
+    if (!paymentVerifier.createPaymentRequired) return undefined;
+    if (discoveryChallenge && discoveryChallenge.expires > Date.now()) {
+      return discoveryChallenge.value;
+    }
+    try {
+      for (const summary of await articles.listPublishedArticles()) {
+        if (summary.accessMode === "free") continue;
+        const article = await articles.getPublishedArticle(summary.articleId);
+        if (!article || article.accessMode !== "paid" || article.pricePerWordAtomic <= 0n) continue;
+        const wallet = await articles.getCreatorWallet(article.creatorId);
+        if (!wallet?.verified) continue;
+        const quote = quotePerWord({ pricePerWordAtomic: article.pricePerWordAtomic, gatewayFeeBps });
+        const session = createSession({
+          articleId: article.id,
+          creatorId: article.creatorId,
+          accessMode: "paid",
+          budget: { currency: "USDC", maxAmountAtomic: quote.wordPaymentAtomic },
+          pricePerWordAtomic: article.pricePerWordAtomic,
+          gatewayFeeBps,
+          sellerWallet: wallet.address,
+          metadata: { __discoveryProbe: true },
+          ttlMs: options.sessionTtlMs,
+        });
+        const challenge = await paymentVerifier.createPaymentRequired({
+          session,
+          article,
+          sellerWallet: wallet.address,
+          wordPaymentAtomic: BigInt(quote.wordPaymentAtomic),
+          gatewayBaseUrl,
+        });
+        discoveryChallenge = { value: challenge, expires: Date.now() + 5 * 60_000 };
+        return challenge;
+      }
+    } catch {
+      // Discovery probes must never 500/404; fall back to the static 402 body.
+    }
+    return undefined;
+  }
+
+  // A budget cap is only real when it is a non-negative integer string of atomic
+  // USDC. Discovery probes send schema placeholders (e.g. "string"), which fail here.
+  function isAtomicAmount(value: unknown): value is `${bigint}` {
+    return typeof value === "string" && /^\d+$/.test(value);
+  }
+
+  // Answer an unpaid discovery probe with the richest 402 we can produce: a real
+  // x402 challenge (with `accepts`) when a paid article exists, else a static
+  // payment-required body. Always 402 — never 400/404 — so x402scan registers it.
+  async function respondPaymentRequired(reply: FastifyReply): Promise<FastifyReply> {
+    const challenge = await buildDiscoveryChallenge();
+    if (challenge) return sendPaymentRequired(reply, challenge);
+    return reply.code(402).send({
+      error: "payment_required",
+      message:
+        "This endpoint sells article words metered per word in USDC (x402). Provide `articleId` and a `budget` to open a session; the response returns an x402 authorization whose recipient is the article creator's wallet. See /openapi.json.",
+      meteringUnit: "word",
+      asset: "USDC",
+    });
+  }
+
   app.post<{ Body: StartSessionRequest | undefined }>("/v1/sessions", async (request, reply) => {
-    // x402 discovery: a bare/unpaid probe of this paid endpoint (no articleId or
-    // budget) must announce that payment is required — a 402 that precedes any
-    // body/query validation — rather than a 400/404/500. Legitimate opens always
-    // carry articleId + budget and fall through to the normal flow below.
+    // x402 discovery: an unpaid probe of this paid endpoint must reach the x402
+    // 402 payment challenge *before* body validation — never a 400/404/500.
+    // x402scan synthesizes the request from the OpenAPI schema, so it sends
+    // placeholder values (e.g. a non-numeric `budget.maxAmountAtomic`). Treat any
+    // request without a real, well-formed budget cap as such a probe and answer
+    // with a 402 challenge. Legitimate opens carry a valid atomic budget cap and
+    // a real articleId, and fall through to the normal flow (which still 404s a
+    // draft/paused/unknown article — those reference real, well-formed budgets).
     const body = request.body;
-    if (!body || !body.articleId || !body.budget?.maxAmountAtomic) {
-      return reply.code(402).send({
-        error: "payment_required",
-        message:
-          "This endpoint sells article words metered per word in USDC (x402). Provide `articleId` and a `budget` to open a session; the response returns an x402 authorization whose recipient is the article creator's wallet. See /openapi.json.",
-        meteringUnit: "word",
-        asset: "USDC",
-      });
+    if (!body || !body.articleId || !isAtomicAmount(body.budget?.maxAmountAtomic)) {
+      return respondPaymentRequired(reply);
     }
     const article = await articles.getPublishedArticle(body.articleId);
     if (!article) {
