@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { RubiconClient } from "@rubicon-caliga/agent-sdk/agent-client";
 import { parseUsdcToAtomic, settlementNetworkInfo, type ArticleSectionSummary, type ArticleSummary, type StreamMode } from "@rubicon-caliga/core";
 import { parseArgs, booleanFlag, stringFlag, type ParsedArgs } from "./args.js";
+import { parseSelectionFlags, explicitSelectionModeCount } from "./read-selection.js";
 import { configPath, HOSTED_GATEWAY_URL, readConfig, writeConfig, type RubiconCliConfig } from "./config.js";
 import { CliError, toCliError } from "./errors.js";
 import { assertNoLegacyGranularityConflict, granularityFlag } from "./granularity.js";
@@ -224,6 +225,8 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
   const maxSpendAtomic = parseBudget(runtime.parsed);
   const goal = stringFlag(runtime.parsed.flags, "goal");
   const sectionId = sectionFlag(runtime.parsed);
+  const selectionFlags = parseSelectionFlags(runtime.parsed);
+  const { sectionIds, wordStart, wordCount, whole } = selectionFlags;
   const stopAfterSection = booleanFlag(runtime.parsed.flags, "stop-after-section");
   const summary = booleanFlag(runtime.parsed.flags, "summary") || booleanFlag(runtime.parsed.flags, "receipt-summary");
   const granularity = granularityFlag(runtime.parsed);
@@ -246,6 +249,15 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
   }
   if (sectionId) {
     await validateSection(runtime, articleId, sectionId);
+  }
+  // Explicit selection flags (--whole / --sections / --words) are mutually
+  // exclusive with each other and with goal-driven / single --section reads.
+  const explicitModes = explicitSelectionModeCount(selectionFlags);
+  if (explicitModes > 1) {
+    throw new CliError("MULTIPLE_SELECTIONS", "Use only one of --whole, --sections, or --words.");
+  }
+  if (explicitModes === 1 && (sectionId || goal)) {
+    throw new CliError("MULTIPLE_SELECTIONS", "--whole/--sections/--words cannot be combined with --section or --goal.");
   }
 
   if (booleanFlag(runtime.parsed.flags, "dry-run")) {
@@ -273,10 +285,13 @@ async function readArticle(runtime: Runtime, articleId: string | undefined): Pro
     articleId,
     goal,
     sectionId,
+    sectionIds,
+    wordStart,
+    wordCount,
     maxSpendAtomic,
     maxWords,
     chunkWords,
-    granularity,
+    granularity: whole ? "article" : granularity,
     streamMode,
     metadata: stopAfterSection ? { stopAfterSection: true } : undefined,
   });

@@ -36,8 +36,9 @@ import { summarizeArticle } from "./repositories/in-memory.js";
 import type { ArticleRecord, LedgerRepository, PublishedArticleRepository } from "./repositories/types.js";
 import { DefaultSellerAgent, type SellerAgent } from "./seller-agent/seller-agent.js";
 import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
-import { wordsForSection } from "./words.js";
+import { selectionFromRequest, wordsForSelection } from "./words.js";
 import { buildSearchResults } from "./search/search-service.js";
+import { buildOpenApiDocument } from "./discovery/openapi.js";
 import {
   affordableWordCount,
   authorizedWordCount,
@@ -59,6 +60,8 @@ export interface GatewayOptions {
   logger?: boolean;
   /** Query embedder for semantic search. Null when OPENAI_API_KEY is unset (lexical fallback). */
   queryEmbedder?: ((q: string) => Promise<number[] | null>) | null;
+  /** Version advertised in the /openapi.json discovery document. */
+  version?: string;
 }
 
 const STOP_CONDITIONS: StreamStopCondition[] = [
@@ -73,6 +76,7 @@ const STOP_CONDITIONS: StreamStopCondition[] = [
 const ENDPOINTS = [
   { method: "GET", path: "/health", description: "Gateway health check." },
   { method: "GET", path: "/v1/endpoints", description: "Lists gateway endpoints." },
+  { method: "GET", path: "/openapi.json", description: "AgentCash/x402 discovery document (OpenAPI 3.1.0)." },
   { method: "GET", path: "/v1/repository", description: "Lists live articles available to buyer agents. Optional ?q= ranks results by search relevance." },
   { method: "GET", path: "/v1/search", description: "Semantic or lexical search over live articles. Requires ?q= query." },
   { method: "GET", path: "/v1/articles/:articleId/navigation", description: "Safe seller-agent navigation; no unpaid body text." },
@@ -104,7 +108,12 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    if (!agentApiKey || request.url === "/health") {
+    if (
+      !agentApiKey ||
+      request.url === "/health" ||
+      request.url === "/openapi.json" ||
+      request.url === "/favicon.ico"
+    ) {
       return;
     }
     const authorization = request.headers.authorization;
@@ -317,6 +326,26 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
 
   app.get("/v1/endpoints", async () => ({ endpoints: ENDPOINTS }));
 
+  // AgentCash / x402 discovery document. Public (exempt from the agent API key)
+  // so discovery crawlers can read it without credentials.
+  app.get("/openapi.json", async (_request, reply) => {
+    reply.header("content-type", "application/json; charset=utf-8");
+    return buildOpenApiDocument({
+      baseUrl: gatewayBaseUrl,
+      version: options.version ?? "0.1.0",
+      contactEmail: process.env.RUBICON_CONTACT_EMAIL,
+      apiKeyProtected: Boolean(agentApiKey),
+    });
+  });
+
+  // Minimal favicon so discovery crawlers don't warn about a missing origin icon.
+  const faviconSvg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#111"/><text x="16" y="22" font-size="18" text-anchor="middle" fill="#fff" font-family="sans-serif">R</text></svg>';
+  app.get("/favicon.ico", async (_request, reply) => {
+    reply.header("content-type", "image/svg+xml").header("cache-control", "public, max-age=86400");
+    return faviconSvg;
+  });
+
   function requestLogStorageFailure(reply: FastifyReply, error: unknown): void {
     reply.log.error({ err: error }, "failed to load article repository from Supabase");
   }
@@ -437,8 +466,22 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     },
   );
 
-  app.post<{ Body: StartSessionRequest }>("/v1/sessions", async (request, reply) => {
-    const article = await articles.getPublishedArticle(request.body.articleId);
+  app.post<{ Body: StartSessionRequest | undefined }>("/v1/sessions", async (request, reply) => {
+    // x402 discovery: a bare/unpaid probe of this paid endpoint (no articleId or
+    // budget) must announce that payment is required — a 402 that precedes any
+    // body/query validation — rather than a 400/404/500. Legitimate opens always
+    // carry articleId + budget and fall through to the normal flow below.
+    const body = request.body;
+    if (!body || !body.articleId || !body.budget?.maxAmountAtomic) {
+      return reply.code(402).send({
+        error: "payment_required",
+        message:
+          "This endpoint sells article words metered per word in USDC (x402). Provide `articleId` and a `budget` to open a session; the response returns an x402 authorization whose recipient is the article creator's wallet. See /openapi.json.",
+        meteringUnit: "word",
+        asset: "USDC",
+      });
+    }
+    const article = await articles.getPublishedArticle(body.articleId);
     if (!article) {
       // Draft, paused, archived, deleted, or unknown — never start a paid session.
       return reply.code(404).send({ error: "article_not_available" });
@@ -461,15 +504,21 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       return reply.code(409).send({ error: "creator_wallet_unverified" });
     }
 
-    const sectionId = request.body.sectionId ?? "full-article";
-    const slice = wordsForSection(article.words, article.sections, sectionId);
-    if (!slice) {
-      return reply.code(404).send({ error: "section_not_found" });
+    const selection = selectionFromRequest(body);
+    const resolved = wordsForSelection(article.words, article.sections, selection);
+    if (!resolved.ok) {
+      const status = resolved.code === "section_not_found" ? 404 : 400;
+      return reply.code(status).send({ error: resolved.code });
     }
+    const sectionId = resolved.label;
+    // Persist the resolved selection server-side so a stream rebuilt after a
+    // restart reproduces the exact same billable word set (never re-read from
+    // buyer input mid-session).
+    const metadata = { ...(body.metadata ?? {}), __selection: selection };
 
     const quote = quotePerWord({ pricePerWordAtomic: article.pricePerWordAtomic, gatewayFeeBps });
 
-    let conversationId = request.body.conversationId;
+    let conversationId = body.conversationId;
     if (conversationId) {
       const existing = await ledger.getConversation(conversationId);
       if (!existing || existing.articleId !== article.id) {
@@ -481,7 +530,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         id: conversationId,
         articleId: article.id,
         creatorId: article.creatorId,
-        goal: request.body.goal,
+        goal: body.goal,
       });
     }
 
@@ -490,13 +539,13 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       creatorId: article.creatorId,
       accessMode: article.accessMode,
       conversationId,
-      goal: request.body.goal,
+      goal: body.goal,
       sectionId,
-      budget: request.body.budget,
+      budget: body.budget,
       pricePerWordAtomic: article.pricePerWordAtomic,
       gatewayFeeBps,
       sellerWallet: wallet?.address,
-      metadata: request.body.metadata,
+      metadata,
       ttlMs: options.sessionTtlMs,
     });
 
@@ -515,12 +564,12 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     }
 
     await ledger.createSession(session);
-    paidReading.rememberSession(session.id, { article, words: slice.words, sectionId });
+    paidReading.rememberSession(session.id, { article, words: resolved.words, sectionId });
 
     const summary = await articleSummaryWithPaymentTerms(article);
     const wordsAuthorized = article.accessMode === "free"
-      ? slice.words.length
-      : authorizedWordCount(request.body.budget.maxAmountAtomic, quote.wordPaymentAtomic);
+      ? resolved.words.length
+      : authorizedWordCount(body.budget.maxAmountAtomic, quote.wordPaymentAtomic);
     events.publish({
       type: "session.started",
       sessionId: session.id,
@@ -536,7 +585,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       state: session.state,
       accessMode: article.accessMode,
       article: summary,
-      navigation: await buildNavigation(article, request.body.goal),
+      navigation: await buildNavigation(article, body.goal),
       pricePerWordAtomic: quote.pricePerWordAtomic,
       maxArticlePriceAtomic: summary.maxArticlePriceAtomic,
       conversationId,

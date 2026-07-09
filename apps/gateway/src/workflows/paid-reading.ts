@@ -6,7 +6,8 @@ import type {
 } from "@rubicon-caliga/core";
 import type { PaymentVerifier } from "../payments/types.js";
 import type { ArticleRecord, LedgerRepository, PublishedArticleRepository } from "../repositories/types.js";
-import { wordsForSection } from "../words.js";
+import type { ReadSelection } from "@rubicon-caliga/core";
+import { wordsForSection, wordsForSelection } from "../words.js";
 
 export interface StreamState {
   article: ArticleRecord;
@@ -43,6 +44,17 @@ export class PaidReadingWorkflow {
       (await this.getArticleAnyState(session.articleId)) ??
       (await this.options.articles.getPublishedArticle(session.articleId));
     if (!article) return undefined;
+    // Prefer the selection persisted at session open (whole article, a union of
+    // sections, or a word range). Fall back to the legacy single-section field
+    // for sessions created before multi-target selection existed.
+    const persisted = session.metadata?.__selection as ReadSelection | undefined;
+    if (persisted) {
+      const resolved = wordsForSelection(article.words, article.sections, persisted);
+      if (!resolved.ok) return undefined;
+      const rebuilt = { article, words: resolved.words, sectionId: resolved.label };
+      this.streamStates.set(session.id, rebuilt);
+      return rebuilt;
+    }
     const slice = wordsForSection(article.words, article.sections, session.sectionId);
     if (!slice) return undefined;
     const rebuilt = { article, words: slice.words, sectionId: session.sectionId ?? "full-article" };

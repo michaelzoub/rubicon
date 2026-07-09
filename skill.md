@@ -1,6 +1,6 @@
 ---
 name: rubicon
-version: 2.8.0
+version: 2.8.1
 description: Autonomously read relevant free or paid article content within a hard USDC budget
 homepage: https://github.com/michaelzoub/rubicon
 ---
@@ -47,10 +47,10 @@ skill installation flow.
 For an explicit user goal and approved budget, run exactly one purchase command:
 
 ```bash
-npx -y @rubicon-caliga/cli@0.1.15 buy --goal "<goal>" --max-usdc <amount> --json
+npx -y @rubicon-caliga/cli@0.1.16 buy --goal "<goal>" --max-usdc <amount> --json
 ```
 
-Known good version as of 2026-07-06: `@rubicon-caliga/cli@0.1.15` (Node 20+).
+Known good version as of 2026-07-08: `@rubicon-caliga/cli@0.1.16` (Node 20+).
 `--first` is accepted but no longer required. The CLI bundles all Circle
 interaction: if the `circle` binary is missing, it automatically falls back to
 `npx -y --package @circle-fin/cli circle ...`, so no separate Circle install
@@ -213,7 +213,7 @@ are separate), so a successful login is recognized on retry.
    login. For Arc Testnet articles (the default):
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.15 login <email> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.16 login <email> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`. The JSON result contains the
@@ -223,7 +223,7 @@ are separate), so a successful login is recognized on retry.
 4. Complete login yourself with the same profile:
 
    ```bash
-   npx -y @rubicon-caliga/cli@0.1.15 login --request <request-id> --otp <code> --testnet --json
+   npx -y @rubicon-caliga/cli@0.1.16 login --request <request-id> --otp <code> --testnet --json
    ```
 
    For mainnet articles, omit `--testnet`.

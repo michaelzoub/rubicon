@@ -157,7 +157,17 @@ export interface StartSessionRequest {
   articleId: string;
   goal?: string;
   conversationId?: string;
+  /** Single-section selection (legacy). Prefer `sectionIds`/`wordStart`+`wordCount`. */
   sectionId?: string;
+  /**
+   * Explicit purchase selection. Precedence when more than one is present:
+   * `wordStart`+`wordCount` (word range) > `sectionIds` > `sectionId` > whole article.
+   */
+  sectionIds?: string[];
+  /** Zero-based, article-global word offset for a word-range selection. */
+  wordStart?: number;
+  /** Number of words for a word-range selection (`[wordStart, wordStart+wordCount)`). */
+  wordCount?: number;
   budget: Budget;
   /** Optional buyer estimate used to size a session or chunk authorization. */
   predictedWords?: number;

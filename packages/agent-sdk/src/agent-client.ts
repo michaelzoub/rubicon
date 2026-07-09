@@ -13,7 +13,9 @@ import type {
   StreamPaymentRequest,
   StreamPaymentResponse,
   WordPaymentReceipt,
+  ReadSelection,
 } from "@rubicon-caliga/core";
+import { resolveSelection } from "@rubicon-caliga/core";
 import { StaticPaymentEngine, type AgentPaymentEngine } from "./payment-engine.js";
 
 export interface RubiconClientOptions {
@@ -111,6 +113,12 @@ export interface ReadOptions {
   articleId: string;
   goal?: string;
   sectionId?: string;
+  /** Explicit multi-section selection. Union of these sections, in document order. */
+  sectionIds?: string[];
+  /** Word-range selection: zero-based article-global offset. Pair with `wordCount`. */
+  wordStart?: number;
+  /** Word-range selection: number of words from `wordStart` (`[n, n+k)`). */
+  wordCount?: number;
   conversationId?: string;
   /** Hard spend ceiling in atomic USDC. Equivalent to budget.maxAmountAtomic. */
   maxSpendAtomic?: `${bigint}`;
@@ -357,11 +365,17 @@ export class RubiconClient {
       throw new Error("section granularity requires sectionId or a goal that selects a section");
     }
 
+    // Explicit selection (multi-section union or a word range) takes precedence
+    // over the goal-driven single section. The gateway meters only these words.
+    const selection = selectionFromReadOptions(options);
     const session = await this.startSession({
       articleId: options.articleId,
       goal: options.goal,
       conversationId,
       sectionId,
+      sectionIds: options.sectionIds,
+      wordStart: options.wordStart,
+      wordCount: options.wordCount,
       budget,
       metadata: options.metadata,
     });
@@ -376,9 +390,15 @@ export class RubiconClient {
     const settlementIds: string[] = [];
     const payments: WordPaymentReceipt[] = [];
     const streamMode = options.streamMode ?? "bundled";
-    const bundleWords = resolveBundleWords(options.granularity, options.chunkWords, session, sectionId);
     const useBundles = streamMode === "bundled" && (isFree || typeof this.paymentEngine.createChunkPayment === "function");
-    const selectedWordLimit = selectedRangeWordLimit(session, sectionId);
+    // When an explicit selection is present, bound delivery to exactly the
+    // selected words (computed with the same resolver the gateway uses) and buy
+    // the whole selection in one bundle when the budget allows.
+    const selectionWords = selection
+      ? resolveSelection(session.article.totalWords, session.navigation.sections, selection).length
+      : undefined;
+    const selectedWordLimit = selectionWords ?? selectedRangeWordLimit(session, sectionId);
+    const bundleWords = selectionWords ?? resolveBundleWords(options.granularity, options.chunkWords, session, sectionId);
     if (
       (options.granularity === "section" || options.granularity === "article") &&
       selectedWordLimit !== undefined &&
@@ -622,6 +642,17 @@ function validateGranularityOptions(options: ReadOptions): void {
   if (typeof options.granularity === "number" && (!Number.isInteger(options.granularity) || options.granularity < 1)) {
     throw new Error("numeric granularity must be a positive integer");
   }
+}
+
+/** Build an explicit ReadSelection from read options, or undefined for the goal/section path. */
+function selectionFromReadOptions(options: ReadOptions): ReadSelection | undefined {
+  if (options.wordStart !== undefined || options.wordCount !== undefined) {
+    return { mode: "words", wordStart: options.wordStart ?? 0, wordCount: options.wordCount ?? 0 };
+  }
+  if (options.sectionIds && options.sectionIds.length > 0) {
+    return { mode: "sections", sectionIds: options.sectionIds };
+  }
+  return undefined;
 }
 
 function selectedRangeWordLimit(session: StartSessionResponse, sectionId: string | undefined): number | undefined {

@@ -1,6 +1,6 @@
 {
   "name": "@rubicon-caliga/agent-sdk",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Client SDK for autonomous agents consuming per-word article streams via Rubicon x402.",
   "license": "MIT",
   "type": "module",

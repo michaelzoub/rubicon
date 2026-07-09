@@ -1,4 +1,5 @@
-import type { ArticleSection } from "@rubicon-caliga/core";
+import type { ArticleSection, StartSessionRequest } from "@rubicon-caliga/core";
+import { resolveSelection, SelectionError, type ReadSelection, type SelectionErrorCode } from "@rubicon-caliga/core";
 
 /**
  * The atomic content unit in Rubicon is one word. A word is a maximal run of
@@ -132,4 +133,51 @@ export function wordsForSection(
     words: words.slice(section.wordStart, section.wordStart + section.wordCount),
     wordStart: section.wordStart,
   };
+}
+
+/**
+ * Derive the canonical {@link ReadSelection} from a session request's selection
+ * fields. Precedence: word range > `sectionIds` > single `sectionId` > whole
+ * article. This is the single place that interprets buyer selection input.
+ */
+export function selectionFromRequest(
+  request: Pick<StartSessionRequest, "sectionId" | "sectionIds" | "wordStart" | "wordCount">,
+): ReadSelection {
+  if (request.wordStart !== undefined || request.wordCount !== undefined) {
+    return { mode: "words", wordStart: request.wordStart ?? 0, wordCount: request.wordCount ?? 0 };
+  }
+  if (request.sectionIds && request.sectionIds.length > 0) {
+    return { mode: "sections", sectionIds: request.sectionIds };
+  }
+  if (request.sectionId && request.sectionId !== "full-article") {
+    return { mode: "sections", sectionIds: [request.sectionId] };
+  }
+  return { mode: "article" };
+}
+
+/** A short, human-readable label for a selection, used in stream state/events. */
+export function selectionLabel(selection: ReadSelection): string {
+  if (selection.mode === "article") return "full-article";
+  if (selection.mode === "words") return `words:${selection.wordStart}:${selection.wordCount}`;
+  return selection.sectionIds.length === 1 ? selection.sectionIds[0]! : selection.sectionIds.join("+");
+}
+
+/**
+ * Resolve the ordered word list for an arbitrary selection (whole article, a
+ * union of sections, or an explicit word range). Returns `undefined` when the
+ * selection is invalid (unknown section, bad range, or zero deliverable words)
+ * so the caller can reject the session before any payment is authorized.
+ */
+export function wordsForSelection(
+  words: string[],
+  sections: ArticleSection[],
+  selection: ReadSelection,
+): { ok: true; words: string[]; label: string } | { ok: false; code: SelectionErrorCode } {
+  try {
+    const indices = resolveSelection(words.length, sections, selection);
+    return { ok: true, words: indices.map((index) => words[index] ?? ""), label: selectionLabel(selection) };
+  } catch (error) {
+    if (error instanceof SelectionError) return { ok: false, code: error.code };
+    throw error;
+  }
 }
