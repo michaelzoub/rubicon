@@ -7,6 +7,7 @@ import { createSupabaseClientFromEnv, SupabasePublishedArticleRepository } from 
 import type { LedgerRepository, PublishedArticleRepository } from "./repositories/types.js";
 import { DefaultSellerAgent } from "./seller-agent/seller-agent.js";
 import { TextCompletionSellerModelProvider } from "./seller-agent/model-provider.js";
+import { createQueryEmbedder } from "./search/embed-query.js";
 import { installKeepAliveDispatcher } from "./http-agent.js";
 
 const port = Number(process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787);
@@ -99,6 +100,7 @@ const gateway = createGateway({
   sessionTtlMs,
   gatewayFeeBps,
   gatewayBaseUrl,
+  queryEmbedder: createQueryEmbedder(),
 });
 
 await gateway.listen({ port, host: "0.0.0.0" });

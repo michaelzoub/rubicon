@@ -11,7 +11,7 @@
     "migrate": "tsx --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local src/migrate.ts",
     "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/gateway.test.js dist/payments/*.test.js"
+    "test": "node --test dist/gateway.test.js dist/search.test.js dist/payments/*.test.js"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.1.2",

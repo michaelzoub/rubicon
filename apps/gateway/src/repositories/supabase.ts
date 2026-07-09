@@ -31,6 +31,7 @@ interface SupabaseQueryBuilder<T> extends SupabaseResult<T[]> {
 
 export interface SupabaseReader {
   from<T = unknown>(table: string): SupabaseFromBuilder<T>;
+  rpc<T = unknown>(fn: string, args: Record<string, unknown>): Promise<{ data: T | null; error: SupabaseQueryError | null }>;
 }
 
 interface CreatorRelation {
@@ -211,6 +212,22 @@ export class SupabasePublishedArticleRepository implements PublishedArticleRepos
       network: toCaip2Network(row.network),
       verified: row.verified,
     };
+  }
+
+  async searchSections(queryEmbedding: number[], matchCount: number): Promise<Array<{ articleId: string; sectionId: string; revision: number; similarity: number }>> {
+    const { data, error } = await this.supabase.rpc<Array<{ article_id: string; section_id: string; revision: number; similarity: number }>>(
+      "search_article_sections",
+      { query_embedding: `[${queryEmbedding.join(",")}]`, match_count: matchCount },
+    );
+    if (error) {
+      throw new SupabaseRepositoryError("Supabase semantic search RPC failed", error);
+    }
+    return (data ?? []).map((row) => ({
+      articleId: row.article_id,
+      sectionId: row.section_id,
+      revision: row.revision,
+      similarity: row.similarity,
+    }));
   }
 
   private async fetchLiveArticleRows(select: string, articleId?: string): Promise<ArticleRow[]> {

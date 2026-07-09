@@ -51,6 +51,29 @@ export interface ArticleSectionSummary {
   wordCount: number;
 }
 
+/** One section in a ranked search response. Safe metadata + score only. */
+export interface SectionMatch {
+  sectionId: string;
+  heading: string;
+  /** Normalized 0..1 confidence that this section answers the query. */
+  score: number;
+}
+
+/** One article in a ranked search response. Safe metadata + scores only. */
+export interface SearchResultSummary {
+  article: ArticleSummary;
+  /** Normalized 0..1 confidence that this article answers the query. */
+  score: number;
+  matchedSections: SectionMatch[];
+}
+
+export interface SearchResponse {
+  query: string;
+  /** Whether embeddings were used ("semantic") or the lexical fallback ("lexical"). */
+  mode: "semantic" | "lexical";
+  results: SearchResultSummary[];
+}
+
 export interface ArticleNavigation {
   articleId: string;
   sections: ArticleSectionSummary[];

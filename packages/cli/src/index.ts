@@ -177,17 +177,21 @@ async function repository(runtime: Runtime): Promise<void> {
 
 async function search(runtime: Runtime, query: string | undefined): Promise<void> {
   if (!query) throw new CliError("MISSING_QUERY", "rubicon search requires a query.");
-  const response = await runtime.client.getRepository();
-  const matches = response.articles.filter((article) => matchesQuery(article, query));
+  const limit = limitFlag(runtime.parsed);
+  const response = await runtime.client.search(query, limit ? { limit } : undefined);
   if (runtime.json) {
-    printJson({ success: true, query, articles: matches.map(articleJson) });
+    printJson({ success: true, query, mode: response.mode, results: response.results.map((result) => ({ ...articleJson(result.article), score: result.score, matchedSections: result.matchedSections })) });
     return;
   }
-  if (matches.length === 0) {
+  if (response.results.length === 0) {
     process.stdout.write("No matches.\n");
     return;
   }
-  process.stdout.write(matches.map((article) => `${article.articleId} | ${article.title} | ${article.author}`).join("\n") + "\n");
+  process.stdout.write(
+    response.results
+      .map((result) => `${result.article.articleId} | ${result.article.title} | ${result.article.author} | score ${(result.score * 100).toFixed(0)}`)
+      .join("\n") + "\n",
+  );
 }
 
 async function articleShow(runtime: Runtime, articleId: string | undefined): Promise<void> {
@@ -640,24 +644,6 @@ async function validateSection(runtime: Runtime, articleId: string, sectionId: s
   if (!article.sections.some((section) => section.sectionId === sectionId)) {
     throw new CliError("SECTION_NOT_FOUND", `Section not found for ${articleId}: ${sectionId}`);
   }
-}
-
-function matchesQuery(article: ArticleSummary, query: string): boolean {
-  const haystack = [
-    article.articleId,
-    article.title,
-    article.author,
-    article.creatorUsername,
-    ...article.sections.map((section) => section.heading),
-    ...article.sections.map((section) => section.sectionId),
-  ]
-    .join(" ")
-    .toLowerCase();
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .every((term) => haystack.includes(term));
 }
 
 function showHelp(json: boolean): void {

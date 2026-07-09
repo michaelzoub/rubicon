@@ -1,9 +1,12 @@
 import {
   parseUsdcToAtomic,
   settlementNetworkInfo,
+  lexicalConfidence,
   type ArticleNavigation,
   type ArticleSummary,
   type ConversationMessage,
+  type SearchResponse,
+  type SectionMatch,
   type StreamMode,
 } from "@rubicon-caliga/core";
 import type { ReadGranularity, ReadReceipt, RubiconClient } from "@rubicon-caliga/agent-sdk/agent-client";
@@ -150,6 +153,14 @@ export async function runQuickstartRead(runtime: CommandRuntime, deps: CommandDe
  */
 export const MIN_GOAL_FIT_EXPECTED_VALUE = 0.35;
 
+/**
+ * Confidence floor for semantic/lexical search selection. The top search result
+ * must score at or above this normalized 0..1 value or the buyer refuses
+ * selection with zero spend, mirroring the goal-fit semantics but applied at
+ * discovery time. Overridable via --min-confidence flag or RUBICON_MIN_CONFIDENCE env.
+ */
+export const MIN_SEARCH_CONFIDENCE = 0.35;
+
 /** Seller statements that declare the article cannot serve the buyer's goal. */
 const SELLER_NO_FIT_PATTERN =
   /(unrelated|not related|irrelevant|not relevant|unlikely to (be )?(relevant|help|answer)|cannot answer|can'?t answer|does ?not (cover|address|answer)|doesn'?t (cover|address|answer)|off-?topic|no relevant (section|content))/i;
@@ -217,20 +228,32 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
   const repository = await runtime.client.getRepository();
   const liveArticles = repository.articles.filter((candidate) => candidate.state === "live");
   const availableTitles = liveArticles.map((candidate) => candidate.title);
-  const article = [...liveArticles]
-    .filter((candidate) => articleRelevance(candidate, goal) > 0)
-    .sort((left, right) => articleRelevance(right, goal) - articleRelevance(left, goal))[0];
-  if (!article && liveArticles.length > 0) {
-    emit({ type: "goalfit.gate", decision: "stop_zero_spend", reason: "no_direct_metadata_match", availableTitles });
+
+  // Semantic/lexical search ranks candidates by a normalized 0..1 confidence.
+  // The buyer refuses selection below the confidence floor (zero-spend stop).
+  const minConfidence = resolveMinConfidence(runtime.parsed);
+  const search = await runtime.client.search(goal, { limit: 20 });
+  const top = search.results[0];
+  if (!top || top.score < minConfidence) {
+    emit({
+      type: "goalfit.gate",
+      decision: "stop_zero_spend",
+      reason: "below_confidence_floor",
+      topScore: top?.score ?? 0,
+      minConfidence,
+      availableTitles,
+    });
     return noRelevantArticleResult({ runtime, wroteGatewayConfig, goal, approvedBudgetUsdc, availableTitles, events });
   }
-  if (!article) throw new CliError("NO_ARTICLES", "No public articles are available from the configured gateway.");
+  const article = top.article;
+  const searchMatchedSections: SectionMatch[] = top.matchedSections;
   emit({
     type: "article.selected",
     articleId: article.articleId,
-    basis: "safe_metadata_relevance",
+    basis: "semantic_search",
     provisional: true,
-    metadataRelevance: articleRelevance(article, goal),
+    searchScore: top.score,
+    searchMode: search.mode,
   });
 
   emit({ type: "seller.consultation.started", articleId: article.articleId });
@@ -289,7 +312,7 @@ export async function runBuy(runtime: CommandRuntime, deps: CommandDeps = {}): P
   const purchaseOne = /\bpurchase\s+(?:exactly\s+)?one\b/i.test(goal);
   const ranked = (granularity === "article"
     ? [{ sectionId: "full-article", expectedValue: 1, minimumUsefulWords: article.totalWords, rationale: "Buyer selected the complete article.", score: 1 / article.totalWords }]
-    : rankSectionPlans(article, navigation.sellerAgent)).slice(0, purchaseOne ? 1 : undefined);
+    : rankSectionPlans(article, navigation.sellerAgent, searchMatchedSections)).slice(0, purchaseOne ? 1 : undefined);
   if (ranked.length === 0) throw new CliError("NO_RELEVANT_SECTIONS", "The seller agent did not identify a purchasable section.");
 
   // Affordability must be decided before any Circle wallet/payment preflight:
@@ -724,17 +747,43 @@ function granularityForBuy(granularity: ReadGranularity | undefined, maxWords: n
 }
 
 function articleRelevance(article: ArticleSummary, goal: string): number {
-  const stopWords = new Set(["and", "are", "article", "about", "explain", "find", "for", "from", "how", "into", "one", "purchase", "summarize", "the", "this", "what", "with"]);
-  const terms = goal.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2 && !stopWords.has(term));
-  const text = [article.title, ...article.sections.map((section) => section.heading)].join(" ").toLowerCase();
-  return terms.filter((term) => text.includes(term)).length;
+  return lexicalConfidence(article, goal);
 }
 
-function rankSectionPlans(article: ArticleSummary, seller: Awaited<ReturnType<RubiconClient["getNavigation"]>>["navigation"]["sellerAgent"]) {
-  const assessments = seller.sectionAssessments ?? [seller.recommendedSectionId, ...seller.alternativeSectionIds].map((sectionId, index) => ({ sectionId, expectedValue: Math.max(0.25, 0.9 - index * 0.25), minimumUsefulWords: 1, rationale: seller.rationale }));
+function resolveMinConfidence(parsed: ParsedArgs): number {
+  const flagValue = stringFlag(parsed.flags, "min-confidence");
+  if (flagValue !== undefined) {
+    const num = Number(flagValue);
+    if (Number.isFinite(num) && num >= 0 && num <= 1) return num;
+    throw new CliError("INVALID_MIN_CONFIDENCE", "--min-confidence must be a number between 0 and 1.");
+  }
+  const envValue = process.env.RUBICON_MIN_CONFIDENCE;
+  if (envValue !== undefined && envValue.trim() !== "") {
+    const num = Number(envValue);
+    if (Number.isFinite(num) && num >= 0 && num <= 1) return num;
+  }
+  return MIN_SEARCH_CONFIDENCE;
+}
+
+function rankSectionPlans(
+  article: ArticleSummary,
+  seller: Awaited<ReturnType<RubiconClient["getNavigation"]>>["navigation"]["sellerAgent"],
+  searchSections?: SectionMatch[],
+) {
+  const searchScores = new Map((searchSections ?? []).map((match) => [match.sectionId, match.score]));
+  const assessments = seller.sectionAssessments ?? [seller.recommendedSectionId, ...seller.alternativeSectionIds].map((sectionId, index) => ({
+    sectionId,
+    // Use real search scores when available; fall back to synthetic decay.
+    expectedValue: searchScores.get(sectionId) ?? Math.max(0.25, 0.9 - index * 0.25),
+    minimumUsefulWords: 1,
+    rationale: seller.rationale,
+  }));
   return assessments.flatMap((assessment) => {
     const section = article.sections.find((candidate) => candidate.sectionId === assessment.sectionId);
-    if (!section || section.sectionId === "full-article") return [];
+    // Skip the whole-article alias and any zero-word section (e.g. a bare H1 title
+    // heading) — you can never buy 0 words, and the Math.max(1, …) floor below would
+    // otherwise give an empty section an inflated score and a 0-cap payment failure.
+    if (!section || section.sectionId === "full-article" || section.wordCount === 0) return [];
     if (assessment.expectedValue < MIN_GOAL_FIT_EXPECTED_VALUE) return [];
     const minimumUsefulWords = Math.max(1, Math.min(section.wordCount, assessment.minimumUsefulWords));
     return [{ ...assessment, minimumUsefulWords, score: assessment.expectedValue / minimumUsefulWords }];

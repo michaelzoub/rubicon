@@ -293,7 +293,9 @@ Gateway and many SDK/core tests execute compiled `dist` output, so run
 
 See [docs/architecture.md](./docs/architecture.md),
 [docs/server-endpoint-architecture.md](./docs/server-endpoint-architecture.md),
-[docs/cli.md](./docs/cli.md), and [docs/protocol.md](./docs/protocol.md). To
+[docs/cli.md](./docs/cli.md), [docs/protocol.md](./docs/protocol.md), and
+[docs/embeddings-contract.md](./docs/embeddings-contract.md) (the section-embedding
+write contract owned by rubicon-marketing). To
 test an unpublished SDK from another local agent project, use
 [docs/local-agent-test.md](./docs/local-agent-test.md). For a public agent setup
 file, use [skill.md](./skill.md).

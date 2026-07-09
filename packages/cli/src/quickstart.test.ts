@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ReadReceipt, RubiconClient } from "@rubicon-caliga/agent-sdk/agent-client";
 import type { ArticleSummary } from "@rubicon-caliga/core";
+import { lexicalSearch } from "@rubicon-caliga/core";
 import { parseArgs } from "./args.js";
 import { CliError } from "./errors.js";
 import { finalReceiptJson, runDoctor, runQuickstartRead, type CommandRuntime } from "./quickstart.js";
@@ -204,6 +205,9 @@ function runtimeFor(input: { argv?: string[]; article?: ArticleSummary } = {}): 
   const client = {
     async getRepository() {
       return { repository: "articles" as const, articles: [articleFixture] };
+    },
+    async search(query: string, options?: { limit?: number }) {
+      return { query, mode: "lexical" as const, results: lexicalSearch([articleFixture], query, options?.limit ?? 20) };
     },
     async getNavigation() {
       return {

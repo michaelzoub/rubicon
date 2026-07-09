@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ReadReceipt, RubiconClient, RunOptions } from "@rubicon-caliga/agent-sdk/agent-client";
 import type { ArticleSummary, SellerSectionAssessment } from "@rubicon-caliga/core";
+import { lexicalSearch } from "@rubicon-caliga/core";
 import { parseArgs } from "./args.js";
 import { CliError } from "./errors.js";
 import { loadOperation } from "./operations.js";
@@ -452,6 +453,9 @@ function setup(assessments: SellerSectionAssessment[], options: { price?: `${big
   const consultations: string[] = [];
   const client = {
     async getRepository() { return { repository: "articles" as const, articles: [article] }; },
+    async search(query: string, options?: { limit?: number }) {
+      return { query, mode: "lexical" as const, results: lexicalSearch([article], query, options?.limit ?? 20) };
+    },
     async startConversation() {
       consultations.push(article.articleId);
       const messages = options.sellerMessage

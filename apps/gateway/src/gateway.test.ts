@@ -161,6 +161,10 @@ class FakeSupabase implements SupabaseReader {
     return new FakeSupabaseQuery<T>(this, table);
   }
 
+  rpc<T = unknown>(_fn: string, _args: Record<string, unknown>): Promise<{ data: T | null; error: { message: string; details?: string } | null }> {
+    return Promise.resolve({ data: null, error: null });
+  }
+
   rowsFor(table: string): unknown[] {
     if (this.error) {
       return [];

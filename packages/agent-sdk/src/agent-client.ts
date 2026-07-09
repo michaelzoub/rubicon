@@ -3,6 +3,7 @@ import type {
   ArticleSummary,
   Budget,
   GatewayEvent,
+  SearchResponse,
   SendConversationMessageResponse,
   StartConversationResponse,
   StartSessionRequest,
@@ -180,6 +181,15 @@ export class RubiconClient {
     const url = new URL(`${this.baseUrl}/v1/articles/${articleId}/navigation`);
     if (goal) {
       url.searchParams.set("goal", goal);
+    }
+    return this.readJson(await this.fetcher(url.toString(), this.timeoutInit({ headers: this.headers() })));
+  }
+
+  async search(query: string, options?: { limit?: number }): Promise<SearchResponse> {
+    const url = new URL(`${this.baseUrl}/v1/search`);
+    url.searchParams.set("q", query);
+    if (options?.limit != null) {
+      url.searchParams.set("limit", String(options.limit));
     }
     return this.readJson(await this.fetcher(url.toString(), this.timeoutInit({ headers: this.headers() })));
   }

@@ -1,6 +1,6 @@
 ---
 name: rubicon
-version: 2.7.0
+version: 2.8.0
 description: Autonomously read relevant free or paid article content within a hard USDC budget
 homepage: https://github.com/michaelzoub/rubicon
 ---
@@ -66,9 +66,11 @@ Do not require or instruct the user or calling agent to run `doctor`, repository
 inspection, article inspection, navigation, dry-run, wallet status, or receipt
 commands before or after `rubicon buy`.
 
-The command performs all necessary work internally. It selects the first
-relevant live article, validates the budget, consults the seller agent, reads
-the content, and saves and verifies the receipt. For paid articles it also
+The command performs all necessary work internally. It ranks live articles by
+semantic search score (falling back to lexical scoring when embeddings are
+unavailable) and selects the top match only when its confidence clears the
+floor, validates the budget, consults the seller agent, reads the content, and
+saves and verifies the receipt. For paid articles it also
 verifies wallet readiness and authorizes payment. Explicitly free articles skip
 Circle, signing, settlement, and payment records entirely. Internal validation
 should remain hidden unless it fails. JSON
@@ -84,11 +86,13 @@ The CLI enforces a hard goal-fit gate in runtime code before it creates a paid
 session or authorizes any payment. This behavior is not a prompt-level
 convention; the buyer cannot be talked out of it:
 
-- Catalog selection from safe metadata is provisional, never a purchase
-  decision.
-- Before seller consultation or payment, the buyer requires a direct topic
-  match in safe article metadata. If none exists, it reports the available
-  titles and stops with zero spend.
+- Catalog selection from ranked search results and safe metadata is
+  provisional, never a purchase decision.
+- Before seller consultation or payment, the buyer ranks candidates through the
+  gateway `/v1/search` endpoint and requires the top result's normalized
+  confidence score to meet the floor (`0.35` by default, overridable with
+  `--min-confidence` or `RUBICON_MIN_CONFIDENCE`). If the top score is below the
+  floor, it reports the available titles and stops with zero spend.
 - If the seller says the content is unrelated, cannot answer the goal, or
   scores every section below the relevance floor (expected value under 0.35),
   the CLI stops immediately with zero spend.
@@ -140,7 +144,8 @@ decide whether to purchase, switch sections, or stop. Ask:
 - The minimum useful word count for each section.
 - Which alternative sections could answer the goal.
 
-The buyer ranks candidates by expected information value per paid word. It
+Within the selected article, the buyer ranks candidate sections by expected
+information value per paid word, informed by the per-section search scores. It
 must not automatically begin with the introduction. With a small budget, it
 prefers concise, self-contained sections. It reserves budget for conclusions,
 counterarguments, or practical details when those are likely to improve the

@@ -50,6 +50,13 @@ export interface PublishedArticleRepository {
   getPublishedArticle(articleId: string): Promise<ArticleRecord | null>;
   getArticleSections(articleId: string): Promise<ArticleSection[]>;
   getCreatorWallet(creatorId: string): Promise<CreatorWallet | null>;
+  /**
+   * Semantic top-k search over section embeddings. Absent or returning empty
+   * signals the caller to fall back to lexical scoring. Implemented by the
+   * Supabase adapter (pgvector RPC); the in-memory demo adapter does not
+   * implement it so demo mode is lexical-only.
+   */
+  searchSections?(queryEmbedding: number[], matchCount: number): Promise<Array<{ articleId: string; sectionId: string; revision: number; similarity: number }>>;
 }
 
 export interface RecordWordDeliveryInput {

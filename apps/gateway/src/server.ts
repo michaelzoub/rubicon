@@ -11,10 +11,12 @@ import {
   recordWordPayment,
   settlementNetworkInfo,
   usageForWords,
+  lexicalSearch,
   type ArticleNavigation,
   type ArticleSummary,
   type ConversationMessage,
   type GatewayEvent,
+  type SearchResponse,
   type SellerAgentMessageRecord,
   type SellerPaymentTerms,
   type SendConversationMessageRequest,
@@ -35,6 +37,7 @@ import type { ArticleRecord, LedgerRepository, PublishedArticleRepository } from
 import { DefaultSellerAgent, type SellerAgent } from "./seller-agent/seller-agent.js";
 import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
 import { wordsForSection } from "./words.js";
+import { buildSearchResults } from "./search/search-service.js";
 import {
   affordableWordCount,
   authorizedWordCount,
@@ -54,6 +57,8 @@ export interface GatewayOptions {
   gatewayFeeBps?: number;
   gatewayBaseUrl?: string;
   logger?: boolean;
+  /** Query embedder for semantic search. Null when OPENAI_API_KEY is unset (lexical fallback). */
+  queryEmbedder?: ((q: string) => Promise<number[] | null>) | null;
 }
 
 const STOP_CONDITIONS: StreamStopCondition[] = [
@@ -68,7 +73,8 @@ const STOP_CONDITIONS: StreamStopCondition[] = [
 const ENDPOINTS = [
   { method: "GET", path: "/health", description: "Gateway health check." },
   { method: "GET", path: "/v1/endpoints", description: "Lists gateway endpoints." },
-  { method: "GET", path: "/v1/repository", description: "Lists live articles available to buyer agents." },
+  { method: "GET", path: "/v1/repository", description: "Lists live articles available to buyer agents. Optional ?q= ranks results by search relevance." },
+  { method: "GET", path: "/v1/search", description: "Semantic or lexical search over live articles. Requires ?q= query." },
   { method: "GET", path: "/v1/articles/:articleId/navigation", description: "Safe seller-agent navigation; no unpaid body text." },
   { method: "POST", path: "/v1/seller-agent/conversations", description: "Opens a conversation with an article's seller agent." },
   { method: "POST", path: "/v1/seller-agent/conversations/:conversationId/messages", description: "Sends a message to the seller agent." },
@@ -89,6 +95,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   const gatewayFeeBps = options.gatewayFeeBps ?? 0;
   const gatewayBaseUrl = options.gatewayBaseUrl ?? `http://localhost:${process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787}`;
   const agentApiKey = process.env.RUBICON_AGENT_API_KEY;
+  const queryEmbedder = options.queryEmbedder ?? null;
   const paidReading = new PaidReadingWorkflow({
     articles,
     ledger,
@@ -314,21 +321,47 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     reply.log.error({ err: error }, "failed to load article repository from Supabase");
   }
 
-  async function listRepository(reply: FastifyReply): Promise<{ repository: "articles"; articles: ArticleSummary[] } | FastifyReply> {
+  async function listRepository(reply: FastifyReply, q?: string): Promise<{ repository: "articles"; articles: ArticleSummary[] } | FastifyReply> {
     try {
-      return {
-        repository: "articles",
-        articles: await withPaymentTerms(await articles.listPublishedArticles()),
-      };
+      const summaries = await withPaymentTerms(await articles.listPublishedArticles());
+      if (!q || !q.trim()) {
+        return { repository: "articles", articles: summaries };
+      }
+      // When ?q= is present, rank/filter by lexical search but keep the exact
+      // { repository, articles } shape (no score fields — thin alias).
+      const ranked = lexicalSearch(summaries, q, summaries.length);
+      return { repository: "articles", articles: ranked.map((result) => result.article) };
     } catch (error) {
       requestLogStorageFailure(reply, error);
       return reply.code(500).send({ error: "repository_unavailable", message: "Unable to load the article repository." });
     }
   }
 
-  app.get("/v1/repository", async (_request, reply) => listRepository(reply));
+  app.get<{ Querystring: { q?: string } }>("/v1/repository", async (request, reply) => listRepository(reply, request.query.q));
 
-  app.get("/v1/articles", async (_request, reply) => listRepository(reply));
+  app.get<{ Querystring: { q?: string } }>("/v1/articles", async (request, reply) => listRepository(reply, request.query.q));
+
+  app.get<{ Querystring: { q?: string; limit?: string } }>("/v1/search", async (request, reply) => {
+    const q = request.query.q;
+    if (!q || !q.trim()) {
+      return reply.code(400).send({ error: "missing_query", message: "The q parameter is required for search." });
+    }
+    const parsedLimit = request.query.limit ? Number(request.query.limit) : 20;
+    const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(50, parsedLimit)) : 20;
+    try {
+      const response: SearchResponse = await buildSearchResults({
+        query: q,
+        limit,
+        repo: articles,
+        embedder: queryEmbedder,
+        withPaymentTerms,
+      });
+      return reply.send(response);
+    } catch (error) {
+      requestLogStorageFailure(reply, error);
+      return reply.code(500).send({ error: "search_unavailable", message: "Unable to perform search at this time." });
+    }
+  });
 
   app.get<{ Params: { articleId: string }; Querystring: { goal?: string } }>(
     "/v1/articles/:articleId/navigation",
