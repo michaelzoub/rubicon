@@ -128,7 +128,7 @@ There is no browser UI or CSS in this repo. User-facing surfaces are CLI text/JS
 ## Recent architecture changes
 
 - 2026-07-10: Added canonical, valid article-navigation sources to public article summaries and AgentCash-safe marketplace icon metadata to Base x402 challenges, emitted only for public HTTPS gateway origins.
-- 2026-07-10: Expanded `/openapi.json` into the complete public buyer-gateway contract, with request/response schemas for navigation, conversations, sessions, streaming, SSE, and aborts; the metered Circle/Arc session and separately payable Base whole-article operations are dynamically advertised as `x-payment-info` x402scan resources only when live paid inventory supports them.
+- 2026-07-10: Scoped `/openapi.json` to the directly invocable Base whole-article AgentCash resource so x402scan does not catalog internal seller-conversation or Circle/Arc session workflow routes; it is advertised only when a live paid article has a verified Base wallet.
 - 2026-07-10: Hardened the AgentCash Base lane to pay only verified writer wallets on the configured Base network, bound its runtime price to its x402scan discovery maximum, and served the Rubicon white-backed logo for marketplace discovery.
 - 2026-07-03: Added explicit `accessMode: free | paid` across gateway, SDK, and CLI.
 - 2026-07-03: Updated published package integrations and buyer-facing package versions.

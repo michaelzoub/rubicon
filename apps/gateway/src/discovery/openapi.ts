@@ -1,11 +1,9 @@
 /**
  * The public, machine-readable contract served by `GET /openapi.json`.
  *
- * Keep this deliberately close to `server.ts`: x402scan uses this document to
- * enumerate resources, while agents use it to construct requests. The Base
- * whole-article endpoint is the one independently payable HTTP resource; the
- * session routes are a stateful Circle/Arc protocol and may be free or paid
- * according to the article selected when a session is opened.
+ * x402scan uses this as its marketplace catalog. The Base whole-article
+ * endpoint is the only independently payable AgentCash resource; Rubicon's
+ * session and seller-agent APIs are internal workflow routes and are excluded.
  */
 
 export interface OpenApiOptions {
@@ -17,10 +15,6 @@ export interface OpenApiOptions {
   agentCashPurchaseEnabled?: boolean;
   /** Decimal USD ceiling enforced by the Base purchase route. */
   agentCashMaxPriceUsd?: string;
-  /** Whether a published paid article has verified Circle/Arc payment terms. */
-  meteredSessionPurchaseEnabled?: boolean;
-  /** Decimal USD ceiling for the largest currently discoverable metered article. */
-  meteredSessionMaxPriceUsd?: string;
 }
 
 const X_GUIDANCE = [
@@ -113,7 +107,7 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
   // discovery/navigation into an identity- or payment-gated resource.
   const free = { security: [] as never[] };
 
-  return {
+  const document = {
     openapi: "3.1.0",
     info: {
       title: "Rubicon",
@@ -269,19 +263,6 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
           description:
             "This is the primary metered purchase resource. For paid articles it returns x402 authorization terms, and paid delivery operations require the resulting x402 payment payload before releasing words. Free articles create a no-cost session. An invalid or unpaid discovery probe receives a valid x402 v2 402 challenge before body validation.",
           ...free,
-          ...(options.meteredSessionPurchaseEnabled
-            ? {
-                "x-payment-info": {
-                  protocols: [{ x402: {} }],
-                  price: {
-                    mode: "dynamic",
-                    currency: "USD",
-                    min: "0.000001",
-                    max: options.meteredSessionMaxPriceUsd ?? "10",
-                  },
-                },
-              }
-            : {}),
           requestBody: requestBody("#/components/schemas/StartSessionRequest"),
           responses: {
             "201": jsonResponse("Session opened.", {
@@ -758,6 +739,16 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
       },
     },
   };
+
+  // x402scan uses this document as a marketplace catalog, not as an inventory
+  // of internal workflow routes. Only the standalone Base purchase is a
+  // directly invocable AgentCash resource; sessions and seller conversations
+  // remain reachable by authenticated Rubicon clients but are not discoverable.
+  const purchasePath = "/v1/x402/articles/{articleId}";
+  const paths = document.paths as Record<string, unknown>;
+  return options.agentCashPurchaseEnabled && paths[purchasePath]
+    ? { ...document, paths: { [purchasePath]: paths[purchasePath] } }
+    : { ...document, paths: {} };
 }
 
 function requestBody(schemaRef: string, required = true): Record<string, unknown> {

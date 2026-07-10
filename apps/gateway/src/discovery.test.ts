@@ -33,10 +33,13 @@ function article(): ArticleFixture {
   };
 }
 
-function setup(articles: ArticleFixture[] = [article()]): { app: FastifyInstance } {
+function setup(
+  articles: ArticleFixture[] = [article()],
+  walletNetwork = "eip155:5042002",
+): { app: FastifyInstance } {
   const published = new InMemoryPublishedArticleRepository({
     articles,
-    wallets: [{ creatorId: "creator-a", address: CREATOR_WALLET, network: "eip155:5042002" }],
+    wallets: [{ creatorId: "creator-a", address: CREATOR_WALLET, network: walletNetwork }],
   });
   const app = createGateway({
     articleRepository: published,
@@ -49,7 +52,7 @@ function setup(articles: ArticleFixture[] = [article()]): { app: FastifyInstance
   return { app };
 }
 
-test("GET /openapi.json describes the complete public gateway surface", async () => {
+test("GET /openapi.json only catalogs directly payable AgentCash resources", async () => {
   const { app } = setup();
   const res = await app.inject({ method: "GET", url: "/openapi.json" });
   assert.equal(res.statusCode, 200);
@@ -59,30 +62,9 @@ test("GET /openapi.json describes the complete public gateway surface", async ()
   assert.equal(doc.info.version, "9.9.9");
   assert.ok(typeof doc.info["x-guidance"] === "string" && doc.info["x-guidance"].length > 0);
   assert.equal(doc.externalDocs.url, "http://test/openapi.json");
-  for (const path of [
-    "/openapi.json",
-    "/health",
-    "/v1/endpoints",
-    "/v1/repository",
-    "/v1/articles",
-    "/v1/search",
-    "/v1/articles/{articleId}/navigation",
-    "/v1/seller-agent/conversations",
-    "/v1/seller-agent/conversations/{conversationId}/messages",
-    "/v1/sessions",
-    "/v1/sessions/{sessionId}/stream",
-    "/v1/sessions/{sessionId}/payments",
-    "/v1/sessions/{sessionId}/events",
-    "/v1/sessions/{sessionId}/abort",
-  ]) {
-    assert.ok(doc.paths[path], `${path} is present`);
-  }
-  // Free and control-plane operations must not accidentally inherit auth.
-  assert.deepEqual(doc.paths["/v1/repository"].get.security, []);
-  assert.deepEqual(doc.paths["/v1/sessions"].post.security, []);
-  // Stateful operations describe both their request and successful response.
-  assert.ok(doc.paths["/v1/sessions"].post.requestBody.content["application/json"].schema);
-  assert.ok(doc.paths["/v1/sessions"].post.responses["201"].content["application/json"].schema);
+  assert.deepEqual(doc.paths, {});
+  assert.ok(!JSON.stringify(doc.paths).includes("seller-agent"));
+  assert.ok(!JSON.stringify(doc.paths).includes("/v1/sessions"));
   assert.ok(doc.components.schemas.StartSessionRequest);
   assert.deepEqual(doc.components.schemas.ArticleSource.required, ["title", "url", "type"]);
   assert.equal(doc.components.schemas.ArticleSource.properties.url.format, "uri");
@@ -94,6 +76,7 @@ test("GET /openapi.json describes the complete public gateway surface", async ()
     type: "article_navigation",
   });
   assert.ok(!source.url.includes("[Image #1]"));
+  await app.close();
 });
 
 test("discovery only advertises the AgentCash Base purchase route when a writer has a verified Base wallet", async () => {
@@ -114,10 +97,32 @@ test("discovery only advertises the AgentCash Base purchase route when a writer 
     !doc.paths["/v1/x402/articles/{articleId}"],
     "Arc-only creator wallet must not be advertised as Base-payable",
   );
-  assert.deepEqual(doc.paths["/v1/sessions"].post["x-payment-info"], {
+  assert.deepEqual(doc.paths, {});
+  await app.close();
+});
+
+test("discovery exposes only a Base-ready whole-article resource", async () => {
+  const paid: ArticleFixture = {
+    id: "art-base",
+    creatorId: "creator-a",
+    creatorUsername: "alice",
+    title: "Base-ready Guide",
+    author: "Alice",
+    state: "live",
+    accessMode: "paid",
+    pricePerWordAtomic: 100n,
+    body: "one two three",
+  };
+  const { app } = setup([paid], "eip155:8453");
+  const doc = (await app.inject({ method: "GET", url: "/openapi.json" })).json() as any;
+  const path = doc.paths["/v1/x402/articles/{articleId}"];
+  assert.deepEqual(Object.keys(doc.paths), ["/v1/x402/articles/{articleId}"]);
+  assert.deepEqual(path.post["x-payment-info"], {
     protocols: [{ x402: {} }],
-    price: { mode: "dynamic", currency: "USD", min: "0.000001", max: "0.0003" },
+    price: { mode: "dynamic", currency: "USD", min: "0.000001", max: "10" },
   });
+  assert.ok(path.post.requestBody.content["application/json"].schema);
+  assert.ok(path.post.responses["402"]);
   await app.close();
 });
 
