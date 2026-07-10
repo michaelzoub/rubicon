@@ -53,7 +53,6 @@ interface SemanticSectionHit {
  */
 export async function buildSearchResults(input: BuildSearchResultsInput): Promise<SearchResponse> {
   const summaries = await input.withPaymentTerms(await input.repo.listPublishedArticles());
-  const byArticleId = new Map(summaries.map((summary) => [summary.articleId, summary]));
 
   // Attempt semantic search.
   let semanticHits: Map<string, SemanticSectionHit[]> | null = null;

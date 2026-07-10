@@ -58,6 +58,7 @@ test("GET /openapi.json describes the complete public gateway surface", async ()
   assert.equal(doc.info.title, "Rubicon");
   assert.equal(doc.info.version, "9.9.9");
   assert.ok(typeof doc.info["x-guidance"] === "string" && doc.info["x-guidance"].length > 0);
+  assert.equal(doc.externalDocs.url, "http://test/openapi.json");
   for (const path of [
     "/openapi.json",
     "/health",
@@ -83,6 +84,16 @@ test("GET /openapi.json describes the complete public gateway surface", async ()
   assert.ok(doc.paths["/v1/sessions"].post.requestBody.content["application/json"].schema);
   assert.ok(doc.paths["/v1/sessions"].post.responses["201"].content["application/json"].schema);
   assert.ok(doc.components.schemas.StartSessionRequest);
+  assert.deepEqual(doc.components.schemas.ArticleSource.required, ["title", "url", "type"]);
+  assert.equal(doc.components.schemas.ArticleSource.properties.url.format, "uri");
+  const repository = await app.inject({ method: "GET", url: "/v1/repository" });
+  const source = (repository.json() as any).articles[0].sources[0];
+  assert.deepEqual(source, {
+    title: "Rubicon article navigation",
+    url: "http://test/v1/articles/art-sel/navigation",
+    type: "article_navigation",
+  });
+  assert.ok(!source.url.includes("[Image #1]"));
 });
 
 test("discovery only advertises the AgentCash Base purchase route when a writer has a verified Base wallet", async () => {

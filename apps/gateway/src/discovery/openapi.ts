@@ -66,6 +66,11 @@ const ARTICLE_SUMMARY = {
     pricePerWordAtomic: ATOMIC_USDC,
     maxArticlePriceAtomic: ATOMIC_USDC,
     sections: { type: "array", items: { $ref: "#/components/schemas/ArticleSection" } },
+    sources: {
+      type: "array",
+      minItems: 1,
+      items: { $ref: "#/components/schemas/ArticleSource" },
+    },
     paymentTerms: { $ref: "#/components/schemas/SellerPaymentTerms" },
   },
 } as const;
@@ -116,6 +121,10 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
       description: "Discover, evaluate, and purchase creator articles with hard USDC budget caps.",
       "x-guidance": X_GUIDANCE,
       ...contact,
+    },
+    externalDocs: {
+      description: "Canonical Rubicon OpenAPI source.",
+      url: new URL("/openapi.json", options.baseUrl).href,
     },
     servers: [{ url: options.baseUrl, description: "Rubicon gateway" }],
     paths: {
@@ -424,6 +433,15 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
             level: { type: "integer" },
             wordStart: { type: "integer", minimum: 0 },
             wordCount: { type: "integer", minimum: 0 },
+          },
+        },
+        ArticleSource: {
+          type: "object",
+          required: ["title", "url", "type"],
+          properties: {
+            title: { type: "string", minLength: 1 },
+            url: { type: "string", format: "uri" },
+            type: { type: "string", const: "article_navigation" },
           },
         },
         SellerPaymentTerms: {

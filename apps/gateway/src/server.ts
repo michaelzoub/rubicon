@@ -43,6 +43,7 @@ import { RUBICON_W_LOGO_SVG } from "./discovery/w-logo.js";
 import { resolveBaseX402Config, type BaseX402Config } from "./chain-base.js";
 import {
   buildBaseChallenge,
+  publicIconUrl,
   resolveBaseX402Verifier,
   type BaseX402Verifier,
 } from "./payments/x402-base.js";
@@ -219,15 +220,19 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   async function withPaymentTerms(summaries: ArticleSummary[]): Promise<ArticleSummary[]> {
     return Promise.all(
       summaries.map(async (summary) => {
+        const withSources = {
+          ...summary,
+          sources: articleSources(summary.articleId),
+        };
         if (summary.accessMode === "free") {
-          return summary;
+          return withSources;
         }
         const wallet = await articles.getCreatorWallet(summary.creatorId);
         if (!wallet?.verified) {
-          return summary;
+          return withSources;
         }
         return {
-          ...summary,
+          ...withSources,
           paymentTerms: paymentTerms(summary.pricePerWordAtomic, wallet.address, wallet.network),
         };
       }),
@@ -236,17 +241,29 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
 
   async function articleSummaryWithPaymentTerms(article: ArticleRecord): Promise<ArticleSummary> {
     const summary = summarizeArticle(article);
+    const withSources = {
+      ...summary,
+      sources: articleSources(article.id),
+    };
     if (article.accessMode === "free") {
-      return summary;
+      return withSources;
     }
     const wallet = await articles.getCreatorWallet(article.creatorId);
     if (!wallet?.verified) {
-      return summary;
+      return withSources;
     }
     return {
-      ...summary,
+      ...withSources,
       paymentTerms: paymentTerms(summary.pricePerWordAtomic, wallet.address, wallet.network),
     };
+  }
+
+  function articleSources(articleId: string) {
+    return [{
+      title: "Rubicon article navigation",
+      url: new URL(`/v1/articles/${encodeURIComponent(articleId)}/navigation`, gatewayBaseUrl).href,
+      type: "article_navigation" as const,
+    }];
   }
 
   function paymentTerms(
@@ -769,6 +786,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       title: article.title,
       totalWords: article.words.length,
       payTo,
+      iconUrl: publicIconUrl(resource),
     });
 
     // No payment presented → return the x402 challenge (this is also the

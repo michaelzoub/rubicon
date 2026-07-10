@@ -796,6 +796,13 @@ test("repository endpoint returns live article records from Supabase", async () 
         totalWords: 6,
         pricePerWordAtomic: "7",
         maxArticlePriceAtomic: "42",
+        sources: [
+          {
+            title: "Rubicon article navigation",
+            url: "http://test/v1/articles/art-db/navigation",
+            type: "article_navigation",
+          },
+        ],
         paymentTerms: {
           asset: "USDC",
           network: "eip155:5042002",

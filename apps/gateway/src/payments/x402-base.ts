@@ -41,7 +41,14 @@ export interface BaseChallenge {
   x402Version: 2;
   error: string;
   /** Top-level resource descriptor required by the x402 v2 schema. */
-  resource: { url: string; description: string; mimeType: string };
+  resource: {
+    url: string;
+    description: string;
+    mimeType: string;
+    serviceName: string;
+    tags: string[];
+    iconUrl?: string;
+  };
   accepts: BaseAccept[];
   extensions: {
     bazaar: {
@@ -64,6 +71,8 @@ export interface BuildBaseChallengeInput {
   articleId: string;
   title: string;
   totalWords: number;
+  /** Public HTTPS icon for marketplace renderers, when the gateway has one. */
+  iconUrl?: string;
   /**
    * Recipient of the USDC payment. This is required: callers must pass the
    * article creator's verified wallet on the configured Base network. There is
@@ -99,6 +108,9 @@ export function buildBaseChallenge(input: BuildBaseChallengeInput): BaseChalleng
       url: input.resource,
       description: `Rubicon whole-article purchase: ${input.title}`,
       mimeType: "application/json",
+      serviceName: "Rubicon",
+      tags: ["articles", "research", "usdc"],
+      ...(input.iconUrl ? { iconUrl: input.iconUrl } : {}),
     },
     accepts: [accept],
     extensions: {
@@ -131,6 +143,19 @@ export function buildBaseChallenge(input: BuildBaseChallengeInput): BaseChalleng
       },
     },
   };
+}
+
+/** Return the marketplace-safe logo URL for a publicly reachable gateway. */
+export function publicIconUrl(resource: string): string | undefined {
+  try {
+    const url = new URL(resource);
+    if (url.protocol !== "https:" || !url.hostname.includes(".") || url.username || url.password) {
+      return undefined;
+    }
+    return new URL("/w_logo.svg", url.origin).href;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Outcome of verifying a submitted x402 payment against a challenge. */

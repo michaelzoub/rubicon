@@ -6,6 +6,7 @@ import { resolveBaseX402Config } from "../chain-base.js";
 import {
   buildBaseChallenge,
   CdpBaseVerifier,
+  publicIconUrl,
   resolveBaseX402Verifier,
   UnconfiguredBaseVerifier,
   type BaseAccept,
@@ -85,6 +86,25 @@ test("buildBaseChallenge emits a checker-compliant x402 v2 challenge", () => {
   // bazaar schema block the AgentCash discovery checker requires:
   assert.ok(c.extensions.bazaar.schema.properties.input.properties.body);
   assert.ok(c.extensions.bazaar.schema.properties.output.properties.example);
+});
+
+test("AgentCash marketplace metadata only exposes a public image source", () => {
+  const resource = "https://gateway.rubicon.example/v1/x402/articles/art-1";
+  const iconUrl = publicIconUrl(resource);
+  assert.equal(iconUrl, "https://gateway.rubicon.example/w_logo.svg");
+  assert.equal(publicIconUrl("http://localhost:8787/v1/x402/articles/art-1"), undefined);
+  const challenge = buildBaseChallenge({
+    config: resolveBaseX402Config({} as NodeJS.ProcessEnv),
+    resource,
+    priceAtomic: 15n,
+    articleId: "art-1",
+    title: "Paid Article",
+    totalWords: 5,
+    payTo: "0x00000000000000000000000000000000000000aa",
+    iconUrl,
+  });
+  assert.equal(challenge.resource.iconUrl, iconUrl);
+  assert.ok(!JSON.stringify(challenge.resource).includes("[Image #1]"));
 });
 
 test("UnconfiguredBaseVerifier never accepts a payment", async () => {

@@ -27,7 +27,15 @@ export interface ArticleSummary {
   maxArticlePriceAtomic: AtomicAmount;
   /** Public seller settlement terms for paid reads. Present when a verified wallet exists. */
   paymentTerms?: SellerPaymentTerms;
+  /** Canonical public references for this article's safe metadata. */
+  sources?: ArticleSource[];
   sections: ArticleSectionSummary[];
+}
+
+export interface ArticleSource {
+  title: string;
+  url: string;
+  type: "article_navigation";
 }
 
 export interface SellerPaymentTerms {
