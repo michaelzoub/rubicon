@@ -165,6 +165,14 @@ test("x402scan schema-synthesized probe (placeholder budget cap) gets an x402 40
     Array.isArray(challenge.accepts) && challenge.accepts.length > 0,
     "challenge carries accepts[]",
   );
+  assert.ok(
+    challenge.extensions?.bazaar?.schema?.properties?.input?.properties?.body,
+    "challenge carries an input schema",
+  );
+  assert.ok(
+    challenge.extensions?.bazaar?.schema?.properties?.output?.properties?.example,
+    "challenge carries an output schema",
+  );
   // Atomic units, never decimal dollars (x402scan "Malformed Runtime Amount").
   assert.match(String(challenge.accepts[0].amount), /^\d+$/);
   assert.ok(res.headers["payment-required"], "PAYMENT-REQUIRED header is set");

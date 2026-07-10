@@ -88,6 +88,48 @@ const STOP_CONDITIONS: StreamStopCondition[] = [
   { kind: "payment_rejected", description: "Stop if authorization verification or settlement fails." },
 ];
 
+// AgentCash/x402scan validates the schema carried by a runtime 402 in addition
+// to the OpenAPI document. Keep this in sync with the /v1/sessions operation:
+// it is only metadata, never buyer-supplied payment or article state.
+const SESSION_DISCOVERY_BAZAAR_SCHEMA = {
+  properties: {
+    input: {
+      properties: {
+        body: {
+          type: "object",
+          required: ["articleId", "budget"],
+          properties: {
+            articleId: { type: "string", description: "Published article ID to read." },
+            budget: {
+              type: "object",
+              required: ["currency", "maxAmountAtomic"],
+              properties: {
+                currency: { type: "string", const: "USDC" },
+                maxAmountAtomic: { type: "string", pattern: "^[0-9]+$" },
+              },
+            },
+            goal: { type: "string" },
+            sectionIds: { type: "array", items: { type: "string" } },
+            wordStart: { type: "integer", minimum: 0 },
+            wordCount: { type: "integer", minimum: 1 },
+          },
+        },
+      },
+    },
+    output: {
+      properties: {
+        example: {
+          sessionId: "session_example",
+          accessMode: "paid",
+          authorizationMode: "word",
+          wordPaymentAtomic: "100",
+          expiresAt: "2026-07-10T00:00:00.000Z",
+        },
+      },
+    },
+  },
+} as const;
+
 const ENDPOINTS = [
   { method: "GET", path: "/health", description: "Gateway health check." },
   { method: "GET", path: "/v1/endpoints", description: "Lists gateway endpoints." },
@@ -614,13 +656,13 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           metadata: { __discoveryProbe: true },
           ttlMs: options.sessionTtlMs,
         });
-        const challenge = await paymentVerifier.createPaymentRequired({
+        const challenge = withSessionDiscoverySchema(await paymentVerifier.createPaymentRequired({
           session,
           article,
           sellerWallet: wallet.address,
           wordPaymentAtomic: BigInt(quote.wordPaymentAtomic),
           gatewayBaseUrl,
-        });
+        }));
         discoveryChallenge = { value: challenge, expires: Date.now() + 5 * 60_000 };
         return challenge;
       }
@@ -628,6 +670,30 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       // Discovery probes must never 500/404; fall back to the static 402 body.
     }
     return undefined;
+  }
+
+  function withSessionDiscoverySchema(paymentRequired: unknown): unknown {
+    if (!paymentRequired || typeof paymentRequired !== "object" || Array.isArray(paymentRequired)) {
+      return paymentRequired;
+    }
+    const challenge = paymentRequired as Record<string, unknown>;
+    const extensions = challenge.extensions;
+    const existingExtensions = extensions && typeof extensions === "object" && !Array.isArray(extensions)
+      ? extensions as Record<string, unknown>
+      : {};
+    const existingBazaar = existingExtensions.bazaar;
+    return {
+      ...challenge,
+      extensions: {
+        ...existingExtensions,
+        bazaar: {
+          ...(existingBazaar && typeof existingBazaar === "object" && !Array.isArray(existingBazaar)
+            ? existingBazaar
+            : {}),
+          schema: SESSION_DISCOVERY_BAZAAR_SCHEMA,
+        },
+      },
+    };
   }
 
   // A budget cap is only real when it is a non-negative integer string of atomic
