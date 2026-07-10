@@ -39,6 +39,12 @@ import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/typ
 import { selectionFromRequest, wordsForSelection } from "./words.js";
 import { buildSearchResults } from "./search/search-service.js";
 import { buildOpenApiDocument } from "./discovery/openapi.js";
+import { resolveBaseX402Config, type BaseX402Config } from "./chain-base.js";
+import {
+  buildBaseChallenge,
+  resolveBaseX402Verifier,
+  type BaseX402Verifier,
+} from "./payments/x402-base.js";
 import {
   affordableWordCount,
   authorizedWordCount,
@@ -62,6 +68,14 @@ export interface GatewayOptions {
   queryEmbedder?: ((q: string) => Promise<number[] | null>) | null;
   /** Version advertised in the /openapi.json discovery document. */
   version?: string;
+  /**
+   * Verifier for the AgentCash x402 (Base) purchase lane. Defaults to a safe
+   * verifier that refuses any payment it cannot verify (so the endpoint is
+   * discoverable and payment-advertising, but never releases content without a
+   * real, verified Base payment). Inject a CDP/facilitator-backed verifier to
+   * collect funds.
+   */
+  baseX402Verifier?: BaseX402Verifier;
 }
 
 const STOP_CONDITIONS: StreamStopCondition[] = [
@@ -82,6 +96,7 @@ const ENDPOINTS = [
   { method: "GET", path: "/v1/articles/:articleId/navigation", description: "Safe seller-agent navigation; no unpaid body text." },
   { method: "POST", path: "/v1/seller-agent/conversations", description: "Opens a conversation with an article's seller agent." },
   { method: "POST", path: "/v1/seller-agent/conversations/:conversationId/messages", description: "Sends a message to the seller agent." },
+  { method: "POST", path: "/v1/x402/articles/:articleId", description: "AgentCash lane: buy a whole article in one x402 USDC payment on Base. Unpaid requests return the x402 402 challenge." },
   { method: "POST", path: "/v1/sessions", description: "Opens a budgeted reading session and returns Circle / Arc authorization terms." },
   { method: "POST", path: "/v1/sessions/:sessionId/stream", description: "Preferred path: streams words against a session-level authorization." },
   { method: "POST", path: "/v1/sessions/:sessionId/payments", description: "Compatibility path: verifies a chunk or legacy one-word payment and releases authorized words." },
@@ -100,6 +115,16 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   const gatewayBaseUrl = options.gatewayBaseUrl ?? `http://localhost:${process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787}`;
   const agentApiKey = process.env.RUBICON_AGENT_API_KEY;
   const queryEmbedder = options.queryEmbedder ?? null;
+  // AgentCash x402 (Base) purchase lane. Config is env-driven and isolated from
+  // the Circle/Arc path; a bad config disables the lane rather than crashing boot.
+  let baseX402Config: BaseX402Config | undefined;
+  try {
+    baseX402Config = resolveBaseX402Config();
+  } catch (error) {
+    app.log.warn(`[gateway] Base x402 lane disabled: ${(error as Error).message}`);
+  }
+  const baseX402Verifier: BaseX402Verifier =
+    options.baseX402Verifier ?? resolveBaseX402Verifier(baseX402Config?.network ?? "eip155:8453");
   const paidReading = new PaidReadingWorkflow({
     articles,
     ledger,
@@ -112,7 +137,10 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       !agentApiKey ||
       request.url === "/health" ||
       request.url === "/openapi.json" ||
-      request.url === "/favicon.ico"
+      request.url === "/favicon.ico" ||
+      // AgentCash x402 (Base) purchase lane is gated by x402 payment, not the
+      // agent bearer token — keep it reachable so discovery crawlers can probe it.
+      request.url.startsWith("/v1/x402/")
     ) {
       return;
     }
@@ -333,7 +361,8 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     return buildOpenApiDocument({
       baseUrl: gatewayBaseUrl,
       version: options.version ?? "0.1.0",
-      contactEmail: process.env.RUBICON_CONTACT_EMAIL,
+      // Public merchant contact for x402/AgentCash ownership verification.
+      contactEmail: process.env.RUBICON_CONTACT_EMAIL ?? "micacao15@gmail.com",
       apiKeyProtected: Boolean(agentApiKey),
     });
   });
@@ -472,6 +501,23 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   // real purchase; the per-article payTo and exact price are still resolved per
   // real session. Cached briefly so repeated probes don't re-hit the payment
   // facilitator. The ephemeral session is never persisted, remembered, or streamed.
+  // First live, paid, priced article — used to synthesize a representative Base
+  // x402 challenge for discovery probes of /v1/x402/articles/{articleId}.
+  async function firstPaidArticle(): Promise<ArticleRecord | undefined> {
+    try {
+      for (const summary of await articles.listPublishedArticles()) {
+        if (summary.accessMode === "free") continue;
+        const article = await articles.getPublishedArticle(summary.articleId);
+        if (article && article.accessMode === "paid" && article.pricePerWordAtomic > 0n) {
+          return article;
+        }
+      }
+    } catch {
+      // Fall through; caller handles the empty case.
+    }
+    return undefined;
+  }
+
   let discoveryChallenge: { value: unknown; expires: number } | undefined;
   async function buildDiscoveryChallenge(): Promise<unknown> {
     if (!paymentVerifier.createPaymentRequired) return undefined;
@@ -533,6 +579,85 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       asset: "USDC",
     });
   }
+
+  // AgentCash x402 (Base) purchase lane. Buy a whole article in one USDC payment
+  // on Base. Unpaid requests (including discovery probes) get an x402 v2 402
+  // challenge; a request carrying a verified X-PAYMENT gets the full body. This
+  // lane is independent of the Circle/Arc metered session flow.
+  app.post<{ Params: { articleId: string } }>("/v1/x402/articles/:articleId", async (request, reply) => {
+    if (!baseX402Config) {
+      return reply.code(503).send({ error: "base_x402_lane_unavailable" });
+    }
+    // Discovery crawlers probe this path with the literal `{articleId}`
+    // placeholder. Detect that (braces/empty) and answer with a representative
+    // challenge from a live paid article so the probe still validates — mirroring
+    // the /v1/sessions discovery-probe behaviour. Concrete-but-unknown ids 404.
+    const requested = request.params.articleId ?? "";
+    const isPlaceholder = /[{}]/.test(requested) || requested.trim() === "";
+    let article = isPlaceholder ? null : await articles.getPublishedArticle(requested);
+    if (article && (article.accessMode !== "paid" || article.pricePerWordAtomic <= 0n)) {
+      article = null; // free/unpriced — not sellable on this paid lane
+    }
+    if (!article) {
+      if (!isPlaceholder) {
+        return reply.code(404).send({ error: "article_not_available" });
+      }
+      article = (await firstPaidArticle()) ?? null;
+      if (!article) {
+        // Nothing paid to advertise yet; still answer the probe with a 402.
+        return reply.code(402).send({ error: "payment_required", asset: "USDC", network: baseX402Config.network });
+      }
+    }
+
+    const priceAtomic = article.pricePerWordAtomic * BigInt(article.words.length);
+    const resource = `${gatewayBaseUrl}/v1/x402/articles/${article.id}`;
+    // Route funds directly to the creator's wallet (same EOA address works on
+    // Base). Falls back to the configured gateway wallet if none/unverified, so
+    // the discovery challenge is always well-formed.
+    const creatorWallet = await articles.getCreatorWallet(article.creatorId);
+    const payTo =
+      creatorWallet?.verified && creatorWallet.address
+        ? (creatorWallet.address as `0x${string}`)
+        : baseX402Config.payTo;
+    const challenge = buildBaseChallenge({
+      config: baseX402Config,
+      resource,
+      priceAtomic,
+      articleId: article.id,
+      title: article.title,
+      totalWords: article.words.length,
+      payTo,
+    });
+
+    // No payment presented → return the x402 challenge (this is also the
+    // discovery-probe response). Always 402, never 400/404 for a real article.
+    const paymentHeader =
+      (request.headers["x-payment"] as string | undefined) ??
+      (request.headers["x-payment-response"] as string | undefined);
+    if (!paymentHeader) {
+      reply.header("PAYMENT-REQUIRED", Buffer.from(JSON.stringify(challenge), "utf8").toString("base64"));
+      return reply.code(402).send(challenge);
+    }
+
+    const verification = await baseX402Verifier.verify({ paymentHeader, accept: challenge.accepts[0]! });
+    if (!verification.verified) {
+      // Cannot verify (e.g. no verifier configured, or invalid payment) → refuse
+      // by re-issuing the challenge. Never release content on an unverified pay.
+      reply.header("PAYMENT-REQUIRED", Buffer.from(JSON.stringify(challenge), "utf8").toString("base64"));
+      return reply.code(402).send({ ...challenge, reason: verification.reason });
+    }
+
+    if (verification.transaction) {
+      reply.header("PAYMENT-RESPONSE", JSON.stringify({ transaction: verification.transaction, payer: verification.payer }));
+    }
+    return reply.code(200).send({
+      articleId: article.id,
+      title: article.title,
+      author: article.author,
+      totalWords: article.words.length,
+      body: article.body,
+    });
+  });
 
   app.post<{ Body: StartSessionRequest | undefined }>("/v1/sessions", async (request, reply) => {
     // x402 discovery: an unpaid probe of this paid endpoint must reach the x402

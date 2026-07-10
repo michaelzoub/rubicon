@@ -34,6 +34,9 @@ const X_GUIDANCE = [
   "indices). The response returns an x402 payment authorization; stream words against it",
   "via POST /v1/sessions/{sessionId}/stream. Payment is per delivered word (USDC), and the",
   "creator's wallet is the recipient. Never pay more than the budget you authorize.",
+  "AgentCash agents paying on Base can instead POST /v1/x402/articles/{articleId} to buy a",
+  "whole article in a single x402 USDC payment (Base, eip155:8453); an unpaid request returns",
+  "the x402 402 challenge with Base payment terms.",
 ].join(" ");
 
 const ARTICLE_SUMMARY_SCHEMA = {
@@ -168,6 +171,64 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
               description: "Section metadata and seller-agent guidance.",
               content: { "application/json": { schema: { type: "object" } } },
             },
+            "404": { description: "Article not available." },
+          },
+        },
+      },
+      "/v1/x402/articles/{articleId}": {
+        post: {
+          operationId: "purchaseArticleOnBase",
+          summary: "Buy a whole article in one x402 payment on Base USDC (AgentCash).",
+          security: paidRouteSecurity,
+          description:
+            "AgentCash-facing purchase lane: pay once in USDC on Base (eip155:8453) and receive the full article body. An unpaid request returns an x402 v2 402 challenge (accepts[] on Base). This is a separate settlement lane from POST /v1/sessions, which meters per word and settles on Circle/Arc.",
+          "x-payment-info": {
+            protocols: [{ x402: {} }],
+            price: {
+              // Whole-article price varies per article; the exact atomic USDC
+              // amount for the requested article is returned in the 402 challenge.
+              mode: "dynamic",
+              currency: "USD",
+              min: "0.000001",
+              max: "10.00",
+            },
+          },
+          parameters: [{ name: "articleId", in: "path", required: true, schema: { type: "string" } }],
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    articleId: {
+                      type: "string",
+                      description: "Article to purchase in full (redundant with the path parameter).",
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Payment verified; full article body returned.",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      articleId: { type: "string" },
+                      title: { type: "string" },
+                      author: { type: "string" },
+                      totalWords: { type: "integer" },
+                      body: { type: "string", description: "Full article markdown." },
+                    },
+                  },
+                },
+              },
+            },
+            "402": { description: "Payment Required (x402 v2 challenge, Base USDC)." },
             "404": { description: "Article not available." },
           },
         },
