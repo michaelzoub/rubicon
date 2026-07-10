@@ -127,6 +127,7 @@ There is no browser UI or CSS in this repo. User-facing surfaces are CLI text/JS
 
 ## Recent architecture changes
 
+- 2026-07-10: Expanded `/openapi.json` into the complete public buyer-gateway contract, with request/response schemas for navigation, conversations, sessions, streaming, SSE, and aborts; the separately payable Base whole-article operation remains the only `x-payment-info` x402scan resource.
 - 2026-07-10: Hardened the AgentCash Base lane to pay only verified writer wallets on the configured Base network, bound its runtime price to its x402scan discovery maximum, and served the Rubicon white-backed logo for marketplace discovery.
 - 2026-07-03: Added explicit `accessMode: free | paid` across gateway, SDK, and CLI.
 - 2026-07-03: Updated published package integrations and buyer-facing package versions.

@@ -98,6 +98,9 @@ test("POST /v1/x402/articles/:id — unpaid request returns the Base 402 challen
   assert.equal(res.statusCode, 402);
   const body = res.json() as { x402Version: number; accepts: Array<{ network: string; amount: string; payTo: string }> };
   assert.equal(body.x402Version, 2);
+  const encodedChallenge = res.headers["payment-required"];
+  assert.ok(encodedChallenge, "unpaid x402 response includes PAYMENT-REQUIRED");
+  assert.deepEqual(JSON.parse(Buffer.from(String(encodedChallenge), "base64").toString("utf8")), body);
   assert.equal(body.accepts[0]!.network, "eip155:8453");
   // 5 words * 3 atomic/word = 15 atomic USDC.
   assert.equal(body.accepts[0]!.amount, "15");

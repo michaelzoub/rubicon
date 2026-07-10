@@ -25,9 +25,9 @@ function article(): ArticleFixture {
     pricePerWordAtomic: 0n,
     body: [
       "# Selection Guide", // 2 words: [0,2)
-      "## Alpha",           // heading
-      "alpha one two",      // alpha body
-      "## Bravo",           // heading
+      "## Alpha", // heading
+      "alpha one two", // alpha body
+      "## Bravo", // heading
       "bravo three four five", // bravo body
     ].join("\n"),
   };
@@ -49,7 +49,7 @@ function setup(articles: ArticleFixture[] = [article()]): { app: FastifyInstance
   return { app };
 }
 
-test("GET /openapi.json is a valid AgentCash discovery document", async () => {
+test("GET /openapi.json describes the complete public gateway surface", async () => {
   const { app } = setup();
   const res = await app.inject({ method: "GET", url: "/openapi.json" });
   assert.equal(res.statusCode, 200);
@@ -58,13 +58,31 @@ test("GET /openapi.json is a valid AgentCash discovery document", async () => {
   assert.equal(doc.info.title, "Rubicon");
   assert.equal(doc.info.version, "9.9.9");
   assert.ok(typeof doc.info["x-guidance"] === "string" && doc.info["x-guidance"].length > 0);
-  // The AgentCash catalog deliberately excludes the separate Circle/Arc session
-  // API, whose transport is documented for the Rubicon SDK instead.
-  assert.ok(!doc.paths["/v1/sessions"]);
-  // Every invocable route exposes an input schema (requestBody or parameters).
-  assert.ok(Array.isArray(doc.paths["/v1/search"].get.parameters));
-  // Free routes declare an auth mode (unprotected => security: []).
+  for (const path of [
+    "/openapi.json",
+    "/health",
+    "/v1/endpoints",
+    "/v1/repository",
+    "/v1/articles",
+    "/v1/search",
+    "/v1/articles/{articleId}/navigation",
+    "/v1/seller-agent/conversations",
+    "/v1/seller-agent/conversations/{conversationId}/messages",
+    "/v1/sessions",
+    "/v1/sessions/{sessionId}/stream",
+    "/v1/sessions/{sessionId}/payments",
+    "/v1/sessions/{sessionId}/events",
+    "/v1/sessions/{sessionId}/abort",
+  ]) {
+    assert.ok(doc.paths[path], `${path} is present`);
+  }
+  // Free and control-plane operations must not accidentally inherit auth.
   assert.deepEqual(doc.paths["/v1/repository"].get.security, []);
+  assert.deepEqual(doc.paths["/v1/sessions"].post.security, []);
+  // Stateful operations describe both their request and successful response.
+  assert.ok(doc.paths["/v1/sessions"].post.requestBody.content["application/json"].schema);
+  assert.ok(doc.paths["/v1/sessions"].post.responses["201"].content["application/json"].schema);
+  assert.ok(doc.components.schemas.StartSessionRequest);
 });
 
 test("discovery only advertises the AgentCash Base purchase route when a writer has a verified Base wallet", async () => {
@@ -81,7 +99,10 @@ test("discovery only advertises the AgentCash Base purchase route when a writer 
   };
   const { app } = setup([paid]);
   const doc = (await app.inject({ method: "GET", url: "/openapi.json" })).json() as any;
-  assert.ok(!doc.paths["/v1/x402/articles/{articleId}"], "Arc-only creator wallet must not be advertised as Base-payable");
+  assert.ok(
+    !doc.paths["/v1/x402/articles/{articleId}"],
+    "Arc-only creator wallet must not be advertised as Base-payable",
+  );
   await app.close();
 });
 
@@ -98,7 +119,10 @@ test("Rubicon's x402scan icon serves the marketing w_logo on white", async () =>
 test("openapi.json advertises no hardcoded recipient address (payTo resolved per-article at runtime)", async () => {
   const { app } = setup();
   const doc = (await app.inject({ method: "GET", url: "/openapi.json" })).json() as any;
-  assert.ok(!/0x[0-9a-fA-F]{40}/.test(JSON.stringify(doc)), "discovery doc must not hardcode a wallet address");
+  assert.ok(
+    !/0x[0-9a-fA-F]{40}/.test(JSON.stringify(doc)),
+    "discovery doc must not hardcode a wallet address",
+  );
 });
 
 test("unauthenticated probe of the paid endpoint returns 402 before body validation", async () => {
@@ -133,7 +157,10 @@ test("x402scan schema-synthesized probe (placeholder budget cap) gets an x402 40
   });
   assert.equal(res.statusCode, 402);
   const challenge = res.json() as any;
-  assert.ok(Array.isArray(challenge.accepts) && challenge.accepts.length > 0, "challenge carries accepts[]");
+  assert.ok(
+    Array.isArray(challenge.accepts) && challenge.accepts.length > 0,
+    "challenge carries accepts[]",
+  );
   // Atomic units, never decimal dollars (x402scan "Malformed Runtime Amount").
   assert.match(String(challenge.accepts[0].amount), /^\d+$/);
   assert.ok(res.headers["payment-required"], "PAYMENT-REQUIRED header is set");
@@ -167,7 +194,12 @@ test("word-range selection meters and delivers only the selected words", async (
   const open = await app.inject({
     method: "POST",
     url: "/v1/sessions",
-    payload: { articleId: "art-plain", wordStart: 5, wordCount: 4, budget: { currency: "USDC", maxAmountAtomic: "100" } },
+    payload: {
+      articleId: "art-plain",
+      wordStart: 5,
+      wordCount: 4,
+      budget: { currency: "USDC", maxAmountAtomic: "100" },
+    },
   });
   assert.equal(open.statusCode, 201);
   const sessionId = (open.json() as any).sessionId;
@@ -177,7 +209,10 @@ test("word-range selection meters and delivers only the selected words", async (
     payload: { maxWords: 10, idempotencyKey: `${sessionId}:0:10` },
   });
   // range [5, 9) => six seven eight nine
-  assert.deepEqual((stream.json() as any).words.map((w: any) => w.word), ["six", "seven", "eight", "nine"]);
+  assert.deepEqual(
+    (stream.json() as any).words.map((w: any) => w.word),
+    ["six", "seven", "eight", "nine"],
+  );
 });
 
 test("multi-section selection delivers the union in document order", async () => {
@@ -186,7 +221,11 @@ test("multi-section selection delivers the union in document order", async () =>
   const open = await app.inject({
     method: "POST",
     url: "/v1/sessions",
-    payload: { articleId: "art-sel", sectionIds: ["bravo", "alpha"], budget: { currency: "USDC", maxAmountAtomic: "100" } },
+    payload: {
+      articleId: "art-sel",
+      sectionIds: ["bravo", "alpha"],
+      budget: { currency: "USDC", maxAmountAtomic: "100" },
+    },
   });
   assert.equal(open.statusCode, 201);
   const sessionId = (open.json() as any).sessionId;
@@ -205,7 +244,11 @@ test("unknown section in a selection returns 404 section_not_found", async () =>
   const res = await app.inject({
     method: "POST",
     url: "/v1/sessions",
-    payload: { articleId: "art-sel", sectionIds: ["ghost"], budget: { currency: "USDC", maxAmountAtomic: "100" } },
+    payload: {
+      articleId: "art-sel",
+      sectionIds: ["ghost"],
+      budget: { currency: "USDC", maxAmountAtomic: "100" },
+    },
   });
   assert.equal(res.statusCode, 404);
   assert.equal((res.json() as any).error, "section_not_found");

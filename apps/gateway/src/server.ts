@@ -365,7 +365,6 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       version: options.version ?? "0.1.0",
       // Public merchant contact for x402/AgentCash ownership verification.
       contactEmail: process.env.RUBICON_CONTACT_EMAIL ?? "micacao15@gmail.com",
-      apiKeyProtected: Boolean(agentApiKey),
       agentCashPurchaseEnabled: Boolean(agentCashArticle),
       agentCashMaxPriceUsd: baseX402Config
         ? decimalUsd(baseX402Config.maxArticlePriceAtomic)
