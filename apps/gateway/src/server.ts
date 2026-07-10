@@ -39,6 +39,7 @@ import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/typ
 import { selectionFromRequest, wordsForSelection } from "./words.js";
 import { buildSearchResults } from "./search/search-service.js";
 import { buildOpenApiDocument } from "./discovery/openapi.js";
+import { RUBICON_W_LOGO_SVG } from "./discovery/w-logo.js";
 import { resolveBaseX402Config, type BaseX402Config } from "./chain-base.js";
 import {
   buildBaseChallenge,
@@ -357,6 +358,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   // AgentCash / x402 discovery document. Public (exempt from the agent API key)
   // so discovery crawlers can read it without credentials.
   app.get("/openapi.json", async (_request, reply) => {
+    const agentCashArticle = await firstBaseEligiblePaidArticle();
     reply.header("content-type", "application/json; charset=utf-8");
     return buildOpenApiDocument({
       baseUrl: gatewayBaseUrl,
@@ -364,15 +366,23 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       // Public merchant contact for x402/AgentCash ownership verification.
       contactEmail: process.env.RUBICON_CONTACT_EMAIL ?? "micacao15@gmail.com",
       apiKeyProtected: Boolean(agentApiKey),
+      agentCashPurchaseEnabled: Boolean(agentCashArticle),
+      agentCashMaxPriceUsd: baseX402Config
+        ? decimalUsd(baseX402Config.maxArticlePriceAtomic)
+        : undefined,
     });
   });
 
-  // Minimal favicon so discovery crawlers don't warn about a missing origin icon.
-  const faviconSvg =
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#111"/><text x="16" y="22" font-size="18" text-anchor="middle" fill="#fff" font-family="sans-serif">R</text></svg>';
+  // Match the public Rubicon brand asset that x402scan displays for this origin.
+  // The source is rubicon-marketing/public/w_logo.svg, served on white so the
+  // dark mark remains legible in crawler and browser favicon surfaces.
+  app.get("/w_logo.svg", async (_request, reply) => {
+    reply.header("content-type", "image/svg+xml").header("cache-control", "public, max-age=86400");
+    return RUBICON_W_LOGO_SVG;
+  });
   app.get("/favicon.ico", async (_request, reply) => {
     reply.header("content-type", "image/svg+xml").header("cache-control", "public, max-age=86400");
-    return faviconSvg;
+    return RUBICON_W_LOGO_SVG;
   });
 
   function requestLogStorageFailure(reply: FastifyReply, error: unknown): void {
@@ -501,14 +511,48 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   // real purchase; the per-article payTo and exact price are still resolved per
   // real session. Cached briefly so repeated probes don't re-hit the payment
   // facilitator. The ephemeral session is never persisted, remembered, or streamed.
-  // First live, paid, priced article — used to synthesize a representative Base
-  // x402 challenge for discovery probes of /v1/x402/articles/{articleId}.
-  async function firstPaidArticle(): Promise<ArticleRecord | undefined> {
+  function isConfiguredBaseCreatorWallet(wallet: { address: `0x${string}`; network: string; verified: boolean } | null | undefined): wallet is { address: `0x${string}`; network: string; verified: true } {
+    return Boolean(
+      baseX402Config &&
+        wallet?.verified &&
+        wallet.network === baseX402Config.network &&
+        /^0x[a-fA-F0-9]{40}$/.test(wallet.address),
+    );
+  }
+
+  async function baseCreatorWallet(article: ArticleRecord): Promise<`0x${string}` | undefined> {
+    const wallet = await articles.getCreatorWallet(article.creatorId);
+    return isConfiguredBaseCreatorWallet(wallet) ? wallet.address : undefined;
+  }
+
+  function baseArticlePriceAtomic(article: ArticleRecord): bigint | undefined {
+    if (!baseX402Config) return undefined;
+    const price = article.pricePerWordAtomic * BigInt(article.words.length);
+    return price > 0n && price <= baseX402Config.maxArticlePriceAtomic ? price : undefined;
+  }
+
+  function decimalUsd(atomic: bigint): string {
+    const whole = atomic / 1_000_000n;
+    const fraction = (atomic % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
+    return fraction ? `${whole}.${fraction}` : `${whole}`;
+  }
+
+  // First Base-ready article — used only for discovery probes. A writer must
+  // have a verified wallet on the exact Base network, and its price must fit the
+  // advertised OpenAPI maximum. Never manufacture a challenge to a platform
+  // wallet merely to make discovery look healthy.
+  async function firstBaseEligiblePaidArticle(): Promise<ArticleRecord | undefined> {
+    if (!baseX402Config) return undefined;
     try {
       for (const summary of await articles.listPublishedArticles()) {
         if (summary.accessMode === "free") continue;
         const article = await articles.getPublishedArticle(summary.articleId);
-        if (article && article.accessMode === "paid" && article.pricePerWordAtomic > 0n) {
+        if (
+          article &&
+          article.accessMode === "paid" &&
+          baseArticlePriceAtomic(article) !== undefined &&
+          await baseCreatorWallet(article)
+        ) {
           return article;
         }
       }
@@ -602,23 +646,28 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       if (!isPlaceholder) {
         return reply.code(404).send({ error: "article_not_available" });
       }
-      article = (await firstPaidArticle()) ?? null;
+      article = (await firstBaseEligiblePaidArticle()) ?? null;
       if (!article) {
         // Nothing paid to advertise yet; still answer the probe with a 402.
         return reply.code(402).send({ error: "payment_required", asset: "USDC", network: baseX402Config.network });
       }
     }
 
-    const priceAtomic = article.pricePerWordAtomic * BigInt(article.words.length);
+    const priceAtomic = baseArticlePriceAtomic(article);
+    if (priceAtomic === undefined) {
+      return reply.code(422).send({
+        error: "article_price_exceeds_x402_limit",
+        maxAmountAtomic: baseX402Config.maxArticlePriceAtomic.toString(),
+      });
+    }
     const resource = `${gatewayBaseUrl}/v1/x402/articles/${article.id}`;
-    // Route funds directly to the creator's wallet (same EOA address works on
-    // Base). Falls back to the configured gateway wallet if none/unverified, so
-    // the discovery challenge is always well-formed.
-    const creatorWallet = await articles.getCreatorWallet(article.creatorId);
-    const payTo =
-      creatorWallet?.verified && creatorWallet.address
-        ? (creatorWallet.address as `0x${string}`)
-        : baseX402Config.payTo;
+    // Route funds only to the article creator's verified wallet on the exact
+    // configured Base network. Failing closed here prevents a stale Arc wallet
+    // or a gateway fallback from receiving an AgentCash payment.
+    const payTo = await baseCreatorWallet(article);
+    if (!payTo) {
+      return reply.code(409).send({ error: "creator_base_wallet_not_configured" });
+    }
     const challenge = buildBaseChallenge({
       config: baseX402Config,
       resource,

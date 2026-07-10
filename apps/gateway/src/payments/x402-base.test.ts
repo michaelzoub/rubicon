@@ -14,7 +14,7 @@ import {
 
 const BASE_MAINNET_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 
-function paidArticleRepo() {
+function paidArticleRepo(network = "eip155:8453", verified = true, pricePerWordAtomic = 3n) {
   return new InMemoryPublishedArticleRepository({
     articles: [
       {
@@ -24,19 +24,19 @@ function paidArticleRepo() {
         title: "Paid Article",
         author: "Alice",
         state: "live",
-        pricePerWordAtomic: 3n,
+        pricePerWordAtomic,
         body: "one two three four five",
       },
     ],
     wallets: [
-      { creatorId: "creator-a", address: "0x00000000000000000000000000000000000000aa", network: "eip155:8453", verified: true },
+      { creatorId: "creator-a", address: "0x00000000000000000000000000000000000000aa", network, verified },
     ],
   });
 }
 
-function gatewayWith(verifier?: BaseX402Verifier) {
+function gatewayWith(verifier?: BaseX402Verifier, repo = paidArticleRepo()) {
   return createGateway({
-    articleRepository: paidArticleRepo(),
+    articleRepository: repo,
     ledger: new InMemoryLedgerRepository(),
     sessionTtlMs: 60_000,
     gatewayBaseUrl: "http://test",
@@ -45,13 +45,13 @@ function gatewayWith(verifier?: BaseX402Verifier) {
   });
 }
 
-test("resolveBaseX402Config defaults to Base mainnet USDC + Privy payTo", () => {
+test("resolveBaseX402Config defaults to Base mainnet USDC and an enforced 10-USDC discovery ceiling", () => {
   const cfg = resolveBaseX402Config({} as NodeJS.ProcessEnv);
   assert.equal(cfg.network, "eip155:8453");
   assert.equal(cfg.chainId, 8453);
   assert.equal(cfg.mainnet, true);
   assert.equal(cfg.usdc.toLowerCase(), BASE_MAINNET_USDC.toLowerCase());
-  assert.equal(cfg.payTo, "0xf21219Da75E62254aaB31BA7C919dd3Bd9621790");
+  assert.equal(cfg.maxArticlePriceAtomic, 10_000_000n);
 });
 
 test("resolveBaseX402Config honours Base Sepolia override", () => {
@@ -70,6 +70,7 @@ test("buildBaseChallenge emits a checker-compliant x402 v2 challenge", () => {
     articleId: "art-1",
     title: "Paid Article",
     totalWords: 5,
+    payTo: "0x00000000000000000000000000000000000000aa",
   });
   assert.equal(c.x402Version, 2);
   assert.equal(c.resource.url, "http://test/v1/x402/articles/art-1");
@@ -77,7 +78,7 @@ test("buildBaseChallenge emits a checker-compliant x402 v2 challenge", () => {
   assert.equal(a.scheme, "exact");
   assert.equal(a.network, "eip155:8453");
   assert.equal(a.asset, cfg.usdc);
-  assert.equal(a.payTo, cfg.payTo);
+  assert.equal(a.payTo, "0x00000000000000000000000000000000000000aa");
   assert.equal(a.amount, "15");
   assert.equal(a.maxAmountRequired, "15");
   assert.ok(a.maxTimeoutSeconds > 0);
@@ -137,6 +138,42 @@ test("challenge payTo routes to the creator wallet (funds go direct, no gateway 
   // creator-a's verified wallet, not the default gateway/Privy wallet.
   assert.equal(body.accepts[0]!.payTo, "0x00000000000000000000000000000000000000aa");
   await app.close();
+});
+
+test("AgentCash Base lane refuses a creator wallet registered on another network", async () => {
+  let calls = 0;
+  const verifier: BaseX402Verifier = {
+    async verify() {
+      calls += 1;
+      return { verified: true, transaction: "0xshould-not-settle" };
+    },
+  };
+  const app = gatewayWith(verifier, paidArticleRepo("eip155:5042002"));
+  const res = await app.inject({ method: "POST", url: "/v1/x402/articles/art-1", payload: {} });
+  assert.equal(res.statusCode, 409);
+  assert.equal((res.json() as { error: string }).error, "creator_base_wallet_not_configured");
+  assert.equal(calls, 0, "payment verification must not run without a verified Base writer wallet");
+  const doc = (await app.inject({ method: "GET", url: "/openapi.json" })).json() as any;
+  assert.ok(!doc.paths["/v1/x402/articles/{articleId}"], "unpayable writer must not be listed on x402scan");
+  await app.close();
+});
+
+test("AgentCash Base lane refuses articles over the advertised OpenAPI maximum", async () => {
+  // Five words at 3 USDC/word exceeds the 10-USDC default ceiling.
+  const app = gatewayWith(undefined, paidArticleRepo("eip155:8453", true, 3_000_000n));
+  const res = await app.inject({ method: "POST", url: "/v1/x402/articles/art-1", payload: {} });
+  assert.equal(res.statusCode, 422);
+  assert.deepEqual(res.json(), { error: "article_price_exceeds_x402_limit", maxAmountAtomic: "10000000" });
+  const doc = (await app.inject({ method: "GET", url: "/openapi.json" })).json() as any;
+  assert.ok(!doc.paths["/v1/x402/articles/{articleId}"], "an over-limit resource must not be advertised");
+  await app.close();
+});
+
+test("resolveBaseX402Config rejects a malformed price ceiling", () => {
+  assert.throws(
+    () => resolveBaseX402Config({ BASE_X402_MAX_ARTICLE_PRICE_ATOMIC: "1.5" } as unknown as NodeJS.ProcessEnv),
+    /BASE_X402_MAX_ARTICLE_PRICE_ATOMIC/,
+  );
 });
 
 test("resolveBaseX402Verifier gates on CDP creds", () => {

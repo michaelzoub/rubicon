@@ -55,19 +55,44 @@ test("GET /openapi.json is a valid AgentCash discovery document", async () => {
   assert.equal(res.statusCode, 200);
   const doc = res.json() as any;
   assert.equal(doc.openapi, "3.1.0");
+  assert.equal(doc.info.title, "Rubicon");
   assert.equal(doc.info.version, "9.9.9");
   assert.ok(typeof doc.info["x-guidance"] === "string" && doc.info["x-guidance"].length > 0);
-  // Payable operation carries x-payment-info (protocols + dynamic price) and a 402.
-  const op = doc.paths["/v1/sessions"].post;
-  assert.deepEqual(op["x-payment-info"].protocols, [{ x402: {} }]);
-  assert.equal(op["x-payment-info"].price.mode, "dynamic");
-  assert.equal(op["x-payment-info"].price.currency, "USD");
-  assert.ok(op.responses["402"]);
+  // The AgentCash catalog deliberately excludes the separate Circle/Arc session
+  // API, whose transport is documented for the Rubicon SDK instead.
+  assert.ok(!doc.paths["/v1/sessions"]);
   // Every invocable route exposes an input schema (requestBody or parameters).
-  assert.ok(op.requestBody.content["application/json"].schema);
   assert.ok(Array.isArray(doc.paths["/v1/search"].get.parameters));
   // Free routes declare an auth mode (unprotected => security: []).
   assert.deepEqual(doc.paths["/v1/repository"].get.security, []);
+});
+
+test("discovery only advertises the AgentCash Base purchase route when a writer has a verified Base wallet", async () => {
+  const paid: ArticleFixture = {
+    id: "art-base",
+    creatorId: "creator-a",
+    creatorUsername: "alice",
+    title: "Base-ready Guide",
+    author: "Alice",
+    state: "live",
+    accessMode: "paid",
+    pricePerWordAtomic: 100n,
+    body: "one two three",
+  };
+  const { app } = setup([paid]);
+  const doc = (await app.inject({ method: "GET", url: "/openapi.json" })).json() as any;
+  assert.ok(!doc.paths["/v1/x402/articles/{articleId}"], "Arc-only creator wallet must not be advertised as Base-payable");
+  await app.close();
+});
+
+test("Rubicon's x402scan icon serves the marketing w_logo on white", async () => {
+  const { app } = setup();
+  const res = await app.inject({ method: "GET", url: "/w_logo.svg" });
+  assert.equal(res.statusCode, 200);
+  assert.match(res.headers["content-type"] ?? "", /image\/svg\+xml/);
+  assert.match(res.body, /<rect width="1500" height="1500" fill="#fff"\/>/);
+  assert.match(res.body, /stroke="#121212"/);
+  await app.close();
 });
 
 test("openapi.json advertises no hardcoded recipient address (payTo resolved per-article at runtime)", async () => {

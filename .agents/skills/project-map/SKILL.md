@@ -74,7 +74,7 @@ Development article reads require Supabase values in `.env` or `.env.local`. For
 
 ### Payments/onchain
 
-`payments/types.ts` defines the verifier boundary. `payments/x402-circle.ts` verifies Circle/Arc authorizations and queues settlement through `settlement-queue.ts`; development mode uses a no-money verifier. `chain.ts` normalizes supported networks. Never release paid content before authorization verification, weaken the session cap, silently change `payTo`, or treat a queued settlement as final success.
+`payments/types.ts` defines the verifier boundary. `payments/x402-circle.ts` verifies Circle/Arc authorizations and queues settlement through `settlement-queue.ts`; development mode uses a no-money verifier. `payments/x402-base.ts` is the separate AgentCash whole-article lane and fails closed unless the writer has a verified wallet on its configured Base network; its 402 challenge is the only source of `payTo`. `chain.ts` normalizes supported networks. Never release paid content before authorization verification, weaken the session cap, silently change `payTo`, or treat a queued settlement as final success.
 
 ### Buyer SDK
 
@@ -127,6 +127,7 @@ There is no browser UI or CSS in this repo. User-facing surfaces are CLI text/JS
 
 ## Recent architecture changes
 
+- 2026-07-10: Hardened the AgentCash Base lane to pay only verified writer wallets on the configured Base network, bound its runtime price to its x402scan discovery maximum, and served the Rubicon white-backed logo for marketplace discovery.
 - 2026-07-03: Added explicit `accessMode: free | paid` across gateway, SDK, and CLI.
 - 2026-07-03: Updated published package integrations and buyer-facing package versions.
 - 2026-07-02: Reduced agent setup friction across CLI, SDK, and hosted setup guidance.

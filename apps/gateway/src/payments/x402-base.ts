@@ -65,11 +65,11 @@ export interface BuildBaseChallengeInput {
   title: string;
   totalWords: number;
   /**
-   * Recipient of the USDC payment. Pass the article creator's wallet so funds
-   * route directly to them on-chain (no gateway payout step). Falls back to the
-   * configured gateway wallet when a creator wallet is unavailable.
+   * Recipient of the USDC payment. This is required: callers must pass the
+   * article creator's verified wallet on the configured Base network. There is
+   * intentionally no platform-wallet fallback.
    */
-  payTo?: `0x${string}`;
+  payTo: `0x${string}`;
 }
 
 /**
@@ -82,7 +82,7 @@ export function buildBaseChallenge(input: BuildBaseChallengeInput): BaseChalleng
     scheme: "exact",
     network: input.config.network,
     asset: input.config.usdc,
-    payTo: input.payTo ?? input.config.payTo,
+    payTo: input.payTo,
     amount,
     maxAmountRequired: amount,
     maxTimeoutSeconds: input.config.maxTimeoutSeconds,

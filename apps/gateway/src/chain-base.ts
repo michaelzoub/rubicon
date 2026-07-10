@@ -26,11 +26,11 @@ const USDC_BY_CHAIN: Record<number, `0x${string}`> = {
 export const BASE_USDC_DECIMALS = 6;
 
 /**
- * The Privy embedded wallet that receives Base USDC. Any address that can hold
- * USDC on Base works as an x402 `payTo` — no on-chain registration is required
- * to *receive*. Override per deployment with BASE_X402_PAY_TO.
+ * The largest whole-article Base price this gateway advertises. This is both a
+ * discovery bound and an enforcement guard: the OpenAPI dynamic-price maximum
+ * and every issued x402 requirement must agree.
  */
-const DEFAULT_BASE_PAY_TO = "0xf21219Da75E62254aaB31BA7C919dd3Bd9621790" as const;
+const DEFAULT_BASE_X402_MAX_ARTICLE_PRICE_ATOMIC = 10_000_000n; // 10 USDC
 
 export interface BaseX402Config {
   /** CAIP-2 network, e.g. "eip155:8453". */
@@ -39,8 +39,8 @@ export interface BaseX402Config {
   chainId: number;
   /** USDC ERC-20 address used as the x402 `asset`. */
   usdc: `0x${string}`;
-  /** Recipient of the USDC payment (creator/gateway Base wallet). */
-  payTo: `0x${string}`;
+  /** Hard maximum whole-article price accepted by the Base purchase lane. */
+  maxArticlePriceAtomic: bigint;
   /** x402 authorization validity window advertised in the challenge. */
   maxTimeoutSeconds: number;
   /** True when settling real funds (mainnet) — surfaced for logging/guards. */
@@ -49,8 +49,10 @@ export interface BaseX402Config {
 
 /**
  * Resolve the active Base x402 configuration from the environment, defaulting to
- * Base mainnet with the Privy receiving wallet. Throws only if an explicitly
- * configured network has no known USDC address and none is supplied.
+ * Base mainnet. The recipient is deliberately not configuration: each purchase
+ * must use its article creator's verified wallet on this exact network. Throws
+ * only if an explicitly configured network has no known USDC address and none
+ * is supplied, or if the advertised price bound is malformed.
  */
 export function resolveBaseX402Config(env: NodeJS.ProcessEnv = process.env): BaseX402Config {
   const network = (env.BASE_X402_NETWORK ?? `eip155:${BASE_MAINNET_CHAIN_ID}`).trim();
@@ -65,13 +67,24 @@ export function resolveBaseX402Config(env: NodeJS.ProcessEnv = process.env): Bas
       `No USDC address known for ${network}; set BASE_X402_USDC to the USDC contract on that chain.`,
     );
   }
-  const payTo = (env.BASE_X402_PAY_TO?.trim() || DEFAULT_BASE_PAY_TO) as `0x${string}`;
+  const configuredMax = env.BASE_X402_MAX_ARTICLE_PRICE_ATOMIC?.trim();
+  if (configuredMax !== undefined && !/^\d+$/.test(configuredMax)) {
+    throw new Error(
+      `BASE_X402_MAX_ARTICLE_PRICE_ATOMIC must be a positive atomic USDC integer, got "${configuredMax}"`,
+    );
+  }
+  const maxArticlePriceAtomic = configuredMax === undefined
+    ? DEFAULT_BASE_X402_MAX_ARTICLE_PRICE_ATOMIC
+    : BigInt(configuredMax);
+  if (maxArticlePriceAtomic <= 0n) {
+    throw new Error("BASE_X402_MAX_ARTICLE_PRICE_ATOMIC must be greater than zero");
+  }
   const maxTimeoutSeconds = Number(env.BASE_X402_MAX_TIMEOUT_SECONDS ?? 300) || 300;
   return {
     network,
     chainId,
     usdc,
-    payTo,
+    maxArticlePriceAtomic,
     maxTimeoutSeconds,
     mainnet: chainId === BASE_MAINNET_CHAIN_ID,
   };

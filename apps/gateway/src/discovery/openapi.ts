@@ -21,6 +21,10 @@ export interface OpenApiOptions {
    * — not a bearer token — is the gate; the doc reflects whichever is in effect.
    */
   apiKeyProtected?: boolean;
+  /** Whether there is at least one article with a verified wallet on the Base lane's network. */
+  agentCashPurchaseEnabled?: boolean;
+  /** Decimal USD upper bound enforced by the Base x402 endpoint. */
+  agentCashMaxPriceUsd?: string;
 }
 
 const X_GUIDANCE = [
@@ -28,15 +32,8 @@ const X_GUIDANCE = [
   "Discovery: GET /v1/repository lists live articles; GET /v1/search?q= ranks them by",
   "semantic/lexical relevance with a 0..1 confidence score; GET",
   "/v1/articles/{articleId}/navigation returns safe section metadata (no unpaid body text).",
-  "Purchase: POST /v1/sessions opens a budgeted reading session for one article. Select",
-  "what to buy with exactly one of: the whole article (default), sectionIds (a union of",
-  "named sections), or a wordStart+wordCount range ([n, n+k) over article-global word",
-  "indices). The response returns an x402 payment authorization; stream words against it",
-  "via POST /v1/sessions/{sessionId}/stream. Payment is per delivered word (USDC), and the",
-  "creator's wallet is the recipient. Never pay more than the budget you authorize.",
-  "AgentCash agents paying on Base can instead POST /v1/x402/articles/{articleId} to buy a",
-  "whole article in a single x402 USDC payment (Base, eip155:8453); an unpaid request returns",
-  "the x402 402 challenge with Base payment terms.",
+  "Rubicon's separate Circle/Arc per-word session API is documented for the Rubicon SDK and is",
+  "not an AgentCash discovery resource.",
 ].join(" ");
 
 const ARTICLE_SUMMARY_SCHEMA = {
@@ -68,10 +65,15 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
   return {
     openapi: "3.1.0",
     info: {
-      title: "Rubicon Gateway",
+      title: "Rubicon",
       version: options.version,
       description: "Metered, per-word article purchasing for autonomous agents over x402 (USDC).",
-      "x-guidance": X_GUIDANCE,
+      "x-guidance": [
+        X_GUIDANCE,
+        options.agentCashPurchaseEnabled
+          ? "AgentCash purchase: POST /v1/x402/articles/{articleId} buys a whole article in one x402 USDC payment on Base (eip155:8453). The 402 challenge names the writer's verified Base wallet as payTo."
+          : "No AgentCash-payable Base article is active until a writer has a verified wallet on the configured Base network.",
+      ].join(" "),
       ...(contact ? { contact } : {}),
     },
     servers: [{ url: options.baseUrl }],
@@ -175,7 +177,7 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
           },
         },
       },
-      "/v1/x402/articles/{articleId}": {
+      ...(options.agentCashPurchaseEnabled ? { "/v1/x402/articles/{articleId}": {
         post: {
           operationId: "purchaseArticleOnBase",
           summary: "Buy a whole article in one x402 payment on Base USDC (AgentCash).",
@@ -190,7 +192,7 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
               mode: "dynamic",
               currency: "USD",
               min: "0.000001",
-              max: "10.00",
+              max: options.agentCashMaxPriceUsd ?? "10",
             },
           },
           parameters: [{ name: "articleId", in: "path", required: true, schema: { type: "string" } }],
@@ -232,79 +234,7 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
             "404": { description: "Article not available." },
           },
         },
-      },
-      "/v1/sessions": {
-        post: {
-          operationId: "openReadingSession",
-          summary: "Open a budgeted, per-word reading session for one article (paid).",
-          security: paidRouteSecurity,
-          description:
-            "Opens a metered reading session and returns an x402 payment authorization whose recipient is the article creator's wallet. Select what to purchase with exactly one of: whole article (default), sectionIds, or wordStart+wordCount.",
-          "x-payment-info": {
-            protocols: [{ x402: {} }],
-            price: {
-              // Per-word metered pricing: the total depends on words purchased.
-              // min = one word; max = a generous per-read ceiling. The exact
-              // amount for a given article/selection is returned in the 402.
-              mode: "dynamic",
-              currency: "USD",
-              min: "0.000001",
-              max: "10.00",
-            },
-          },
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["articleId", "budget"],
-                  properties: {
-                    articleId: { type: "string", description: "Article to read." },
-                    goal: { type: "string", description: "Optional buyer goal for seller-agent guidance." },
-                    conversationId: { type: "string" },
-                    sectionId: { type: "string", description: "Single-section selection (legacy)." },
-                    sectionIds: {
-                      type: "array",
-                      items: { type: "string" },
-                      description: "Purchase the union of these named sections, in document order.",
-                    },
-                    wordStart: {
-                      type: "integer",
-                      minimum: 0,
-                      description: "Zero-based article-global word offset for a word-range selection.",
-                    },
-                    wordCount: {
-                      type: "integer",
-                      minimum: 1,
-                      description: "Number of words from wordStart ([wordStart, wordStart+wordCount)).",
-                    },
-                    budget: {
-                      type: "object",
-                      required: ["currency", "maxAmountAtomic"],
-                      properties: {
-                        currency: { type: "string", enum: ["USDC"] },
-                        maxAmountAtomic: {
-                          type: "string",
-                          description: "Hard spend cap in atomic USDC (6 decimals; 0.01 USDC => \"10000\").",
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            "201": {
-              description: "Session opened; body carries the x402 payment authorization (payTo = creator wallet).",
-              content: { "application/json": { schema: { type: "object" } } },
-            },
-            "402": { description: "Payment Required" },
-            "404": { description: "Article not available." },
-          },
-        },
-      },
+      } } : {}),
     },
     ...(securityComponents ? { components: securityComponents } : {}),
   };
