@@ -359,6 +359,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   // so discovery crawlers can read it without credentials.
   app.get("/openapi.json", async (_request, reply) => {
     const agentCashArticle = await firstBaseEligiblePaidArticle();
+    const meteredSessionMaxPriceAtomic = await highestMeteredSessionPriceAtomic();
     reply.header("content-type", "application/json; charset=utf-8");
     return buildOpenApiDocument({
       baseUrl: gatewayBaseUrl,
@@ -368,6 +369,10 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       agentCashPurchaseEnabled: Boolean(agentCashArticle),
       agentCashMaxPriceUsd: baseX402Config
         ? decimalUsd(baseX402Config.maxArticlePriceAtomic)
+        : undefined,
+      meteredSessionPurchaseEnabled: meteredSessionMaxPriceAtomic !== undefined,
+      meteredSessionMaxPriceUsd: meteredSessionMaxPriceAtomic
+        ? decimalUsd(meteredSessionMaxPriceAtomic)
         : undefined,
     });
   });
@@ -534,6 +539,29 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     const whole = atomic / 1_000_000n;
     const fraction = (atomic % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
     return fraction ? `${whole}.${fraction}` : `${whole}`;
+  }
+
+  // The session discovery price ceiling is the most expensive currently
+  // discoverable article, not a fabricated platform-wide number. A session can
+  // select fewer words, so its final total remains dynamic and is hard-capped by
+  // the buyer's atomic budget.
+  async function highestMeteredSessionPriceAtomic(): Promise<bigint | undefined> {
+    let highest = 0n;
+    try {
+      for (const summary of await articles.listPublishedArticles()) {
+        if (summary.accessMode !== "paid") continue;
+        const article = await articles.getPublishedArticle(summary.articleId);
+        if (!article || article.accessMode !== "paid" || article.pricePerWordAtomic <= 0n) continue;
+        const wallet = await articles.getCreatorWallet(article.creatorId);
+        if (!wallet?.verified) continue;
+        const total = article.pricePerWordAtomic * BigInt(article.words.length);
+        if (total > highest) highest = total;
+      }
+    } catch {
+      // Omit the paid declaration if the repository is unavailable; never
+      // advertise a challenge we cannot construct from a real paid article.
+    }
+    return highest > 0n ? highest : undefined;
   }
 
   // First Base-ready article — used only for discovery probes. A writer must

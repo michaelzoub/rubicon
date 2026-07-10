@@ -103,6 +103,10 @@ test("discovery only advertises the AgentCash Base purchase route when a writer 
     !doc.paths["/v1/x402/articles/{articleId}"],
     "Arc-only creator wallet must not be advertised as Base-payable",
   );
+  assert.deepEqual(doc.paths["/v1/sessions"].post["x-payment-info"], {
+    protocols: [{ x402: {} }],
+    price: { mode: "dynamic", currency: "USD", min: "0.000001", max: "0.0003" },
+  });
   await app.close();
 });
 

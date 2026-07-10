@@ -17,6 +17,10 @@ export interface OpenApiOptions {
   agentCashPurchaseEnabled?: boolean;
   /** Decimal USD ceiling enforced by the Base purchase route. */
   agentCashMaxPriceUsd?: string;
+  /** Whether a published paid article has verified Circle/Arc payment terms. */
+  meteredSessionPurchaseEnabled?: boolean;
+  /** Decimal USD ceiling for the largest currently discoverable metered article. */
+  meteredSessionMaxPriceUsd?: string;
 }
 
 const X_GUIDANCE = [
@@ -254,8 +258,21 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
           operationId: "startReadingSession",
           summary: "Open a hard-capped reading session for a free or paid article.",
           description:
-            "This control-plane call creates a session. For paid articles it returns x402 authorization terms; payment is required only by the subsequent delivery operations. An invalid discovery probe receives a 402 challenge before body validation.",
+            "This is the primary metered purchase resource. For paid articles it returns x402 authorization terms, and paid delivery operations require the resulting x402 payment payload before releasing words. Free articles create a no-cost session. An invalid or unpaid discovery probe receives a valid x402 v2 402 challenge before body validation.",
           ...free,
+          ...(options.meteredSessionPurchaseEnabled
+            ? {
+                "x-payment-info": {
+                  protocols: [{ x402: {} }],
+                  price: {
+                    mode: "dynamic",
+                    currency: "USD",
+                    min: "0.000001",
+                    max: options.meteredSessionMaxPriceUsd ?? "10",
+                  },
+                },
+              }
+            : {}),
           requestBody: requestBody("#/components/schemas/StartSessionRequest"),
           responses: {
             "201": jsonResponse("Session opened.", {
