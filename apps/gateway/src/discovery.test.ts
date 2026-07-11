@@ -52,7 +52,7 @@ function setup(
   return { app };
 }
 
-test("GET /openapi.json only catalogs directly payable AgentCash resources", async () => {
+test("GET /openapi.json catalogs free discovery and payable AgentCash resources", async () => {
   const { app } = setup();
   const res = await app.inject({ method: "GET", url: "/openapi.json" });
   assert.equal(res.statusCode, 200);
@@ -62,7 +62,15 @@ test("GET /openapi.json only catalogs directly payable AgentCash resources", asy
   assert.equal(doc.info.version, "9.9.9");
   assert.ok(typeof doc.info["x-guidance"] === "string" && doc.info["x-guidance"].length > 0);
   assert.equal(doc.externalDocs.url, "http://test/openapi.json");
-  assert.deepEqual(doc.paths, {});
+  assert.deepEqual(Object.keys(doc.paths), [
+    "/health",
+    "/v1/repository",
+    "/v1/articles",
+    "/v1/search",
+    "/v1/articles/{articleId}/navigation",
+  ]);
+  assert.deepEqual(doc.paths["/v1/repository"].get.security, []);
+  assert.deepEqual(doc.paths["/v1/search"].get.security, []);
   assert.ok(!JSON.stringify(doc.paths).includes("seller-agent"));
   assert.ok(!JSON.stringify(doc.paths).includes("/v1/sessions"));
   assert.ok(doc.components.schemas.StartSessionRequest);
@@ -97,7 +105,13 @@ test("discovery only advertises the AgentCash Base purchase route when a writer 
     !doc.paths["/v1/x402/articles/{articleId}"],
     "Arc-only creator wallet must not be advertised as Base-payable",
   );
-  assert.deepEqual(doc.paths, {});
+  assert.deepEqual(Object.keys(doc.paths), [
+    "/health",
+    "/v1/repository",
+    "/v1/articles",
+    "/v1/search",
+    "/v1/articles/{articleId}/navigation",
+  ]);
   await app.close();
 });
 
@@ -116,7 +130,14 @@ test("discovery exposes only a Base-ready whole-article resource", async () => {
   const { app } = setup([paid], "eip155:8453");
   const doc = (await app.inject({ method: "GET", url: "/openapi.json" })).json() as any;
   const path = doc.paths["/v1/x402/articles/{articleId}"];
-  assert.deepEqual(Object.keys(doc.paths), ["/v1/x402/articles/{articleId}"]);
+  assert.deepEqual(Object.keys(doc.paths), [
+    "/health",
+    "/v1/repository",
+    "/v1/articles",
+    "/v1/search",
+    "/v1/articles/{articleId}/navigation",
+    "/v1/x402/articles/{articleId}",
+  ]);
   assert.deepEqual(path.post["x-payment-info"], {
     protocols: [{ x402: {} }],
     price: { mode: "dynamic", currency: "USD", min: "0.000001", max: "10" },

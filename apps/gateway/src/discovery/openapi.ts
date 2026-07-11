@@ -741,14 +741,27 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
   };
 
   // x402scan uses this document as a marketplace catalog, not as an inventory
-  // of internal workflow routes. Only the standalone Base purchase is a
-  // directly invocable AgentCash resource; sessions and seller conversations
-  // remain reachable by authenticated Rubicon clients but are not discoverable.
+  // of internal workflow routes. Only the standalone Base purchase is payable;
+  // safe discovery is free, while sessions and seller conversations stay out
+  // of the catalog.
   const purchasePath = "/v1/x402/articles/{articleId}";
   const paths = document.paths as Record<string, unknown>;
-  return options.agentCashPurchaseEnabled && paths[purchasePath]
-    ? { ...document, paths: { [purchasePath]: paths[purchasePath] } }
-    : { ...document, paths: {} };
+  const publicPaths = [
+    "/health",
+    "/v1/repository",
+    "/v1/articles",
+    "/v1/search",
+    "/v1/articles/{articleId}/navigation",
+  ];
+  const discoverablePaths = Object.fromEntries(
+    publicPaths
+      .filter((path) => paths[path])
+      .map((path) => [path, paths[path]]),
+  );
+  if (options.agentCashPurchaseEnabled && paths[purchasePath]) {
+    discoverablePaths[purchasePath] = paths[purchasePath];
+  }
+  return { ...document, paths: discoverablePaths };
 }
 
 function requestBody(schemaRef: string, required = true): Record<string, unknown> {
