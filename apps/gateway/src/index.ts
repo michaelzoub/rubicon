@@ -9,75 +9,121 @@ import { DefaultSellerAgent } from "./seller-agent/seller-agent.js";
 import { TextCompletionSellerModelProvider } from "./seller-agent/model-provider.js";
 import { createQueryEmbedder } from "./search/embed-query.js";
 import { installKeepAliveDispatcher } from "./http-agent.js";
+import { analyticsConfigFromEnv } from "./analytics/config.js";
+import { AnalyticsOutboxRepository } from "./analytics/outbox-repository.js";
+import { ClickHouseAnalyticsClient } from "./analytics/clickhouse-client.js";
+import { AnalyticsWorker } from "./analytics/worker.js";
+import type { AnalyticsHealth } from "./analytics/types.js";
+import { activateEnvironmentVariables, loadGatewayEnvironment } from "./config.js";
 
-const port = Number(process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787);
-const gatewayBaseUrl = process.env.GATEWAY_BASE_URL ?? `http://localhost:${port}`;
-const gatewayFeeBps = Number(process.env.GATEWAY_FEE_BPS ?? 0);
-const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 15 * 60_000);
+const environment = loadGatewayEnvironment();
+activateEnvironmentVariables(environment.env);
+const env = environment.env;
+const appEnv = environment.appEnv;
+const port = Number(env.GATEWAY_PORT ?? env.PORT ?? 8787);
+const gatewayBaseUrl = environment.publicUrl;
+const gatewayFeeBps = Number(env.GATEWAY_FEE_BPS ?? 0);
+const sessionTtlMs = Number(env.SESSION_TTL_MS ?? 15 * 60_000);
 
 // Reuse warm TLS connections for outbound Circle settlement calls.
 if (await installKeepAliveDispatcher()) {
-  console.log("[gateway] installed keep-alive HTTP dispatcher");
+  startupLog("info", "gateway.keep_alive_dispatcher_installed");
 }
 
 let articleRepository: PublishedArticleRepository;
 let ledger: LedgerRepository;
+const analyticsConfig = analyticsConfigFromEnv(env);
+let analyticsWorker: AnalyticsWorker | undefined;
+let analyticsHealth = async (): Promise<AnalyticsHealth> => ({
+  enabled: false,
+  backlogSize: 0,
+  poisonEventCount: 0,
+  workerRunning: false,
+});
 
-if (process.env.RUBICON_ARTICLES === "demo") {
-  articleRepository = createDemoArticleRepository();
-  console.log("[gateway] using in-memory demo article (RUBICON_ARTICLES=demo)");
+if (env.RUBICON_ARTICLES === "demo") {
+  articleRepository = createDemoArticleRepository(env);
+  startupLog("info", "gateway.article_repository_selected", { adapter: "in-memory-demo" });
 } else {
-  articleRepository = new SupabasePublishedArticleRepository(createSupabaseClientFromEnv());
-  console.log("[gateway] using Supabase for published articles");
+  articleRepository = new SupabasePublishedArticleRepository(createSupabaseClientFromEnv(env));
+  startupLog("info", "gateway.article_repository_selected", { adapter: "supabase" });
 }
 
-const databaseUrl = process.env.DATABASE_URL;
+const databaseUrl = env.DATABASE_URL;
 if (databaseUrl) {
   // Runtime sessions, conversations, payments, and receipts remain in Postgres.
   const { assertRailwayCompatibleDatabaseUrl, createPgPool, describeDatabaseUrl, runMigrations, PostgresLedgerRepository } =
     await import("./repositories/postgres.js");
   assertRailwayCompatibleDatabaseUrl(databaseUrl);
-  console.log(`[gateway] DATABASE_URL ${describeDatabaseUrl(databaseUrl)}`);
+  startupLog("info", "gateway.database_configured", { database: describeDatabaseUrl(databaseUrl) });
   const pool = createPgPool(databaseUrl);
-  if (process.env.RUN_MIGRATIONS === "true") {
+  if (env.RUN_MIGRATIONS === "true") {
     await runMigrations(pool);
   }
   ledger = new PostgresLedgerRepository(pool);
-  console.log("[gateway] using Postgres runtime persistence");
+  startupLog("info", "gateway.ledger_selected", { adapter: "postgres" });
+  const outbox = new AnalyticsOutboxRepository(pool);
+  if (analyticsConfig.enabled) {
+    analyticsWorker = new AnalyticsWorker(
+      analyticsConfig,
+      outbox,
+      new ClickHouseAnalyticsClient(analyticsConfig),
+    );
+    analyticsWorker.start();
+    startupLog("info", "gateway.analytics_worker_started", { clickhouseDatabase: analyticsConfig.clickhouseDatabase });
+  } else if (env.ANALYTICS_ENABLED === "true") {
+    startupLog("error", "gateway.analytics_worker_disabled", { reason: "clickhouse_url_missing" });
+  }
+  analyticsHealth = () => outbox.health(
+    analyticsConfig.maxAttempts,
+    analyticsWorker?.isRunning ?? false,
+    analyticsConfig.enabled,
+  );
 } else {
   ledger = new InMemoryLedgerRepository();
-  console.log("[gateway] using in-memory runtime ledger");
+  startupLog("info", "gateway.ledger_selected", { adapter: "in-memory" });
 }
 
 const paymentVerifier: PaymentVerifier =
-  process.env.RUBICON_PAYMENTS === "circle"
+  env.RUBICON_PAYMENTS === "circle"
     ? new CircleX402PaymentVerifier({
-        facilitatorUrl: process.env.CIRCLE_FACILITATOR_URL ?? GATEWAY_API_URL,
-        networks: process.env.CIRCLE_X402_NETWORKS?.split(",").map((n) => toCaip2Network(n.trim())).filter(Boolean) ?? [
+        facilitatorUrl: env.CIRCLE_FACILITATOR_URL ?? GATEWAY_API_URL,
+        networks: env.CIRCLE_X402_NETWORKS?.split(",").map((n) => toCaip2Network(n.trim())).filter(Boolean) ?? [
           ACTIVE_X402_NETWORK,
         ],
-        arcPrivateMainnet: process.env.CIRCLE_ARC_PRIVATE_MAINNET === "true",
-        maxTimeoutSeconds: process.env.CIRCLE_X402_MAX_TIMEOUT_SECONDS
-          ? Number(process.env.CIRCLE_X402_MAX_TIMEOUT_SECONDS)
+        arcPrivateMainnet: env.CIRCLE_ARC_PRIVATE_MAINNET === "true",
+        maxTimeoutSeconds: env.CIRCLE_X402_MAX_TIMEOUT_SECONDS
+          ? Number(env.CIRCLE_X402_MAX_TIMEOUT_SECONDS)
           : undefined,
         gatewayBaseUrl,
-        synchronousSettlement: process.env.CIRCLE_SYNCHRONOUS_SETTLEMENT === "true",
-        settlementBatchSize: process.env.CIRCLE_SETTLEMENT_BATCH_SIZE
-          ? Number(process.env.CIRCLE_SETTLEMENT_BATCH_SIZE)
+        synchronousSettlement: env.CIRCLE_SYNCHRONOUS_SETTLEMENT === "true",
+        settlementBatchSize: env.CIRCLE_SETTLEMENT_BATCH_SIZE
+          ? Number(env.CIRCLE_SETTLEMENT_BATCH_SIZE)
           : undefined,
-        settlementBatchIntervalMs: process.env.CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS
-          ? Number(process.env.CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS)
+        settlementBatchIntervalMs: env.CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS
+          ? Number(env.CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS)
           : undefined,
-        // Backfill the persisted receipt with Circle's transfer UUID once the
-        // batched settlement clears behind the stream.
+        appEnv,
+        // Persist provider evidence only after Circle returns a real reference.
         onSettled: async (outcome) => {
-          if (!outcome.success || !ledger.updatePaymentSettlement) {
+          const providerReference = outcome.transferId
+            ?? outcome.settlementId
+            ?? outcome.settlementIds?.[0]
+            ?? outcome.transactionHash
+            ?? outcome.transactionHashes?.[0];
+          if (!ledger.recordSettlementRange) {
             return;
           }
           try {
-            await ledger.updatePaymentSettlement({
+            await ledger.recordSettlementRange({
+              provider: "circle-x402",
+              status: outcome.success ? "completed" : "failed",
+              idempotencyKey: providerReference
+                ? `circle-x402:${providerReference}:${outcome.success ? "completed" : "failed"}`
+                : `circle-x402:${outcome.sessionId}:${outcome.startSequence}-${outcome.endSequence}:failed`,
               sessionId: outcome.sessionId,
-              sequence: outcome.sequence,
+              startSequence: outcome.startSequence,
+              endSequence: outcome.endSequence,
               settlementId: outcome.settlementId,
               settlementIds: outcome.settlementIds,
               transferId: outcome.transferId,
@@ -86,7 +132,9 @@ const paymentVerifier: PaymentVerifier =
               buyerWalletAddress: outcome.buyerWalletAddress,
             });
           } catch (error) {
-            console.error("[gateway] failed to backfill settlement", error);
+            startupLog("error", "gateway.settlement_evidence_persist_failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
         },
       })
@@ -95,27 +143,34 @@ const paymentVerifier: PaymentVerifier =
 const gateway = createGateway({
   articleRepository,
   ledger,
-  sellerAgent: createSellerAgent(),
+  sellerAgent: createSellerAgent(env),
   paymentVerifier,
   sessionTtlMs,
   gatewayFeeBps,
   gatewayBaseUrl,
-  queryEmbedder: createQueryEmbedder(),
+  queryEmbedder: createQueryEmbedder(env),
+  analyticsHealth,
+  appEnv,
+  env,
+});
+
+gateway.addHook("onClose", async () => {
+  await analyticsWorker?.stop();
 });
 
 await gateway.listen({ port, host: "0.0.0.0" });
 
-function createDemoArticleRepository(): InMemoryPublishedArticleRepository {
-  const creatorId = process.env.DEMO_CREATOR_ID ?? "creator_demo";
+function createDemoArticleRepository(runtimeEnv: NodeJS.ProcessEnv): InMemoryPublishedArticleRepository {
+  const creatorId = runtimeEnv.DEMO_CREATOR_ID ?? "creator_demo";
   return new InMemoryPublishedArticleRepository({
     articles: [
       {
-        id: process.env.DEMO_ARTICLE_ID ?? "article_demo",
+        id: runtimeEnv.DEMO_ARTICLE_ID ?? "article_demo",
         creatorId,
-        creatorUsername: process.env.DEMO_CREATOR_USERNAME ?? "demo",
+        creatorUsername: runtimeEnv.DEMO_CREATOR_USERNAME ?? "demo",
         title: "Field Guide to Metered Reading",
-        author: process.env.DEMO_AUTHOR ?? "Rubicon Demo",
-        pricePerWordAtomic: BigInt(process.env.PRICE_PER_WORD_ATOMIC ?? "1"),
+        author: runtimeEnv.DEMO_AUTHOR ?? "Rubicon Demo",
+        pricePerWordAtomic: BigInt(runtimeEnv.PRICE_PER_WORD_ATOMIC ?? "1"),
         body: [
           "# Field Guide to Metered Reading",
           "",
@@ -136,19 +191,19 @@ function createDemoArticleRepository(): InMemoryPublishedArticleRepository {
     wallets: [
       {
         creatorId,
-        address: (process.env.DEMO_CREATOR_WALLET ?? "0x2222222222222222222222222222222222222222") as `0x${string}`,
+        address: (runtimeEnv.DEMO_CREATOR_WALLET ?? "0x2222222222222222222222222222222222222222") as `0x${string}`,
         network: ACTIVE_X402_NETWORK,
       },
     ],
   });
 }
 
-function createSellerAgent(): DefaultSellerAgent {
-  const apiKey = process.env.OPENAI_API_KEY;
+function createSellerAgent(runtimeEnv: NodeJS.ProcessEnv): DefaultSellerAgent {
+  const apiKey = runtimeEnv.OPENAI_API_KEY;
   if (!apiKey) {
     return new DefaultSellerAgent();
   }
-  const model = process.env.OPENAI_MODEL ?? "gpt-5.4-mini";
+  const model = runtimeEnv.OPENAI_MODEL ?? "gpt-5.4-mini";
   return new DefaultSellerAgent(
     new TextCompletionSellerModelProvider(`openai:${model}`, async ({ system, prompt }) => {
       const response = await fetch("https://api.openai.com/v1/responses", {
@@ -182,4 +237,12 @@ function createSellerAgent(): DefaultSellerAgent {
       );
     }),
   );
+}
+
+function startupLog(
+  level: "info" | "error",
+  event: string,
+  fields: Record<string, unknown> = {},
+): void {
+  console[level](JSON.stringify({ level, event, appEnv, ...fields }));
 }

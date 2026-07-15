@@ -7,8 +7,6 @@ import {
   createSession,
   isSessionExpired,
   quotePerWord,
-  recordWordDelivery,
-  recordWordPayment,
   settlementNetworkInfo,
   usageForWords,
   lexicalSearch,
@@ -33,9 +31,15 @@ import {
 } from "@rubicon-caliga/core";
 import { InMemoryEventBus } from "./stores/event-bus.js";
 import { summarizeArticle } from "./repositories/in-memory.js";
-import type { ArticleRecord, LedgerRepository, PublishedArticleRepository } from "./repositories/types.js";
+import type {
+  ArticleRecord,
+  LedgerRepository,
+  PublishedArticleRepository,
+  RecordBundleResult,
+  SettlementEvidenceInput,
+} from "./repositories/types.js";
 import { DefaultSellerAgent, type SellerAgent } from "./seller-agent/seller-agent.js";
-import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/types.js";
+import { DevelopmentPaymentVerifier, type PaymentVerifier, type PaymentVerificationResult } from "./payments/types.js";
 import { selectionFromRequest, wordsForSelection } from "./words.js";
 import { buildSearchResults } from "./search/search-service.js";
 import { buildOpenApiDocument } from "./discovery/openapi.js";
@@ -55,6 +59,7 @@ import {
   normalizeChunkWords,
   PaidReadingWorkflow,
 } from "./workflows/paid-reading.js";
+import type { AnalyticsHealth } from "./analytics/types.js";
 
 export interface GatewayOptions {
   articleRepository: PublishedArticleRepository;
@@ -66,6 +71,10 @@ export interface GatewayOptions {
   gatewayFeeBps?: number;
   gatewayBaseUrl?: string;
   logger?: boolean;
+  /** Resolved deployment environment included in logs and health responses. */
+  appEnv?: "development" | "staging" | "production";
+  /** Selected environment profile. Defaults to process.env for direct test construction. */
+  env?: NodeJS.ProcessEnv;
   /** Query embedder for semantic search. Null when OPENAI_API_KEY is unset (lexical fallback). */
   queryEmbedder?: ((q: string) => Promise<number[] | null>) | null;
   /** Version advertised in the /openapi.json discovery document. */
@@ -78,6 +87,8 @@ export interface GatewayOptions {
    * collect funds.
    */
   baseX402Verifier?: BaseX402Verifier;
+  /** Read-only outbox/worker health. Analytics availability never gates reads. */
+  analyticsHealth?: () => Promise<AnalyticsHealth>;
 }
 
 const STOP_CONDITIONS: StreamStopCondition[] = [
@@ -88,6 +99,93 @@ const STOP_CONDITIONS: StreamStopCondition[] = [
   { kind: "article_completed", description: "Stop automatically when the selected section or article is complete." },
   { kind: "payment_rejected", description: "Stop if authorization verification or settlement fails." },
 ];
+
+function applyBundleCounters(session: SessionRecord, record: RecordBundleResult): void {
+  session.wordsDelivered = record.wordsDelivered;
+  session.wordsPaid = record.wordsPaid;
+  session.paidAtomic = BigInt(record.paidAtomic);
+  session.metadata = { ...session.metadata, bundleSequence: record.bundle.bundleSequence + 1 };
+  session.updatedAt = new Date(record.bundle.updatedAt);
+}
+
+function streamResponseFromBundle(record: RecordBundleResult, completed: boolean): StreamChunkResponse {
+  const words = record.bundle.words.map(({ sequence, word }) => ({
+    sequence,
+    word,
+    priceAtomic: record.bundle.pricePerWordAtomic,
+  }));
+  return {
+    accepted: true,
+    words,
+    text: words.map((entry) => entry.word).join(" "),
+    wordsPaid: record.wordsPaid,
+    wordsDelivered: record.wordsDelivered,
+    paidAtomic: record.paidAtomic,
+    completed,
+    authorizationMode: record.bundle.accessMode === "paid" ? "chunk" : undefined,
+  };
+}
+
+function paidChunkResponseFromBundle(record: RecordBundleResult, session: SessionRecord): StreamChunkResponse {
+  const response = streamResponseFromBundle(record, session.state === "completed");
+  const text = response.text;
+  return {
+    ...response,
+    authorizationMode: "chunk",
+    payment: buildWordReceipt(
+      session,
+      record.bundle.startSequence,
+      BigInt(record.bundle.grossAmountAtomic),
+      record.bundle.paymentId,
+      record.bundle.network,
+      record.bundle.payTo,
+      record.bundle.createdAt,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      record.bundle.buyerWalletAddress,
+      undefined,
+      {
+        bundleSequence: record.bundle.bundleSequence,
+        startSequence: record.bundle.startSequence,
+        endSequence: record.bundle.endSequence,
+        wordsDelivered: record.bundle.wordsCount,
+        pricePerWordAtomic: BigInt(record.bundle.pricePerWordAtomic),
+        text,
+      },
+    ),
+  };
+}
+
+function settlementEvidenceFromVerification(
+  verification: PaymentVerificationResult,
+  bundleId: string,
+): SettlementEvidenceInput | undefined {
+  const providerReference = verification.transferId
+    ?? verification.settlementId
+    ?? verification.settlementIds?.[0]
+    ?? verification.transactionHash
+    ?? verification.transactionHashes?.[0];
+  if (!providerReference) return undefined;
+  const provider = verification.network === "development" ? "development" : "circle-x402";
+  return {
+    provider,
+    status: "completed",
+    idempotencyKey: `${provider}:${providerReference}:completed`,
+    bundleIds: [bundleId],
+    network: verification.network,
+    payTo: verification.payTo,
+    buyerWalletAddress: verification.buyerWalletAddress,
+    transactionHash: verification.transactionHash,
+    transactionHashes: verification.transactionHashes,
+    settlementId: verification.settlementId,
+    settlementIds: verification.settlementIds,
+    transferId: verification.transferId,
+    initiatedAt: new Date().toISOString(),
+    confirmedAt: new Date().toISOString(),
+  };
+}
 
 // AgentCash/x402scan validates the schema carried by a runtime 402 in addition
 // to the OpenAPI document. Keep this in sync with the /v1/sessions operation:
@@ -133,6 +231,7 @@ const SESSION_DISCOVERY_BAZAAR_SCHEMA = {
 
 const ENDPOINTS = [
   { method: "GET", path: "/health", description: "Gateway health check." },
+  { method: "GET", path: "/health/analytics", description: "Analytics outbox backlog and worker health." },
   { method: "GET", path: "/v1/endpoints", description: "Lists gateway endpoints." },
   { method: "GET", path: "/openapi.json", description: "AgentCash/x402 discovery document (OpenAPI 3.1.0)." },
   { method: "GET", path: "/v1/repository", description: "Lists live articles available to buyer agents. Optional ?q= ranks results by search relevance." },
@@ -149,26 +248,34 @@ const ENDPOINTS = [
 ];
 
 export function createGateway(options: GatewayOptions): FastifyInstance {
-  const app = Fastify({ logger: options.logger ?? true });
+  const runtimeEnv = options.env ?? process.env;
+  const appEnv = options.appEnv ?? (
+    runtimeEnv.APP_ENV === "staging" || runtimeEnv.APP_ENV === "production"
+      ? runtimeEnv.APP_ENV
+      : "development"
+  );
+  const app = Fastify({
+    logger: options.logger === false ? false : { base: { appEnv } },
+  });
   const events = new InMemoryEventBus();
   const sellerAgent = options.sellerAgent ?? new DefaultSellerAgent();
   const paymentVerifier: PaymentVerifier = options.paymentVerifier ?? new DevelopmentPaymentVerifier();
   const ledger = options.ledger;
   const articles = options.articleRepository;
   const gatewayFeeBps = options.gatewayFeeBps ?? 0;
-  const gatewayBaseUrl = options.gatewayBaseUrl ?? `http://localhost:${process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787}`;
-  const agentApiKey = process.env.RUBICON_AGENT_API_KEY;
+  const gatewayBaseUrl = options.gatewayBaseUrl ?? `http://localhost:${runtimeEnv.GATEWAY_PORT ?? runtimeEnv.PORT ?? 8787}`;
+  const agentApiKey = runtimeEnv.RUBICON_AGENT_API_KEY;
   const queryEmbedder = options.queryEmbedder ?? null;
   // AgentCash x402 (Base) purchase lane. Config is env-driven and isolated from
   // the Circle/Arc path; a bad config disables the lane rather than crashing boot.
   let baseX402Config: BaseX402Config | undefined;
   try {
-    baseX402Config = resolveBaseX402Config();
+    baseX402Config = resolveBaseX402Config(runtimeEnv);
   } catch (error) {
     app.log.warn(`[gateway] Base x402 lane disabled: ${(error as Error).message}`);
   }
   const baseX402Verifier: BaseX402Verifier =
-    options.baseX402Verifier ?? resolveBaseX402Verifier(baseX402Config?.network ?? "eip155:8453");
+    options.baseX402Verifier ?? resolveBaseX402Verifier(baseX402Config?.network ?? "eip155:8453", runtimeEnv);
   const paidReading = new PaidReadingWorkflow({
     articles,
     ledger,
@@ -179,7 +286,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   app.addHook("onRequest", async (request, reply) => {
     if (
       !agentApiKey ||
-      request.url === "/health" ||
+      request.url.startsWith("/health") ||
       request.url === "/openapi.json" ||
       request.url === "/favicon.ico" ||
       // AgentCash x402 (Base) purchase lane is gated by x402 payment, not the
@@ -295,30 +402,48 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     if (!state) return undefined;
     const remaining = Math.max(0, state.words.length - session.wordsDelivered);
     const maxWords = Math.min(requestedWords, remaining);
-    const released: StreamChunkResponse["words"] = [];
     const startSequence = session.wordsDelivered;
-
-    for (let offset = 0; offset < maxWords; offset += 1) {
-      const sequence = session.wordsDelivered;
-      const word = paidReading.nextWord(state, sequence);
-      if (word === null) break;
-      const key = maxWords === 1 ? idempotencyBase : `${idempotencyBase}:${sequence}`;
-      const record = await ledger.recordFreeWordDelivery({
-        sessionId: session.id,
-        articleId: session.articleId,
-        sequence,
-        word,
-        idempotencyKey: key,
-      });
-      if (record.duplicate) break;
-      recordWordDelivery(session);
-      released.push({ sequence, word, priceAtomic: "0" });
+    const existing = await ledger.getBundleByIdempotencyKey(idempotencyBase);
+    if (existing) {
+      applyBundleCounters(session, existing);
+      return streamResponseFromBundle(existing, session.state === "completed");
+    }
+    const words = state.words.slice(startSequence, startSequence + maxWords)
+      .map((word, offset) => ({ sequence: startSequence + offset, word }));
+    if (words.length === 0) {
+      return {
+        accepted: true,
+        words: [],
+        text: "",
+        wordsPaid: 0,
+        wordsDelivered: session.wordsDelivered,
+        paidAtomic: "0",
+        completed: true,
+      };
+    }
+    const bundleSequence = typeof session.metadata.bundleSequence === "number" ? session.metadata.bundleSequence : 0;
+    const record = await ledger.recordFreeBundle({
+      accessMode: "free",
+      bundleId: randomUUID(),
+      idempotencyKey: idempotencyBase,
+      sessionId: session.id,
+      creatorId: session.creatorId,
+      articleId: session.articleId,
+      sectionId: session.sectionId,
+      bundleSequence,
+      startSequence,
+      words,
+      pricePerWordAtomic: 0n,
+    });
+    applyBundleCounters(session, record);
+    const released: StreamChunkResponse["words"] = record.bundle.words.map(({ sequence, word }) => ({ sequence, word, priceAtomic: "0" }));
+    for (const entry of released) {
       events.publish({
         type: "article.word",
         sessionId: session.id,
         articleId: session.articleId,
-        sequence,
-        word,
+        sequence: entry.sequence,
+        word: entry.word,
         priceAtomic: "0",
         totalWordsStreamed: session.wordsDelivered,
         totalPaidAtomic: "0",
@@ -332,7 +457,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         type: "article.bundle",
         sessionId: session.id,
         articleId: session.articleId,
-        bundleSequence: typeof session.metadata.bundleSequence === "number" ? session.metadata.bundleSequence : 0,
+        bundleSequence,
         startSequence,
         endSequence: startSequence + released.length - 1,
         words: released,
@@ -343,10 +468,6 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         totalWordsStreamed: session.wordsDelivered,
         totalPaidAtomic: "0",
       });
-      session.metadata = {
-        ...session.metadata,
-        bundleSequence: (typeof session.metadata.bundleSequence === "number" ? session.metadata.bundleSequence : 0) + 1,
-      };
     }
     events.publish({
       type: "article.usage",
@@ -356,20 +477,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       wordsDelivered: session.wordsDelivered,
       paidAtomic: "0",
     });
-    const freeChunkRequests = freeChunkRequestMap(session);
-    session.metadata = {
-      ...session.metadata,
-      freeChunkRequests: {
-        ...freeChunkRequests,
-        [idempotencyBase]: {
-          startSequence,
-          endSequence: startSequence + released.length,
-          completed,
-        },
-      },
-    };
     if (completed) await paidReading.complete(session, session.articleId);
-    else await ledger.saveSession(session);
 
     return {
       accepted: true,
@@ -387,30 +495,19 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     idempotencyKey: string | undefined,
   ): Promise<StreamChunkResponse | undefined> {
     if (!idempotencyKey) return undefined;
-    const cached = freeChunkRequestMap(session)[idempotencyKey];
-    if (!cached) return undefined;
-    const deliveries = (await ledger.listDeliveries(session.id))
-      .filter((entry) => entry.sequence >= cached.startSequence && entry.sequence < cached.endSequence)
-      .sort((left, right) => left.sequence - right.sequence);
-    const words = deliveries.map((entry) => ({ sequence: entry.sequence, word: entry.word, priceAtomic: "0" as const }));
-    return {
-      accepted: true,
-      words,
-      text: words.map((entry) => entry.word).join(" "),
-      wordsPaid: 0,
-      wordsDelivered: session.wordsDelivered,
-      paidAtomic: "0",
-      completed: cached.completed,
-    };
+    const cached = await ledger.getBundleByIdempotencyKey(idempotencyKey);
+    if (!cached || cached.bundle.accessMode !== "free") return undefined;
+    applyBundleCounters(session, cached);
+    return streamResponseFromBundle(cached, session.state === "completed");
   }
 
-  function freeChunkRequestMap(session: SessionRecord): Record<string, { startSequence: number; endSequence: number; completed: boolean }> {
-    const value = session.metadata.freeChunkRequests;
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    return value as Record<string, { startSequence: number; endSequence: number; completed: boolean }>;
-  }
-
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", async () => ({ ok: true, appEnv }));
+  app.get("/health/analytics", async () => ({
+    appEnv,
+    ...(options.analyticsHealth
+      ? await options.analyticsHealth()
+      : ({ enabled: false, backlogSize: 0, poisonEventCount: 0, workerRunning: false } satisfies AnalyticsHealth)),
+  }));
 
   app.get("/v1/endpoints", async () => ({ endpoints: ENDPOINTS }));
 
@@ -423,7 +520,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       baseUrl: gatewayBaseUrl,
       version: options.version ?? "0.1.0",
       // Public merchant contact for x402/AgentCash ownership verification.
-      contactEmail: process.env.RUBICON_CONTACT_EMAIL ?? "micacao15@gmail.com",
+      contactEmail: runtimeEnv.RUBICON_CONTACT_EMAIL ?? "micacao15@gmail.com",
       agentCashPurchaseEnabled: Boolean(agentCashArticle),
       agentCashMaxPriceUsd: baseX402Config
         ? decimalUsd(baseX402Config.maxArticlePriceAtomic)
@@ -579,7 +676,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   }
 
   async function baseCreatorWallet(article: ArticleRecord): Promise<`0x${string}` | undefined> {
-    const wallet = await articles.getCreatorWallet(article.creatorId);
+    const wallet = await articles.getCreatorBaseWallet(article.creatorId);
     return isConfiguredBaseCreatorWallet(wallet) ? wallet.address : undefined;
   }
 
@@ -1057,29 +1154,34 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         pricePerWordAtomic: session.pricePerWordAtomic,
         gatewayFeeBps: session.gatewayFeeBps,
       });
-      const record = await ledger.recordWordDelivery({
+      const bundleId = randomUUID();
+      const paymentId = randomUUID();
+      const bundleSequence = typeof session.metadata.bundleSequence === "number" ? session.metadata.bundleSequence : 0;
+      const settlement = settlementEvidenceFromVerification(verification, bundleId);
+      const record = await ledger.recordPaidBundle({
+        accessMode: "paid",
+        bundleId,
+        bundleSequence,
         sessionId: session.id,
         articleId: session.articleId,
         creatorId: session.creatorId,
-        sequence,
-        word: nextWord,
-        priceAtomic: wordPaymentAtomic,
+        sectionId: session.sectionId,
+        startSequence: sequence,
+        words: [{ sequence, word: nextWord }],
+        pricePerWordAtomic: wordPaymentAtomic,
+        grossAmountAtomic: wordPaymentAtomic,
         creatorAmountAtomic: BigInt(usage.creatorAmountAtomic),
         rubiconFeeAtomic: BigInt(usage.rubiconFeeAtomic),
-        paymentId: randomUUID(),
+        paymentId,
+        authorizationReference: idempotencyKey,
         network: verification.network,
         payTo: verification.payTo ?? session.sellerWallet,
-        transactionHash: verification.transactionHash,
-        transactionHashes: verification.transactionHashes,
-        settlementId: verification.settlementId,
-        settlementIds: verification.settlementIds,
         buyerWalletAddress: verification.buyerWalletAddress,
-        transferId: verification.transferId,
         idempotencyKey,
+        settlement,
       });
-      if (!record.payment) {
-        return reply.code(500).send({ error: "paid_delivery_missing_payment" });
-      }
+      applyBundleCounters(session, record);
+      if (!record.duplicate) verification.afterCommit?.({ startSequence: sequence, words: 1 });
       if (record.duplicate) {
         // Lost an idempotency race; return the canonical word without re-charging.
         // The winning request emits completion + closes the session over SSE.
@@ -1087,36 +1189,32 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           reply,
           buildPaymentResponse(
             session,
-            record.delivery.word,
-            record.delivery.sequence,
+            record.bundle.words[0]?.word ?? "",
+            record.bundle.startSequence,
             wordPaymentAtomic,
             false,
-            record.payment.transactionHash,
-            record.payment.transactionHashes,
-            record.payment.paymentId,
-            record.payment.network,
-            record.payment.payTo,
-            record.payment.createdAt,
-            record.payment.settlementId,
-            record.payment.settlementIds,
-            record.payment.buyerWalletAddress,
-            record.payment.transferId,
+            verification.transactionHash,
+            verification.transactionHashes,
+            record.bundle.paymentId,
+            record.bundle.network,
+            record.bundle.payTo,
+            record.bundle.createdAt,
+            verification.settlementId,
+            verification.settlementIds,
+            record.bundle.buyerWalletAddress,
+            verification.transferId,
           ),
         );
       }
-
-      recordWordPayment(session, verification.amountAtomic);
-      recordWordDelivery(session);
-      await ledger.saveSession(session);
 
       events.publish({
         type: "word.payment_accepted",
         sessionId: session.id,
         sequence,
-        paymentId: record.payment.paymentId,
+        paymentId: record.bundle.paymentId!,
         amountAtomic: `${wordPaymentAtomic}`,
-        network: record.payment.network,
-        payTo: record.payment.payTo,
+        network: record.bundle.network,
+        payTo: record.bundle.payTo,
         transactionHash: verification.transactionHash,
         transactionHashes: verification.transactionHashes,
         transferId: verification.transferId,
@@ -1159,10 +1257,10 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           completed,
           verification.transactionHash,
           verification.transactionHashes,
-          record.payment.paymentId,
-          record.payment.network,
-          record.payment.payTo,
-          record.payment.createdAt,
+          record.bundle.paymentId,
+          record.bundle.network,
+          record.bundle.payTo,
+          record.bundle.createdAt,
           verification.settlementId,
           verification.settlementIds,
           verification.buyerWalletAddress,
@@ -1182,6 +1280,16 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       if (session.accessMode === "free") {
         const cached = await cachedFreeChunk(session, request.body?.idempotencyKey);
         if (cached) return reply.send(cached);
+      } else {
+        const retryKey = request.body?.idempotencyKey
+          ?? idempotencyKeyFromPaymentPayload(request.body?.paymentPayload);
+        if (retryKey) {
+          const cached = await ledger.getBundleByIdempotencyKey(retryKey);
+          if (cached) {
+            applyBundleCounters(session, cached);
+            return reply.send(paidChunkResponseFromBundle(cached, session));
+          }
+        }
       }
       if (session.state === "completed" || session.state === "aborted" || session.state === "expired") {
         return reply.code(409).send({ error: `session_${session.state}` });
@@ -1241,6 +1349,11 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         streamPayment.idempotencyKey ??
         idempotencyKeyFromPaymentPayload(streamPayment.paymentPayload) ??
         `${session.id}:${session.wordsDelivered}:${maxWords}`;
+      const cachedBundle = await ledger.getBundleByIdempotencyKey(idempotencyKey);
+      if (cachedBundle) {
+        applyBundleCounters(session, cachedBundle);
+        return reply.send(paidChunkResponseFromBundle(cachedBundle, session));
+      }
       const verification = await paymentVerifier.verify({
         session,
         wordPaymentAtomic: chunkPaymentAtomic,
@@ -1258,80 +1371,58 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         });
       }
 
-      const released: StreamChunkResponse["words"] = [];
       const bundleSequence =
         typeof session.metadata.bundleSequence === "number" ? session.metadata.bundleSequence : 0;
+      const bundleId = randomUUID();
       const bundlePaymentId = randomUUID();
       const bundleStartSequence = session.wordsDelivered;
       const bundleSettledAt = new Date().toISOString();
-      let chunkCompleted = false;
-      for (let offset = 0; offset < maxWords; offset += 1) {
-        if (!canAffordNextWord(session, wordPaymentAtomic)) {
-          break;
-        }
-        const nextWord = paidReading.nextWord(state, session.wordsDelivered);
-        if (nextWord === null) {
-          await paidReading.complete(session, state.article.id);
-          chunkCompleted = true;
-          break;
-        }
-
-        const sequence = session.wordsDelivered;
-        const usage = usageForWords({
-          wordsDelivered: 1,
-          pricePerWordAtomic: session.pricePerWordAtomic,
-          gatewayFeeBps: session.gatewayFeeBps,
-        });
-        const record = await ledger.recordWordDelivery({
-          sessionId: session.id,
-          articleId: session.articleId,
-          creatorId: session.creatorId,
-          sequence,
-          word: nextWord,
-          priceAtomic: wordPaymentAtomic,
-          creatorAmountAtomic: BigInt(usage.creatorAmountAtomic),
-          rubiconFeeAtomic: BigInt(usage.rubiconFeeAtomic),
-          paymentId: randomUUID(),
-          network: verification.network,
-          payTo: verification.payTo ?? session.sellerWallet,
-          transactionHash: verification.transactionHash,
-          transactionHashes: verification.transactionHashes,
-          settlementId: verification.settlementId,
-          settlementIds: verification.settlementIds,
-          buyerWalletAddress: verification.buyerWalletAddress,
-          transferId: verification.transferId,
-          idempotencyKey: `${idempotencyKey}:${sequence}`,
-        });
-        if (record.duplicate) {
-          continue;
-        }
-
-        recordWordPayment(session, `${wordPaymentAtomic}`);
-        recordWordDelivery(session);
-        await ledger.saveSession(session);
-        released.push({
-          sequence,
-          word: nextWord,
-          priceAtomic: `${wordPaymentAtomic}`,
-        });
-
-        if (session.wordsDelivered >= state.words.length) {
-          await paidReading.complete(session, session.articleId);
-          chunkCompleted = true;
-          break;
-        }
-      }
+      const bundleWords = state.words.slice(bundleStartSequence, bundleStartSequence + maxWords)
+        .map((word, offset) => ({ sequence: bundleStartSequence + offset, word }));
+      const creatorAmountAtomic = session.pricePerWordAtomic * BigInt(bundleWords.length);
+      const bundleAmountAtomic = wordPaymentAtomic * BigInt(bundleWords.length);
+      const settlement = settlementEvidenceFromVerification(verification, bundleId);
+      const record = await ledger.recordPaidBundle({
+        accessMode: "paid",
+        bundleId,
+        idempotencyKey,
+        sessionId: session.id,
+        creatorId: session.creatorId,
+        articleId: session.articleId,
+        sectionId: session.sectionId,
+        bundleSequence,
+        startSequence: bundleStartSequence,
+        words: bundleWords,
+        pricePerWordAtomic: wordPaymentAtomic,
+        grossAmountAtomic: bundleAmountAtomic,
+        creatorAmountAtomic,
+        rubiconFeeAtomic: bundleAmountAtomic - creatorAmountAtomic,
+        paymentId: bundlePaymentId,
+        authorizationReference: idempotencyKey,
+        buyerWalletAddress: verification.buyerWalletAddress,
+        network: verification.network,
+        payTo: verification.payTo ?? session.sellerWallet,
+        settlement,
+      });
+      applyBundleCounters(session, record);
+      if (!record.duplicate) verification.afterCommit?.({ startSequence: bundleStartSequence, words: bundleWords.length });
+      const released: StreamChunkResponse["words"] = record.bundle.words.map(({ sequence, word }) => ({
+        sequence,
+        word,
+        priceAtomic: `${wordPaymentAtomic}`,
+      }));
 
       const bundleText = released.map((entry) => entry.word).join(" ");
-      const bundleAmountAtomic = wordPaymentAtomic * BigInt(released.length);
+      const chunkCompleted = session.wordsDelivered >= state.words.length;
+      if (chunkCompleted) await paidReading.complete(session, session.articleId);
       const bundlePayment = buildWordReceipt(
         session,
         bundleStartSequence,
         bundleAmountAtomic,
-        released.length > 0 ? bundlePaymentId : "",
+        record.bundle.paymentId ?? "",
         verification.network,
         verification.payTo ?? session.sellerWallet,
-        bundleSettledAt,
+        record.bundle.createdAt ?? bundleSettledAt,
         verification.transactionHash,
         verification.transactionHashes,
         verification.settlementId,
@@ -1348,13 +1439,11 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
         },
       );
       if (released.length > 0) {
-        session.metadata = { ...session.metadata, bundleSequence: bundleSequence + 1 };
-        await ledger.saveSession(session);
         events.publish({
           type: "word.payment_accepted",
           sessionId: session.id,
           sequence: bundleStartSequence,
-          paymentId: bundlePaymentId,
+          paymentId: record.bundle.paymentId!,
           amountAtomic: `${bundleAmountAtomic}`,
           network: verification.network,
           payTo: verification.payTo ?? session.sellerWallet,
@@ -1374,7 +1463,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
           wordCount: released.length,
           pricePerWordAtomic: `${wordPaymentAtomic}`,
           amountAtomic: `${bundleAmountAtomic}`,
-          paymentId: bundlePaymentId,
+          paymentId: record.bundle.paymentId,
           totalWordsStreamed: session.wordsDelivered,
           totalPaidAtomic: `${session.paidAtomic}`,
         });

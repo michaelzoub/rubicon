@@ -2,9 +2,9 @@
  * A small batching buffer that defers expensive work (Circle settlement) off the
  * request path. Items are settled when the buffer reaches `batchSize` or after
  * `intervalMs` elapses, whichever comes first. Within a flush, items settle
- * concurrently, so settling N words costs roughly one round-trip instead of N
- * serial ones — while each word is still released the instant its authorization
- * is verified upstream.
+ * concurrently, so settling N bundle authorizations costs roughly one round-trip
+ * instead of N serial ones. Enqueue happens only after the corresponding bundle
+ * transaction commits.
  *
  * The queue never throws to the caller: `settle` is expected to handle and
  * report its own outcomes. A failing `settle` does not stop the queue from

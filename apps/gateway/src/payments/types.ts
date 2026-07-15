@@ -17,13 +17,21 @@ export interface PaymentRequiredInput {
   gatewayBaseUrl: string;
 }
 
+export interface PaymentVerificationResult extends PaymentVerification {
+  /**
+   * Queue provider settlement only after the bundle transaction commits. This
+   * callback is server-internal and is never included in an HTTP response.
+   */
+  afterCommit?: (input: { startSequence: number; words: number }) => void;
+}
+
 /**
  * Verifies authorization for metered word delivery. Preferred implementations
  * authorize a session cap or chunk cap; legacy implementations may still accept
  * one-word x402 payloads.
  */
 export interface PaymentVerifier {
-  verify(input: PaymentVerifyInput): Promise<PaymentVerification>;
+  verify(input: PaymentVerifyInput): Promise<PaymentVerificationResult>;
   createPaymentRequired?(input: PaymentRequiredInput): Promise<unknown>;
   /** Flush any settlements batched behind the stream (e.g. on session close). */
   flush?(): Promise<void>;

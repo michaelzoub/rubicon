@@ -133,12 +133,14 @@ test("verify-gate releases the word on a valid authorization without settling on
   assert.equal(result.transferId, undefined);
 
   // It settles behind the stream and backfills the receipt via onSettled.
+  result.afterCommit?.({ startSequence: 0, words: 1 });
   await verifier.flush();
   assert.equal(settleCalls, 1);
   assert.equal(outcomes.length, 1);
   const outcome = outcomes[0]!;
   assert.equal(outcome.success, true);
-  assert.equal(outcome.sequence, 0);
+  assert.equal(outcome.startSequence, 0);
+  assert.equal(outcome.endSequence, 0);
   assert.equal(outcome.transferId, "transfer-uuid");
 });
 
@@ -177,6 +179,7 @@ test("a failed batched settlement halts further words in the session", async () 
   assert.equal(first.accepted, true);
 
   // Its settlement fails behind the stream.
+  first.afterCommit?.({ startSequence: 0, words: 1 });
   await verifier.flush();
   assert.equal(outcomes.length, 1);
   const failure = outcomes[0]!;

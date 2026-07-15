@@ -198,6 +198,7 @@ export class SupabasePublishedArticleRepository implements PublishedArticleRepos
       .select("creator_id, address, network, verified")
       .eq("creator_id", creatorId)
       .eq("verified", true)
+      .eq("network", "arc-testnet")
       .limit(1);
     if (error) {
       throw new SupabaseRepositoryError("Supabase creator wallet query failed", error);
@@ -206,6 +207,27 @@ export class SupabasePublishedArticleRepository implements PublishedArticleRepos
     if (!row) {
       return null;
     }
+    return {
+      creatorId: row.creator_id,
+      address: row.address as `0x${string}`,
+      network: toCaip2Network(row.network),
+      verified: row.verified,
+    };
+  }
+
+  async getCreatorBaseWallet(creatorId: string): Promise<CreatorWallet | null> {
+    const { data, error } = await this.supabase
+      .from<CreatorWalletRow>("creator_wallets")
+      .select("creator_id, address, network, verified")
+      .eq("creator_id", creatorId)
+      .eq("verified", true)
+      .eq("network", "eip155:8453")
+      .limit(1);
+    if (error) {
+      throw new SupabaseRepositoryError("Supabase creator Base wallet query failed", error);
+    }
+    const row = data?.[0];
+    if (!row) return null;
     return {
       creatorId: row.creator_id,
       address: row.address as `0x${string}`,

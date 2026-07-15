@@ -13,8 +13,8 @@ const EMBEDDING_DIMENSIONS = 1536;
 const CACHE_CAP = 200;
 
 /** Returns a function that embeds a query string into a 1536-dim vector, or null when OpenAI is not configured. */
-export function createQueryEmbedder(): ((q: string) => Promise<number[] | null>) | null {
-  const apiKey = process.env.OPENAI_API_KEY;
+export function createQueryEmbedder(env: NodeJS.ProcessEnv = process.env): ((q: string) => Promise<number[] | null>) | null {
+  const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) return null;
 
   // In-process LRU-ish cache: cap at CACHE_CAP entries, evict oldest on overflow.

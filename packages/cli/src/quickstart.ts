@@ -5,7 +5,6 @@ import {
   type ArticleNavigation,
   type ArticleSummary,
   type ConversationMessage,
-  type SearchResponse,
   type SectionMatch,
   type StreamMode,
 } from "@rubicon-caliga/core";

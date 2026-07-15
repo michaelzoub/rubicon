@@ -30,6 +30,9 @@ function paidArticleRepo(network = "eip155:8453", verified = true, pricePerWordA
       },
     ],
     wallets: [
+      { creatorId: "creator-a", address: "0x00000000000000000000000000000000000000bb", network: "eip155:5042002", verified: true },
+    ],
+    baseWallets: [
       { creatorId: "creator-a", address: "0x00000000000000000000000000000000000000aa", network, verified },
     ],
   });

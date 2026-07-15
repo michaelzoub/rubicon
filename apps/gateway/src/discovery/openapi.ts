@@ -148,8 +148,11 @@ export function buildOpenApiDocument(options: OpenApiOptions): Record<string, un
           responses: {
             "200": jsonResponse("Gateway is healthy.", {
               type: "object",
-              required: ["ok"],
-              properties: { ok: { type: "boolean", const: true } },
+              required: ["ok", "appEnv"],
+              properties: {
+                ok: { type: "boolean", const: true },
+                appEnv: { type: "string", enum: ["development", "staging", "production"] },
+              },
             }),
           },
         },

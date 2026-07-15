@@ -41,5 +41,5 @@ is actually published to npm; the marketing copy goes live immediately.
   `apps/gateway`.
 - Per package: `pnpm typecheck` and `pnpm test` must pass before committing.
 - Local gateway for agent-flow testing:
-  `cd apps/gateway && RUBICON_ARTICLES=demo RUBICON_PAYMENTS=development RUBICON_AGENT_API_KEY= DATABASE_URL= pnpm dev`
+  `cd apps/gateway && APP_ENV=development RUBICON_ARTICLES=demo RUBICON_PAYMENTS=development RUBICON_AGENT_API_KEY= DATABASE_URL= pnpm dev`
   then `node packages/cli/dist/index.js buy --goal "<goal>" --max-usdc 0.0001 --gateway-url http://localhost:8787 --json`.

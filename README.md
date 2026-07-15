@@ -81,7 +81,7 @@ sequenceDiagram
   SDK->>API: POST /v1/sessions/:id/stream
   Workflow->>Pay: verify bundled authorization
   Pay-->>Workflow: approved amount/range
-  Workflow->>Ledger: record delivery and payment
+  Workflow->>Ledger: commit bundle, audit rows, counters, and outbox event
   Workflow-->>SDK: metered words or bundle
   API-->>Buyer: receipt when stopped, completed, aborted, or budget-limited
 ```
@@ -131,7 +131,11 @@ flowchart TB
   Routes --> Events
 ```
 
-The gateway chooses its runtime adapters from environment variables:
+The gateway requires `APP_ENV=development|staging|production` and chooses its
+runtime adapters from one environment profile. Development uses unprefixed
+variables; staging and production use only `STAGING_*` and `PRODUCTION_*`
+resource variables. The full variable matrix and fail-closed isolation rules are
+in [docs/environments.md](docs/environments.md).
 
 | Concern | Production path | Local/demo path |
 | --- | --- | --- |
@@ -140,6 +144,16 @@ The gateway chooses its runtime adapters from environment variables:
 | Payments | `RUBICON_PAYMENTS=circle` Circle x402 / Arc verifier | Development verifier |
 | Seller model | `OPENAI_API_KEY` OpenAI Responses API | Deterministic fallback seller agent |
 | API auth | `RUBICON_AGENT_API_KEY` bearer auth on `/v1/*` | unset for public local API |
+
+Production analytics uses the transactional Postgres outbox and an optional
+ClickHouse worker. Configure `ANALYTICS_ENABLED=true`, `CLICKHOUSE_URL`,
+`CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`,
+`ANALYTICS_BATCH_SIZE`, `ANALYTICS_FLUSH_INTERVAL_MS`,
+`ANALYTICS_MAX_ATTEMPTS`, and `ANALYTICS_LEASE_TIMEOUT_MS`. ClickHouse is never
+on the content-delivery transaction path. Operational details are in
+[docs/bundle-ledger-and-analytics.md](docs/bundle-ledger-and-analytics.md).
+That runbook includes the required expand/deploy/finalize sequence; applying
+the ClickHouse SQL alone does not activate server ingestion.
 
 ## API surface
 
@@ -173,6 +187,7 @@ RUBICON_ARTICLES=demo \
 RUBICON_PAYMENTS=development \
 RUBICON_AGENT_API_KEY= \
 DATABASE_URL= \
+APP_ENV=development \
 pnpm dev:gateway
 ```
 
@@ -259,11 +274,11 @@ For real Circle / Arc payments:
 
 ## Persistence and deployment
 
-Set `DATABASE_URL` to persist sessions, word deliveries, payments, earnings, and
+Set `DATABASE_URL` to persist sessions, read bundles, optional word audits, payments, earnings, and
 settlement receipts in Postgres:
 
 ```bash
-DATABASE_URL=postgres://... pnpm --filter @rubicon-caliga/gateway migrate
+APP_ENV=development DATABASE_URL=postgres://... pnpm --filter @rubicon-caliga/gateway migrate
 ```
 
 Without `DATABASE_URL`, runtime data is in memory and disappears on restart.

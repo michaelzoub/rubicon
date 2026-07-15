@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import type {
   ArticleSection,
   ArticleAccessMode,
@@ -17,16 +17,20 @@ import type {
 } from "@rubicon-caliga/core";
 import { PUBLIC_ARTICLE_STATE } from "@rubicon-caliga/core";
 import { toCaip2Network } from "../chain.js";
+import { hashBuyerAgentIdentity } from "../analytics/identity.js";
 import { clampSectionsToWords, tokenizeWords } from "../words.js";
 import { summarizeArticle } from "./in-memory.js";
 import type {
   ArticleRecord,
   LedgerRepository,
   PublishedArticleRepository,
-  RecordWordDeliveryInput,
-  RecordFreeWordDeliveryInput,
   RecordWordDeliveryResult,
-  UpdatePaymentSettlementInput,
+  RecordBundleResult,
+  RecordFreeBundleInput,
+  RecordPaidBundleInput,
+  RecordedBundle,
+  RecordSettlementRangeInput,
+  SettlementEvidenceInput,
 } from "./types.js";
 
 interface PgPoolConfig {
@@ -266,7 +270,7 @@ export class PostgresPublishedArticleRepository implements PublishedArticleRepos
       address: string;
       network: string;
       verified: boolean;
-    }>("SELECT creator_id, address, network, verified FROM creator_wallets WHERE creator_id = $1", [creatorId]);
+    }>("SELECT creator_id, address, network, verified FROM creator_wallets WHERE creator_id = $1 AND network = 'arc-testnet'", [creatorId]);
     const row = result.rows[0];
     if (!row) {
       return null;
@@ -276,6 +280,23 @@ export class PostgresPublishedArticleRepository implements PublishedArticleRepos
       address: row.address as `0x${string}`,
       // rubicon-marketing persists the human slug ("arc-testnet"); the x402
       // settlement path needs canonical CAIP-2 ("eip155:5042002").
+      network: toCaip2Network(row.network),
+      verified: row.verified,
+    };
+  }
+
+  async getCreatorBaseWallet(creatorId: string): Promise<CreatorWallet | null> {
+    const result = await this.pool.query<{
+      creator_id: string;
+      address: string;
+      network: string;
+      verified: boolean;
+    }>("SELECT creator_id, address, network, verified FROM creator_wallets WHERE creator_id = $1 AND network = 'eip155:8453' AND verified = true", [creatorId]);
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      creatorId: row.creator_id,
+      address: row.address as `0x${string}`,
       network: toCaip2Network(row.network),
       verified: row.verified,
     };
@@ -456,6 +477,291 @@ export class PostgresLedgerRepository implements LedgerRepository {
     }));
   }
 
+  async getBundleByIdempotencyKey(key: string): Promise<RecordBundleResult | null> {
+    return this.loadBundleByIdempotencyKey(this.pool, key, true);
+  }
+
+  async recordPaidBundle(input: RecordPaidBundleInput): Promise<RecordBundleResult> {
+    return this.recordBundle(input);
+  }
+
+  async recordFreeBundle(input: RecordFreeBundleInput): Promise<RecordBundleResult> {
+    return this.recordBundle(input);
+  }
+
+  private async recordBundle(input: RecordPaidBundleInput | RecordFreeBundleInput): Promise<RecordBundleResult> {
+    validateBundleInput(input);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const duplicate = await this.loadBundleByIdempotencyKey(client, input.idempotencyKey, true);
+      if (duplicate) {
+        await client.query("COMMIT");
+        return duplicate;
+      }
+
+      const sessionResult = await client.query<{
+        words_delivered: number;
+        words_paid: number;
+        paid_atomic: string;
+      }>(
+        "SELECT words_delivered, words_paid, paid_atomic FROM stream_sessions WHERE id = $1 FOR UPDATE",
+        [input.sessionId],
+      );
+      const session = sessionResult.rows[0];
+      if (!session) throw new Error("session_not_found");
+      if (session.words_delivered !== input.startSequence) throw new Error("bundle_session_conflict");
+
+      const wordsCount = input.words.length;
+      const endSequence = input.startSequence + wordsCount - 1;
+      const grossAmountAtomic = input.accessMode === "paid" ? input.grossAmountAtomic : 0n;
+      const creatorAmountAtomic = input.accessMode === "paid" ? input.creatorAmountAtomic : 0n;
+      const rubiconFeeAtomic = input.accessMode === "paid" ? input.rubiconFeeAtomic : 0n;
+      const paymentStatus = input.accessMode === "free"
+        ? "free"
+        : input.settlement && hasSettlementEvidence(input.settlement)
+          ? input.settlement.status
+          : "authorized";
+      const now = new Date().toISOString();
+
+      await client.query(
+        `INSERT INTO read_bundles
+           (id, bundle_id, idempotency_key, session_id, creator_id, article_id, access_mode,
+            section_id, bundle_sequence, start_sequence, end_sequence, words_count,
+            price_per_word_atomic, gross_amount_atomic, creator_amount_atomic, rubicon_fee_atomic,
+            payment_id, authorization_reference, buyer_wallet_address, network, pay_to,
+            payment_status, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$23)`,
+        [
+          randomUUID(), input.bundleId, input.idempotencyKey, input.sessionId, input.creatorId,
+          input.articleId, input.accessMode, input.sectionId ?? null, input.bundleSequence,
+          input.startSequence, endSequence, wordsCount, `${input.pricePerWordAtomic}`,
+          `${grossAmountAtomic}`, `${creatorAmountAtomic}`, `${rubiconFeeAtomic}`,
+          input.accessMode === "paid" ? input.paymentId : null,
+          input.accessMode === "paid" ? input.authorizationReference : null,
+          input.accessMode === "paid" ? input.buyerWalletAddress ?? null : null,
+          input.accessMode === "paid" ? input.network ?? null : null,
+          input.accessMode === "paid" ? input.payTo ?? null : null,
+          paymentStatus,
+          now,
+        ],
+      );
+
+      if (input.accessMode === "paid") {
+        await client.query(
+          `INSERT INTO word_payments
+             (id, payment_id, session_id, article_id, creator_id, sequence, amount_atomic,
+              creator_amount_atomic, rubicon_fee_atomic, network, pay_to, transaction_hash,
+              transaction_hashes, settlement_id, settlement_ids, buyer_wallet_address,
+              transfer_id, idempotency_key, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+          [
+            randomUUID(), input.paymentId, input.sessionId, input.articleId, input.creatorId,
+            input.startSequence, `${grossAmountAtomic}`, `${creatorAmountAtomic}`, `${rubiconFeeAtomic}`,
+            input.network ?? null, input.payTo ?? null,
+            input.settlement?.transactionHash ?? null,
+            input.settlement?.transactionHashes ? JSON.stringify(input.settlement.transactionHashes) : null,
+            input.settlement?.settlementId ?? null,
+            input.settlement?.settlementIds ?? null,
+            input.buyerWalletAddress ?? null,
+            input.settlement?.transferId ?? null,
+            input.idempotencyKey,
+            now,
+          ],
+        );
+      }
+
+      await client.query(
+        `INSERT INTO word_deliveries
+           (id, session_id, article_id, sequence, word, price_atomic, payment_id, idempotency_key, bundle_id, created_at)
+         SELECT ids.id, $1, $2, seq.sequence, words.word, $3, $4, keys.idempotency_key, $5, $6
+         FROM unnest($7::text[]) WITH ORDINALITY AS ids(id, ord)
+         JOIN unnest($8::integer[]) WITH ORDINALITY AS seq(sequence, ord) USING (ord)
+         JOIN unnest($9::text[]) WITH ORDINALITY AS words(word, ord) USING (ord)
+         JOIN unnest($10::text[]) WITH ORDINALITY AS keys(idempotency_key, ord) USING (ord)`,
+        [
+          input.sessionId,
+          input.articleId,
+          `${input.pricePerWordAtomic}`,
+          input.accessMode === "paid" ? input.paymentId : null,
+          input.bundleId,
+          now,
+          input.words.map(() => randomUUID()),
+          input.words.map((word) => word.sequence),
+          input.words.map((word) => word.word),
+          input.words.map((word) => input.words.length === 1 ? input.idempotencyKey : `${input.idempotencyKey}:${word.sequence}`),
+        ],
+      );
+
+      const counters = await client.query<{
+        words_delivered: number;
+        words_paid: number;
+        paid_atomic: string;
+      }>(
+        `UPDATE stream_sessions
+         SET words_delivered = words_delivered + $2,
+             words_paid = words_paid + $3,
+             paid_atomic = (paid_atomic::numeric + $4::numeric)::text,
+             metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{bundleSequence}', to_jsonb($5::integer), true),
+             updated_at = $6
+         WHERE id = $1
+         RETURNING words_delivered, words_paid, paid_atomic`,
+        [input.sessionId, wordsCount, input.accessMode === "paid" ? wordsCount : 0, `${grossAmountAtomic}`, input.bundleSequence + 1, now],
+      );
+
+      const bundle = recordedBundleFromInput(input, paymentStatus, now);
+      await insertOutboxEvent(client, readBundleCommittedEvent(bundle));
+      if (input.accessMode === "paid" && input.settlement && hasSettlementEvidence(input.settlement)) {
+        await this.insertSettlement(client, input.settlement);
+      }
+      await client.query("COMMIT");
+      const updated = counters.rows[0];
+      return {
+        duplicate: false,
+        bundle,
+        wordsDelivered: updated?.words_delivered ?? input.startSequence + wordsCount,
+        wordsPaid: updated?.words_paid ?? (input.accessMode === "paid" ? session.words_paid + wordsCount : session.words_paid),
+        paidAtomic: (updated?.paid_atomic ?? `${BigInt(session.paid_atomic) + grossAmountAtomic}`) as `${bigint}`,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if (isUniqueViolation(error)) {
+        const existing = await this.getBundleByIdempotencyKey(input.idempotencyKey);
+        if (existing) return existing;
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async recordSettlementRange(input: RecordSettlementRangeInput): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const bundles = await client.query<{ bundle_id: string }>(
+        `SELECT bundle_id FROM read_bundles
+         WHERE session_id = $1 AND start_sequence >= $2 AND end_sequence <= $3
+         ORDER BY start_sequence FOR UPDATE`,
+        [input.sessionId, input.startSequence, input.endSequence],
+      );
+      if (bundles.rows.length === 0) throw new Error("settlement_bundle_not_found");
+      if (!hasSettlementEvidence(input)) {
+        if (input.status === "failed") {
+          await client.query(
+            "UPDATE read_bundles SET payment_status = 'failed', updated_at = now() WHERE bundle_id = ANY($1::text[])",
+            [bundles.rows.map((row) => row.bundle_id)],
+          );
+        }
+        await client.query("COMMIT");
+        return;
+      }
+      await this.insertSettlement(client, { ...input, bundleIds: bundles.rows.map((row) => row.bundle_id) });
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async insertSettlement(client: PoolClient, input: SettlementEvidenceInput): Promise<void> {
+    const providerReference = settlementProviderReference(input);
+    if (!providerReference || input.bundleIds.length === 0) return;
+    const amount = await client.query<{
+      gross: string;
+      creator: string;
+      fee: string;
+      creator_id: string;
+      article_id: string;
+      session_id: string;
+    }>(
+      `SELECT COALESCE(SUM(gross_amount_atomic),0)::text AS gross,
+              COALESCE(SUM(creator_amount_atomic),0)::text AS creator,
+              COALESCE(SUM(rubicon_fee_atomic),0)::text AS fee,
+              MIN(creator_id) AS creator_id, MIN(article_id) AS article_id, MIN(session_id) AS session_id
+       FROM read_bundles WHERE bundle_id = ANY($1::text[])`,
+      [input.bundleIds],
+    );
+    const totals = amount.rows[0];
+    if (!totals) return;
+    const settlementRecordId = randomUUID();
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO settlements
+         (id, provider, provider_reference, idempotency_key, status, network, pay_to,
+          buyer_wallet_address, transaction_hash, transaction_hashes, settlement_id,
+          settlement_ids, transfer_id, gross_amount_atomic, creator_amount_atomic,
+          rubicon_fee_atomic, initiated_at, confirmed_at, failed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+       ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
+      [
+        settlementRecordId, input.provider, providerReference, input.idempotencyKey, input.status,
+        input.network ?? null, input.payTo ?? null, input.buyerWalletAddress ?? null,
+        input.transactionHash ?? null, input.transactionHashes ?? null,
+        input.settlementId ?? null, input.settlementIds ?? null, input.transferId ?? null,
+        totals.gross, totals.creator, totals.fee,
+        input.initiatedAt ?? new Date().toISOString(), input.confirmedAt ?? null, input.failedAt ?? null,
+      ],
+    );
+    if (inserted.rowCount === 0) return;
+    await client.query(
+      `INSERT INTO settlement_bundle_links
+         (settlement_record_id, bundle_id, allocated_gross_amount_atomic,
+          allocated_creator_amount_atomic, allocated_fee_atomic)
+       SELECT $1, bundle_id, gross_amount_atomic, creator_amount_atomic, rubicon_fee_atomic
+       FROM read_bundles WHERE bundle_id = ANY($2::text[])
+       ON CONFLICT DO NOTHING`,
+      [settlementRecordId, input.bundleIds],
+    );
+    await client.query(
+      "UPDATE read_bundles SET payment_status = $2, updated_at = now() WHERE bundle_id = ANY($1::text[])",
+      [input.bundleIds, input.status],
+    );
+    await insertOutboxEvent(client, {
+      eventId: `settlement:${input.idempotencyKey}:v1`,
+      eventVersion: 1,
+      eventType: "settlement_changed",
+      occurredAt: new Date().toISOString(),
+      settlementRecordId,
+      bundleIds: input.bundleIds,
+      creatorId: totals.creator_id,
+      articleId: totals.article_id,
+      sessionId: totals.session_id,
+      providerReference,
+      status: input.status,
+      settledCreatorAmountAtomicDelta: input.status === "completed" ? totals.creator : "0",
+    });
+  }
+
+  private async loadBundleByIdempotencyKey(
+    queryable: Pick<Pool, "query"> | Pick<PoolClient, "query">,
+    key: string,
+    duplicate: boolean,
+  ): Promise<RecordBundleResult | null> {
+    const result = await queryable.query<BundleRow>(
+      "SELECT * FROM read_bundles WHERE idempotency_key = $1",
+      [key],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const words = await queryable.query<{ sequence: number; word: string }>(
+      "SELECT sequence, word FROM word_deliveries WHERE bundle_id = $1 ORDER BY sequence",
+      [row.bundle_id],
+    );
+    const counters = await queryable.query<{ words_delivered: number; words_paid: number; paid_atomic: string }>(
+      "SELECT words_delivered, words_paid, paid_atomic FROM stream_sessions WHERE id = $1",
+      [row.session_id],
+    );
+    return {
+      duplicate,
+      bundle: recordedBundleFromRow(row, words.rows),
+      wordsDelivered: counters.rows[0]?.words_delivered ?? row.end_sequence + 1,
+      wordsPaid: counters.rows[0]?.words_paid ?? (row.access_mode === "paid" ? row.words_count : 0),
+      paidAtomic: (counters.rows[0]?.paid_atomic ?? row.gross_amount_atomic) as `${bigint}`,
+    };
+  }
+
   async getDeliveryByIdempotencyKey(key: string): Promise<RecordWordDeliveryResult | null> {
     const result = await this.pool.query<{
       session_id: string;
@@ -519,233 +825,6 @@ export class PostgresLedgerRepository implements LedgerRepository {
         createdAt: row.created_at,
       } : undefined,
     };
-  }
-
-  async recordWordDelivery(input: RecordWordDeliveryInput): Promise<RecordWordDeliveryResult> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const inserted = await client.query(
-        `INSERT INTO word_payments
-           (id, payment_id, session_id, article_id, creator_id, sequence, amount_atomic,
-            creator_amount_atomic, rubicon_fee_atomic, network, pay_to, transaction_hash,
-            transaction_hashes, settlement_id, settlement_ids, buyer_wallet_address, transfer_id,
-            idempotency_key)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-         ON CONFLICT (idempotency_key) DO NOTHING
-         RETURNING payment_id`,
-        [
-          randomUUID(),
-          input.paymentId,
-          input.sessionId,
-          input.articleId,
-          input.creatorId,
-          input.sequence,
-          `${input.priceAtomic}`,
-          `${input.creatorAmountAtomic}`,
-          `${input.rubiconFeeAtomic}`,
-          input.network ?? null,
-          input.payTo ?? null,
-          input.transactionHash ?? null,
-          input.transactionHashes ? JSON.stringify(input.transactionHashes) : null,
-          input.settlementId ?? input.transferId ?? input.transactionHash ?? null,
-          input.settlementIds ?? null,
-          input.buyerWalletAddress ?? null,
-          input.transferId ?? null,
-          input.idempotencyKey,
-        ],
-      );
-      if (inserted.rowCount === 0) {
-        await client.query("ROLLBACK");
-        const existing = await this.getDeliveryByIdempotencyKey(input.idempotencyKey);
-        if (existing) {
-          return existing;
-        }
-        throw new Error("word_delivery_conflict");
-      }
-      await client.query(
-        `INSERT INTO word_deliveries (id, session_id, article_id, sequence, word, price_atomic, payment_id, idempotency_key)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [
-          randomUUID(),
-          input.sessionId,
-          input.articleId,
-          input.sequence,
-          input.word,
-          `${input.priceAtomic}`,
-          input.paymentId,
-          input.idempotencyKey,
-        ],
-      );
-      await client.query(
-        `INSERT INTO settlement_receipts
-           (id, payment_id, network, pay_to, transaction_hash, transaction_hashes, transfer_id,
-            settlement_id, settlement_ids, buyer_wallet_address, amount_atomic, creator_amount_atomic,
-            rubicon_fee_atomic)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [
-          randomUUID(),
-          input.paymentId,
-          input.network ?? null,
-          input.payTo ?? null,
-          input.transactionHash ?? null,
-          input.transactionHashes ? JSON.stringify(input.transactionHashes) : null,
-          input.transferId ?? null,
-          input.settlementId ?? input.transferId ?? input.transactionHash ?? null,
-          input.settlementIds ?? null,
-          input.buyerWalletAddress ?? null,
-          `${input.priceAtomic}`,
-          `${input.creatorAmountAtomic}`,
-          `${input.rubiconFeeAtomic}`,
-        ],
-      );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
-
-    const createdAt = new Date().toISOString();
-    return {
-      duplicate: false,
-      delivery: {
-        sessionId: input.sessionId,
-        articleId: input.articleId,
-        sequence: input.sequence,
-        word: input.word,
-        priceAtomic: `${input.priceAtomic}`,
-        paymentId: input.paymentId,
-        createdAt,
-      },
-      payment: {
-        paymentId: input.paymentId,
-        sessionId: input.sessionId,
-        articleId: input.articleId,
-        sequence: input.sequence,
-        amountAtomic: `${input.priceAtomic}`,
-        creatorAmountAtomic: `${input.creatorAmountAtomic}`,
-        rubiconFeeAtomic: `${input.rubiconFeeAtomic}`,
-        network: input.network,
-        payTo: input.payTo,
-        transactionHash: input.transactionHash,
-        transactionHashes: input.transactionHashes ?? (input.transactionHash ? [input.transactionHash] : undefined),
-        settlementId: input.settlementId ?? input.transferId ?? input.transactionHash,
-        settlementIds: input.settlementIds,
-        buyerWalletAddress: input.buyerWalletAddress,
-        transferId: input.transferId,
-        createdAt,
-      },
-    };
-  }
-
-  async recordFreeWordDelivery(input: RecordFreeWordDeliveryInput): Promise<RecordWordDeliveryResult> {
-    const inserted = await this.pool.query<{ created_at: string }>(
-      `INSERT INTO word_deliveries
-         (id, session_id, article_id, sequence, word, price_atomic, payment_id, idempotency_key)
-       VALUES ($1,$2,$3,$4,$5,'0',NULL,$6)
-       ON CONFLICT DO NOTHING
-       RETURNING created_at`,
-      [randomUUID(), input.sessionId, input.articleId, input.sequence, input.word, input.idempotencyKey],
-    );
-    if (inserted.rowCount === 0) {
-      const existing = await this.getDeliveryByIdempotencyKey(input.idempotencyKey);
-      if (existing) return existing;
-      const bySequence = await this.pool.query<{ word: string; created_at: string }>(
-        "SELECT word, created_at FROM word_deliveries WHERE session_id = $1 AND sequence = $2",
-        [input.sessionId, input.sequence],
-      );
-      const row = bySequence.rows[0];
-      if (row) {
-        return {
-          duplicate: true,
-          delivery: {
-            sessionId: input.sessionId,
-            articleId: input.articleId,
-            sequence: input.sequence,
-            word: row.word,
-            priceAtomic: "0",
-            createdAt: row.created_at,
-          },
-        };
-      }
-      throw new Error("word_delivery_conflict");
-    }
-    return {
-      duplicate: false,
-      delivery: {
-        sessionId: input.sessionId,
-        articleId: input.articleId,
-        sequence: input.sequence,
-        word: input.word,
-        priceAtomic: "0",
-        createdAt: inserted.rows[0]?.created_at ?? new Date().toISOString(),
-      },
-    };
-  }
-
-  async updatePaymentSettlement(input: UpdatePaymentSettlementInput): Promise<void> {
-    const transferId = input.transferId ?? input.settlementId ?? input.transactionHash ?? null;
-    const settlementId = input.settlementId ?? input.transferId ?? input.transactionHash ?? null;
-    const settlementIds = input.settlementIds ?? null;
-    const transactionHashes = input.transactionHashes ? JSON.stringify(input.transactionHashes) : null;
-    const buyerWalletAddress = input.buyerWalletAddress ?? null;
-    const transactionHash = input.transactionHash ?? null;
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      // COALESCE so a later partial backfill never clobbers fields already set.
-      const updated = await client.query<{ payment_id: string }>(
-        `UPDATE word_payments
-            SET settlement_id = COALESCE($3, settlement_id),
-                settlement_ids = COALESCE($4, settlement_ids),
-                transfer_id = COALESCE($5, transfer_id),
-                transaction_hash = COALESCE($6, transaction_hash),
-                transaction_hashes = COALESCE($7, transaction_hashes),
-                buyer_wallet_address = COALESCE($8, buyer_wallet_address)
-          WHERE session_id = $1 AND sequence = $2
-          RETURNING payment_id`,
-        [
-          input.sessionId,
-          input.sequence,
-          settlementId,
-          settlementIds,
-          transferId,
-          transactionHash,
-          transactionHashes,
-          buyerWalletAddress,
-        ],
-      );
-      const paymentId = updated.rows[0]?.payment_id;
-      if (paymentId) {
-        await client.query(
-          `UPDATE settlement_receipts
-              SET settlement_id = COALESCE($2, settlement_id),
-                  settlement_ids = COALESCE($3, settlement_ids),
-                  transfer_id = COALESCE($4, transfer_id),
-                  transaction_hash = COALESCE($5, transaction_hash),
-                  transaction_hashes = COALESCE($6, transaction_hashes),
-                  buyer_wallet_address = COALESCE($7, buyer_wallet_address)
-            WHERE payment_id = $1`,
-          [
-            paymentId,
-            settlementId,
-            settlementIds,
-            transferId,
-            transactionHash,
-            transactionHashes,
-            buyerWalletAddress,
-          ],
-        );
-      }
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
   }
 
   async listDeliveries(sessionId: string): Promise<WordDeliveryRecord[]> {
@@ -815,10 +894,10 @@ export class PostgresLedgerRepository implements LedgerRepository {
       creator_amount: string | null;
       rubicon_fee: string | null;
     }>(
-      `SELECT MIN(creator_id) AS creator_id, COUNT(*)::text AS words,
+      `SELECT MIN(creator_id) AS creator_id, COALESCE(SUM(words_count),0)::text AS words,
               COALESCE(SUM(creator_amount_atomic::numeric),0)::text AS creator_amount,
               COALESCE(SUM(rubicon_fee_atomic::numeric),0)::text AS rubicon_fee
-       FROM word_payments WHERE article_id = $1`,
+       FROM read_bundles WHERE article_id = $1 AND access_mode = 'paid'`,
       [articleId],
     );
     const row = result.rows[0];
@@ -837,10 +916,10 @@ export class PostgresLedgerRepository implements LedgerRepository {
       creator_amount: string | null;
       rubicon_fee: string | null;
     }>(
-      `SELECT COUNT(*)::text AS words,
+      `SELECT COALESCE(SUM(words_count),0)::text AS words,
               COALESCE(SUM(creator_amount_atomic::numeric),0)::text AS creator_amount,
               COALESCE(SUM(rubicon_fee_atomic::numeric),0)::text AS rubicon_fee
-       FROM word_payments WHERE creator_id = $1`,
+       FROM read_bundles WHERE creator_id = $1 AND access_mode = 'paid'`,
       [creatorId],
     );
     const row = result.rows[0];
@@ -851,4 +930,168 @@ export class PostgresLedgerRepository implements LedgerRepository {
       rubiconFeeAtomic: (row?.rubicon_fee ?? "0") as `${bigint}`,
     };
   }
+}
+
+interface BundleRow {
+  bundle_id: string;
+  idempotency_key: string;
+  session_id: string;
+  creator_id: string;
+  article_id: string;
+  access_mode: "paid" | "free";
+  section_id: string | null;
+  bundle_sequence: number;
+  start_sequence: number;
+  end_sequence: number;
+  words_count: number;
+  price_per_word_atomic: string;
+  gross_amount_atomic: string;
+  creator_amount_atomic: string;
+  rubicon_fee_atomic: string;
+  payment_id: string | null;
+  authorization_reference: string | null;
+  buyer_wallet_address: `0x${string}` | null;
+  network: string | null;
+  pay_to: `0x${string}` | null;
+  payment_status: RecordedBundle["paymentStatus"];
+  created_at: string;
+  updated_at: string;
+}
+
+function validateBundleInput(input: RecordPaidBundleInput | RecordFreeBundleInput): void {
+  if (input.words.length < 1) throw new Error("empty_bundle");
+  if (input.words.some((word, offset) => word.sequence !== input.startSequence + offset)) {
+    throw new Error("invalid_bundle_range");
+  }
+  const gross = input.accessMode === "paid" ? input.grossAmountAtomic : 0n;
+  if (gross !== input.pricePerWordAtomic * BigInt(input.words.length)) {
+    throw new Error("bundle_amount_mismatch");
+  }
+  if (input.accessMode === "paid" && (!input.paymentId || !input.authorizationReference)) {
+    throw new Error("paid_bundle_missing_authorization");
+  }
+}
+
+function recordedBundleFromInput(
+  input: RecordPaidBundleInput | RecordFreeBundleInput,
+  paymentStatus: RecordedBundle["paymentStatus"],
+  now: string,
+): RecordedBundle {
+  const wordsCount = input.words.length;
+  return {
+    bundleId: input.bundleId,
+    idempotencyKey: input.idempotencyKey,
+    sessionId: input.sessionId,
+    creatorId: input.creatorId,
+    articleId: input.articleId,
+    accessMode: input.accessMode,
+    sectionId: input.sectionId,
+    bundleSequence: input.bundleSequence,
+    startSequence: input.startSequence,
+    endSequence: input.startSequence + wordsCount - 1,
+    wordsCount,
+    pricePerWordAtomic: `${input.pricePerWordAtomic}`,
+    grossAmountAtomic: `${input.accessMode === "paid" ? input.grossAmountAtomic : 0n}`,
+    creatorAmountAtomic: `${input.accessMode === "paid" ? input.creatorAmountAtomic : 0n}`,
+    rubiconFeeAtomic: `${input.accessMode === "paid" ? input.rubiconFeeAtomic : 0n}`,
+    paymentId: input.accessMode === "paid" ? input.paymentId : undefined,
+    authorizationReference: input.accessMode === "paid" ? input.authorizationReference : undefined,
+    buyerWalletAddress: input.accessMode === "paid" ? input.buyerWalletAddress : undefined,
+    network: input.accessMode === "paid" ? input.network : undefined,
+    payTo: input.accessMode === "paid" ? input.payTo : undefined,
+    paymentStatus,
+    words: input.words.map((word) => ({ ...word })),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function recordedBundleFromRow(row: BundleRow, words: Array<{ sequence: number; word: string }>): RecordedBundle {
+  return {
+    bundleId: row.bundle_id,
+    idempotencyKey: row.idempotency_key,
+    sessionId: row.session_id,
+    creatorId: row.creator_id,
+    articleId: row.article_id,
+    accessMode: row.access_mode,
+    sectionId: row.section_id ?? undefined,
+    bundleSequence: row.bundle_sequence,
+    startSequence: row.start_sequence,
+    endSequence: row.end_sequence,
+    wordsCount: row.words_count,
+    pricePerWordAtomic: row.price_per_word_atomic as `${bigint}`,
+    grossAmountAtomic: row.gross_amount_atomic as `${bigint}`,
+    creatorAmountAtomic: row.creator_amount_atomic as `${bigint}`,
+    rubiconFeeAtomic: row.rubicon_fee_atomic as `${bigint}`,
+    paymentId: row.payment_id ?? undefined,
+    authorizationReference: row.authorization_reference ?? undefined,
+    buyerWalletAddress: row.buyer_wallet_address ?? undefined,
+    network: row.network ?? undefined,
+    payTo: row.pay_to ?? undefined,
+    paymentStatus: row.payment_status,
+    words,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function readBundleCommittedEvent(bundle: RecordedBundle): Record<string, unknown> {
+  return {
+    eventId: `read_bundle:${bundle.bundleId}:v1`,
+    eventVersion: 1,
+    eventType: "read_bundle_committed",
+    occurredAt: bundle.createdAt,
+    bundleId: bundle.bundleId,
+    creatorId: bundle.creatorId,
+    articleId: bundle.articleId,
+    sessionId: bundle.sessionId,
+    accessMode: bundle.accessMode,
+    sectionId: bundle.sectionId,
+    startSequence: bundle.startSequence,
+    endSequence: bundle.endSequence,
+    wordsCount: bundle.wordsCount,
+    grossAmountAtomic: bundle.grossAmountAtomic,
+    creatorAmountAtomic: bundle.creatorAmountAtomic,
+    rubiconFeeAtomic: bundle.rubiconFeeAtomic,
+    buyerAgentHash: hashBuyerAgentIdentity(bundle.buyerWalletAddress),
+  };
+}
+
+async function insertOutboxEvent(client: PoolClient, event: Record<string, unknown>): Promise<void> {
+  const eventId = String(event.eventId);
+  const eventType = String(event.eventType);
+  const eventVersion = Number(event.eventVersion);
+  const occurredAt = String(event.occurredAt);
+  const aggregateKey = eventType === "read_bundle_committed"
+    ? String(event.bundleId)
+    : String(event.settlementRecordId);
+  await client.query(
+    `INSERT INTO analytics_outbox
+       (id, event_id, event_type, event_version, aggregate_key, payload, occurred_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (event_id) DO NOTHING`,
+    [randomUUID(), eventId, eventType, eventVersion, aggregateKey, JSON.stringify(event), occurredAt],
+  );
+}
+
+function hasSettlementEvidence(input: SettlementEvidenceInput | RecordSettlementRangeInput): boolean {
+  return Boolean(
+    input.transferId
+    || input.settlementId
+    || input.settlementIds?.length
+    || input.transactionHash
+    || input.transactionHashes?.length
+  );
+}
+
+function settlementProviderReference(input: SettlementEvidenceInput | RecordSettlementRangeInput): string | undefined {
+  return input.transferId
+    ?? input.settlementId
+    ?? input.settlementIds?.[0]
+    ?? input.transactionHash
+    ?? input.transactionHashes?.[0];
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }

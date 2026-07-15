@@ -33,9 +33,11 @@ flowchart LR
     Sessions["stream_sessions"]
     Conversations["seller_agent_conversations"]
     Messages["seller_agent_messages"]
-    Payments["word_payments"]
-    Deliveries["word_deliveries"]
-    Receipts["settlement_receipts"]
+    Bundles["read_bundles (authoritative)"]
+    Payments["word_payments (compatibility, one/bundle)"]
+    Deliveries["word_deliveries (bulk audit)"]
+    Settlements["settlements + settlement_bundle_links"]
+    Outbox["analytics_outbox"]
   end
 
   subgraph Seller["SellerAgent"]
@@ -100,9 +102,11 @@ flowchart LR
   RuntimeLedger --> Sessions
   RuntimeLedger --> Conversations
   RuntimeLedger --> Messages
+  RuntimeLedger --> Bundles
   RuntimeLedger --> Payments
   RuntimeLedger --> Deliveries
-  RuntimeLedger --> Receipts
+  RuntimeLedger --> Settlements
+  RuntimeLedger --> Outbox
 
   Seller --> SafeModel
   Seller --> StreamModel
@@ -124,16 +128,20 @@ flowchart LR
 
 `apps/gateway/src/index.ts` creates the production server process:
 
+- `apps/gateway/src/config.ts` resolves `APP_ENV` before adapters are created.
+  Development reads unprefixed resource variables; staging and production read
+  only `STAGING_*` or `PRODUCTION_*` values and enforce environment isolation.
 - Article reads always use `SupabasePublishedArticleRepository`, configured from
   `SUPABASE_URL` and a service, anon, publishable, or public anon key.
 - Runtime ledger writes use `PostgresLedgerRepository` when `DATABASE_URL` is set.
-  Otherwise the gateway falls back to `InMemoryLedgerRepository`.
+  Only development may omit it and fall back to `InMemoryLedgerRepository`.
 - Payments use `CircleX402PaymentVerifier` when `RUBICON_PAYMENTS=circle`.
   Otherwise they use `DevelopmentPaymentVerifier`.
 - The seller agent uses OpenAI through `TextCompletionSellerModelProvider` when
   `OPENAI_API_KEY` is set. Otherwise it uses the deterministic local provider.
 - All `/v1/*` routes require `Authorization: Bearer <RUBICON_AGENT_API_KEY>` when
-  `RUBICON_AGENT_API_KEY` is configured. `GET /health` remains public.
+  the selected profile configures it. Both health routes remain public and
+  return the selected `appEnv`.
 
 ## Endpoint Communication Map
 
@@ -146,9 +154,9 @@ flowchart LR
 | `POST /v1/seller-agent/conversations` | Create a seller-agent conversation and optionally run the first turn | Supabase article and wallet | `seller_agent_conversations`, optional `seller_agent_messages` | SellerAgent `navigate` and optional `respond` |
 | `POST /v1/seller-agent/conversations/:conversationId/messages` | Continue an existing seller-agent conversation | Ledger conversation/messages, Supabase article | `seller_agent_messages` | SellerAgent `respond` |
 | `POST /v1/sessions` | Start a budgeted reading session and issue Circle / Arc authorization terms | Supabase article, sections, verified creator wallet, optional ledger conversation | `stream_sessions`, optional `seller_agent_conversations` | PaymentVerifier `createPaymentRequired`, SellerAgent `navigate`, InMemoryEventBus |
-| `POST /v1/sessions/:sessionId/stream` | Preferred target: stream words against a session-level authorization | `stream_sessions`, article stream state or repository fallback | `word_payments`, `word_deliveries`, `settlement_receipts`, updated `stream_sessions` | PaymentVerifier session authorization, SellerAgent `selectNextWord`, InMemoryEventBus |
+| `POST /v1/sessions/:sessionId/stream` | Preferred target: stream words against a session-level authorization | `stream_sessions`, article stream state or repository fallback | one `read_bundles`, one compatibility `word_payments`, bulk `word_deliveries`, updated `stream_sessions`, one `analytics_outbox` event | PaymentVerifier session authorization, SellerAgent `selectNextWord`, InMemoryEventBus |
 | `GET /v1/sessions/:sessionId/payments` | Inspect the current x402 payment challenge for a session | `stream_sessions` | may update session state to `expired` | Payment challenge response, InMemoryEventBus on expiry |
-| `POST /v1/sessions/:sessionId/payments` | Compatibility fallback: verify a chunk or legacy one-word authorization and record metered words | `stream_sessions`, idempotency records, article stream state or repository fallback | `word_payments`, `word_deliveries`, `settlement_receipts`, updated `stream_sessions` | PaymentVerifier `verify`, SellerAgent `selectNextWord`, InMemoryEventBus |
+| `POST /v1/sessions/:sessionId/payments` | Compatibility fallback: verify a chunk or legacy one-word authorization and record metered words | `stream_sessions`, bundle idempotency records, article stream state or repository fallback | one-word `read_bundles`, compatibility `word_payments`, `word_deliveries`, updated `stream_sessions`, `analytics_outbox` | PaymentVerifier `verify`, SellerAgent `selectNextWord`, InMemoryEventBus |
 | `GET /v1/sessions/:sessionId/events` | Stream session events over SSE | `stream_sessions`, event history | none | InMemoryEventBus subscribe |
 | `POST /v1/sessions/:sessionId/abort` | Stop an active session | `stream_sessions` | updated `stream_sessions` | InMemoryEventBus |
 

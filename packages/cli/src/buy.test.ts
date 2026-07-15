@@ -515,7 +515,7 @@ function fundingRunner(options: { balances: `${bigint}`[]; onFaucet?: () => void
   return { runner, calls, faucetCalls };
 }
 
-function testnetArticle(options: { minimumUsefulWords?: number } = {}): ArticleSummary {
+function testnetArticle(): ArticleSummary {
   return {
     articleId: "article_1", creatorId: "creator_1", creatorUsername: "creator", title: "Useful Field Guide", author: "Ada", state: "live", accessMode: "paid",
     totalWords: 30, pricePerWordAtomic: "1", maxArticlePriceAtomic: "30",

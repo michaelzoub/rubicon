@@ -34,8 +34,9 @@ sequenceDiagram
     G->>C: Verify remaining authorization
     C-->>W: Creator receives the full word price
     G->>S: selectNextWord
-    G->>D: Record word_delivery + usage ledger
+    G->>D: Commit one read_bundle + bulk word audit + outbox event
     G-->>B: article.word + article.usage
+    G-->>C: Queue settlement after commit
   end
   B->>G: Stop / abort when satisfied
   G->>C: Settle actual words delivered
@@ -55,8 +56,10 @@ Production data lives in shared Postgres, authored through
 [rubicon-marketing](https://github.com/michaelzoub/rubicon-marketing). Rubicon
 reads published articles, sections, creators, and verified wallets through
 `PublishedArticleRepository`, and writes runtime activity
-(`stream_sessions`, `word_deliveries`, `word_payments`, `settlement_receipts`,
-`seller_agent_messages`) through `LedgerRepository`.
+(`stream_sessions`, authoritative `read_bundles`, optional bulk
+`word_deliveries`, compatibility `word_payments`, evidence-only `settlements`,
+`settlement_bundle_links`, `analytics_outbox`, `seller_agent_messages`) through
+`LedgerRepository`.
 
 The marketing app owns creator authentication and creator-facing CRUD; Rubicon
 does not implement a creator dashboard API. Development uses an in-memory adapter
@@ -64,8 +67,9 @@ with fixtures.
 
 ## Word-level integrity
 
-- One word is one paid unit; every delivered word has a durable delivery and
-  payment/settlement record.
+- One word is one paid unit; one durable bundle records its immutable word range,
+  exact per-word price, and aggregate amounts. Optional word audit rows are
+  inserted in bulk.
 - Payment authorization is session-level by default and chunk-level as a
   fallback. The network/payment layer should not run once per word in the normal
   Circle / Arc path.
@@ -76,6 +80,10 @@ with fixtures.
 - The gateway never emits a word unless the remaining authorization covers that
   word's price. Unused authorization is released when the buyer stops early or
   the session closes.
+
+See [Bundle ledger, settlement lifecycle, and analytics](./bundle-ledger-and-analytics.md)
+for the transaction boundary, migration audit, ClickHouse worker, and
+reconciliation commands.
 
 ## Payment architecture
 

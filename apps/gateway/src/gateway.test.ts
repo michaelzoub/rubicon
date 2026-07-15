@@ -12,6 +12,7 @@ import { resolveSupabaseConfigFromEnv, SupabasePublishedArticleRepository, type 
 import { assertRailwayCompatibleDatabaseUrl, describeDatabaseUrl, resolvePgPoolConfig } from "./repositories/postgres.js";
 import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
 import type { PaymentVerifier } from "./payments/types.js";
+import type { RecordBundleResult, RecordPaidBundleInput } from "./repositories/types.js";
 
 const PRICE = 5n; // atomic USDC per word
 const PLAIN_BODY = Array.from({ length: 200 }, (_, index) => `w${index + 1}`).join(" ");
@@ -36,6 +37,7 @@ function setup(input?: {
   wallets?: { creatorId: string; address: `0x${string}`; network?: string; verified?: boolean }[];
   gatewayFeeBps?: number;
   paymentVerifier?: PaymentVerifier;
+  ledger?: InMemoryLedgerRepository;
 }): {
   app: FastifyInstance;
   published: InMemoryPublishedArticleRepository;
@@ -53,7 +55,7 @@ function setup(input?: {
         { creatorId: "creator-a", address: "0x000000000000000000000000000000000000aaaa", network: "eip155:5042002", verified: true },
       ],
   });
-  const ledger = new InMemoryLedgerRepository();
+  const ledger = input?.ledger ?? new InMemoryLedgerRepository();
   const app = createGateway({
     articleRepository: published,
     ledger,
@@ -153,7 +155,7 @@ class FakeSupabase implements SupabaseReader {
     { id: "sec-start", article_id: "art-db", section_id: "start", heading: "Start", level: 1, word_start: 0, word_count: 3, ordinal: 1 },
   ];
   wallets: FakeWalletRow[] = [
-    { creator_id: "creator-db", address: "0x0000000000000000000000000000000000000db0", network: "eip155:5042002", verified: true },
+    { creator_id: "creator-db", address: "0x0000000000000000000000000000000000000db0", network: "arc-testnet", verified: true },
   ];
   error: { message: string; details?: string } | null = null;
 
@@ -754,6 +756,11 @@ test("agent API key protects v1 routes when configured", async () => {
 
     const health = await app.inject({ method: "GET", url: "/health" });
     assert.equal(health.statusCode, 200);
+    assert.deepEqual(health.json(), { ok: true, appEnv: "development" });
+
+    const analyticsHealth = await app.inject({ method: "GET", url: "/health/analytics" });
+    assert.equal(analyticsHealth.statusCode, 200);
+    assert.equal((analyticsHealth.json() as { appEnv: string }).appEnv, "development");
   } finally {
     if (previous === undefined) {
       delete process.env.RUBICON_AGENT_API_KEY;
@@ -1035,8 +1042,52 @@ test("chunk stream releases several words from one authorization and returns one
   const deliveries = await ledger.listDeliveries(session.sessionId);
   assert.equal(deliveries.length, 5);
   const payments = await ledger.listPayments(session.sessionId);
-  assert.equal(payments.length, 5);
-  assert.ok(payments.every((payment) => payment.amountAtomic === `${PRICE}`));
+  assert.equal(payments.length, 1);
+  assert.equal(payments[0]?.amountAtomic, `${PRICE * 5n}`);
+  const bundle = await ledger.getBundleByIdempotencyKey("chunk-1");
+  assert.equal(bundle?.bundle.wordsCount, 5);
+  const analyticsEvents = ledger.listAnalyticsEvents();
+  assert.equal(analyticsEvents.length, 2, "bundle plus evidence-based development settlement");
+  assert.equal(analyticsEvents[0]?.eventType, "read_bundle_committed");
+  assert.equal(JSON.stringify(analyticsEvents).includes(PLAIN_WORDS[0]!), false, "outbox must not contain content");
+  await app.close();
+});
+
+test("paid content is not returned before the bundle transaction commits", async () => {
+  let releaseCommit!: () => void;
+  let enteredCommit!: () => void;
+  const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+  const commitEntered = new Promise<void>((resolve) => { enteredCommit = resolve; });
+  class DelayedLedger extends InMemoryLedgerRepository {
+    override async recordPaidBundle(input: RecordPaidBundleInput): Promise<RecordBundleResult> {
+      enteredCommit();
+      await commitGate;
+      return super.recordPaidBundle(input);
+    }
+  }
+  const ledger = new DelayedLedger();
+  const { app } = setup({ ledger });
+  const session = await startSession(app);
+  let responseReturned = false;
+  const responsePromise = app.inject({
+    method: "POST",
+    url: `/v1/sessions/${session.sessionId}/stream`,
+    payload: {
+      paymentPayload: { amountAtomic: `${PRICE * 2n}` },
+      maxWords: 2,
+      idempotencyKey: "commit-order",
+    },
+  }).then((response) => {
+    responseReturned = true;
+    return response;
+  });
+  await commitEntered;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(responseReturned, false);
+  releaseCommit();
+  const response = await responsePromise;
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual((response.json() as { words: Array<{ word: string }> }).words.map((entry) => entry.word), PLAIN_WORDS.slice(0, 2));
   await app.close();
 });
 

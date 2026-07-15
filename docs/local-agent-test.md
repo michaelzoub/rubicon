@@ -21,13 +21,13 @@ From this repo:
 pnpm install
 pnpm --filter @rubicon-caliga/agent-sdk build
 # Ensure .env or .env.local has SUPABASE_URL and the anon/publishable Supabase key.
-GATEWAY_PORT=8788 pnpm dev:gateway
+APP_ENV=development GATEWAY_PORT=8788 pnpm dev:gateway
 ```
 
 Keep that terminal running.
 
 `8788` is used here to avoid conflicts with anything already listening on the
-default `8787`. If `8787` is free, `pnpm dev:gateway` also works.
+default `8787`. If `8787` is free, `APP_ENV=development pnpm dev:gateway` also works.
 
 ## Install The Local SDK In Another Agent Project
 
@@ -90,7 +90,7 @@ Steps:
 1. In /Users/michaelzoubkoff/Documents/rubicon, run:
    pnpm install
    pnpm --filter @rubicon-caliga/agent-sdk build
-   GATEWAY_PORT=8788 pnpm dev:gateway
+   APP_ENV=development GATEWAY_PORT=8788 pnpm dev:gateway
 
 2. Keep the gateway running.
 
@@ -125,7 +125,7 @@ If the gateway fails with `EADDRINUSE`, the selected port is already in use.
 Pick another port and pass the same value to both sides:
 
 ```bash
-GATEWAY_PORT=8790 pnpm dev:gateway
+APP_ENV=development GATEWAY_PORT=8790 pnpm dev:gateway
 ```
 
 ```ts

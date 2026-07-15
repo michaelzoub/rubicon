@@ -1,4 +1,5 @@
 import { assertRailwayCompatibleDatabaseUrl, createPgPool, runMigrations } from "./repositories/postgres.js";
+import { loadGatewayEnvironment } from "./config.js";
 
 // Apply Rubicon's shared schema migrations.
 //
@@ -7,7 +8,8 @@ import { assertRailwayCompatibleDatabaseUrl, createPgPool, runMigrations } from 
 // The same schema is shared with rubicon-marketing; run migrations from a single
 // owner (typically the marketing app in production) to avoid divergence.
 
-const databaseUrl = process.env.DATABASE_URL;
+const { env } = loadGatewayEnvironment();
+const databaseUrl = env.DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is not set");
 }

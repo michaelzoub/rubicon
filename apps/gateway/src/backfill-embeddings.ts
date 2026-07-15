@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { loadGatewayEnvironment } from "./config.js";
 import { createHash } from "node:crypto";
 import {
   createSupabaseClientFromEnv,
@@ -121,13 +122,14 @@ function toVectorLiteral(embedding: number[]): string {
 }
 
 async function main(): Promise<void> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const { env } = loadGatewayEnvironment();
+  const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set — cannot compute embeddings.");
   }
 
-  const { url } = resolveSupabaseConfigFromEnv();
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const { url } = resolveSupabaseConfigFromEnv(env);
+  const serviceKey = env.SUPABASE_SERVICE_ROLE_KEY;
   if (!serviceKey) {
     throw new Error(
       "SUPABASE_SERVICE_ROLE_KEY is not set — writes to article_section_embeddings require the service role (anon has SELECT only).",
@@ -136,7 +138,7 @@ async function main(): Promise<void> {
 
   // Reads reuse the exact same repository the gateway serves from, so word
   // slicing and section clamping are identical to what search compares against.
-  const repo = new SupabasePublishedArticleRepository(createSupabaseClientFromEnv());
+  const repo = new SupabasePublishedArticleRepository(createSupabaseClientFromEnv(env));
   // Writes use a full client (the read-only SupabaseReader type has no upsert).
   const db = createClient(url, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },

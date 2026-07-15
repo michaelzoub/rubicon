@@ -30,10 +30,10 @@ pnpm dev:gateway
 pnpm dev:agent
 pnpm dev:cli
 pnpm smoke:hosted-buyer-flow
-DATABASE_URL=postgres://... pnpm --filter @rubicon-caliga/gateway migrate
+APP_ENV=development DATABASE_URL=postgres://... pnpm --filter @rubicon-caliga/gateway migrate
 ```
 
-Development article reads require Supabase values in `.env` or `.env.local`. For the local demo/no-money path, follow the exact gateway command in `AGENTS.md`.
+Gateway processes require `APP_ENV=development|staging|production`. Development article reads use unprefixed Supabase values in `.env` or `.env.local`; deployed profiles use only `STAGING_*` or `PRODUCTION_*` resource variables. For the local demo/no-money path, follow the exact gateway command in `AGENTS.md`.
 
 ## High-level structure
 
@@ -51,6 +51,7 @@ Development article reads require Supabase values in `.env` or `.env.local`. For
 ## Main entrypoints
 
 - `apps/gateway/src/index.ts`: compose environment-selected repositories/payment engine and start Fastify.
+- `apps/gateway/src/config.ts`: select the `APP_ENV` profile and fail closed on missing, shared, cross-environment, or testnet/mainnet-mismatched resources before adapter startup.
 - `apps/gateway/src/server.ts`: HTTP routes, validation, response shapes, SSE, and structured payment logs.
 - `apps/gateway/src/migrate.ts`: apply `apps/gateway/migrations/*.sql`.
 - `packages/core/src/index.ts`: public shared exports; `contract.ts` and `protocol.ts` define cross-repo API shapes.
@@ -70,11 +71,11 @@ Development article reads require Supabase values in `.env` or `.env.local`. For
 
 ### Sessions, persistence, and events
 
-`stores/session-store.ts` and `stores/event-bus.ts` provide in-process state/events. `repositories/postgres.ts` persists sessions, deliveries, payments, earnings, and settlement data when `DATABASE_URL` is set; migrations are append-only under `apps/gateway/migrations/`. SSE is exposed at `/v1/sessions/:sessionId/events`; event types live in `packages/core/src/protocol.ts`.
+`stores/session-store.ts` and `stores/event-bus.ts` provide in-process state/events. `repositories/postgres.ts` persists sessions and authoritative `read_bundles`; optional word audits are bulk inserted, session counters and `analytics_outbox` are committed in the same transaction, and compatibility `word_payments` now has one row per bundle. Provider evidence lives in `settlements` plus `settlement_bundle_links`; legacy `settlement_receipts` receives no new rows. Migrations are append-only under `apps/gateway/migrations/`. SSE is exposed at `/v1/sessions/:sessionId/events`; event types live in `packages/core/src/protocol.ts`.
 
 ### Payments/onchain
 
-`payments/types.ts` defines the verifier boundary. `payments/x402-circle.ts` verifies Circle/Arc authorizations and queues settlement through `settlement-queue.ts`; development mode uses a no-money verifier. `payments/x402-base.ts` is the separate AgentCash whole-article lane and fails closed unless the writer has a verified wallet on its configured Base network; its 402 challenge is the only source of `payTo`. `chain.ts` normalizes supported networks. Never release paid content before authorization verification, weaken the session cap, silently change `payTo`, or treat a queued settlement as final success.
+`payments/types.ts` defines the verifier boundary. `payments/x402-circle.ts` verifies Circle/Arc authorizations and queues settlement through `settlement-queue.ts` only after the bundle commit callback; development mode uses a no-money verifier. `payments/x402-base.ts` is the separate AgentCash whole-article lane and fails closed unless the writer has a verified wallet on its configured Base network; its 402 challenge is the only source of `payTo`. `chain.ts` normalizes supported networks. Never release paid content before authorization verification and bundle commit, weaken the session cap, silently change `payTo`, create placeholder settlement receipts, or treat a queued settlement as final success.
 
 ### Buyer SDK
 
@@ -108,7 +109,9 @@ Free articles use the same discovery/session surfaces with `accessMode: "free"` 
 
 ## Analytics/events
 
-No product analytics service was found. Runtime observability consists of Fastify logs, structured `rubicon.payment_requirement_issued` and `rubicon.payment_attempt` records in `server.ts`, and typed session/SSE events in `packages/core/src/protocol.ts`. Never log API keys, bearer tokens, entity secrets, signed authorization payloads, private article text, or unredacted wallet credentials.
+`apps/gateway/src/analytics/` owns the Postgres outbox claimer, lease/retry worker, ClickHouse HTTP client, health model, backfill, and reconciliation commands. Versioned ClickHouse DDL is under `apps/gateway/analytics/clickhouse/`; `/health/analytics` reports backlog/poison/lease health. ClickHouse is never called by a read/payment transaction and must not affect content delivery or session correctness. Runtime observability also includes Fastify logs, structured payment records in `server.ts`, and typed session/SSE events in `packages/core/src/protocol.ts`. Never log or enqueue API keys, bearer tokens, entity secrets, signed authorization payloads, private article text, words, prompts, or unredacted credentials.
+
+The production bundle-ledger rollout is expand/deploy/finalize. Migration `0011` stays compatible with the previous per-word gateway. After all old instances drain, `pnpm --filter @rubicon-caliga/gateway finalize:bundle-transition -- --confirm-no-legacy-gateways` catches up the legacy tail and installs the legacy receipt evidence constraint. Do not run finalization while an old gateway instance can still write placeholder receipts.
 
 ## Shared design/UI constraints
 
@@ -120,13 +123,16 @@ There is no browser UI or CSS in this repo. User-facing surfaces are CLI text/JS
 - Do not rename routes or protocol fields without checking SDK, CLI, examples, docs, hosted runbook, and sibling clients.
 - Keep author payout resolution tied to verified creator wallets; payment and settlement changes cross trust boundaries.
 - Do not use raw private-key fallbacks in buyer flows; the intended custody path is Circle Agent Wallet/CLI.
-- Keep `DATABASE_URL` optional only for development; production runtime data otherwise falls back to memory and disappears on restart.
+- Keep `DATABASE_URL` optional only for development; deployed profiles require an environment-prefixed persistent database and never fall back to memory.
 - Add new schema changes as migrations and keep repository adapters aligned.
 - Generated `dist/` can be stale. Build `core` before diagnosing downstream declaration errors.
 - Do not edit published `public/skill.md` copies directly.
 
 ## Recent architecture changes
 
+- 2026-07-15: Added `APP_ENV` profile selection for database, Supabase/API, ClickHouse, payment, webhook, credentials, and public URL configuration; staging/production now fail closed on missing, shared, cross-environment, or testnet/mainnet-mismatched resources, and expose `appEnv` in logs and health.
+- 2026-07-15: Replaced per-word persistence with transactionally committed `read_bundles`, bulk word audit rows, evidence-only many-to-many settlements, and a replay-safe Postgres outbox feeding optional ClickHouse analytics; added analytics health, backfill, and reconciliation commands.
+- 2026-07-10: Made `creator_wallets` network-keyed so each creator can retain an Arc payout row and a verified AgentCash Base (`eip155:8453`) row; the Base whole-article x402 lane resolves only the latter.
 - 2026-07-10: Added canonical, valid article-navigation sources to public article summaries and AgentCash-safe marketplace icon metadata to Base x402 challenges, emitted only for public HTTPS gateway origins.
 - 2026-07-10: Scoped `/openapi.json` to free article discovery and the directly invocable Base whole-article AgentCash resource so x402scan does not catalog internal seller-conversation or Circle/Arc session workflow routes; the paid resource is advertised only when a live paid article has a verified Base wallet.
 - 2026-07-10: Hardened the AgentCash Base lane to pay only verified writer wallets on the configured Base network, bound its runtime price to its x402scan discovery maximum, and served the Rubicon white-backed logo for marketplace discovery.

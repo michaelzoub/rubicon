@@ -39,7 +39,8 @@ function setup(
 ): { app: FastifyInstance } {
   const published = new InMemoryPublishedArticleRepository({
     articles,
-    wallets: [{ creatorId: "creator-a", address: CREATOR_WALLET, network: walletNetwork }],
+    wallets: [{ creatorId: "creator-a", address: CREATOR_WALLET, network: "eip155:5042002" }],
+    baseWallets: [{ creatorId: "creator-a", address: CREATOR_WALLET, network: walletNetwork }],
   });
   const app = createGateway({
     articleRepository: published,

@@ -37,10 +37,10 @@ shared by both apps.
   articles are consumable by buyer agents or visible in the public repository.
 - **Pricing units**: atomic USDC, `1 USDC = 1_000_000`, stored as exact strings.
 - **Payment granularity**: one delivered word remains the billing unit. Payment
-  authorization is session-level by default and chunk-level as a fallback; each
-  delivered word still has durable `PaymentActivity` / `settlement_receipts`
-  accounting with network, destination, settlement id or transaction hash(es),
-  and amount.
+  authorization is session-level by default and chunk-level as a fallback. One
+  authoritative `read_bundles` row stores the immutable word range and exact
+  amounts; settlement evidence is stored separately only when a provider
+  reference exists.
 - **Word counting**: a word is a maximal run of non-whitespace characters
   (`content.trim().split(/\s+/)`). `articles.total_words` uses this rule.
 - **Wallet format**: `0x`-prefixed address plus a CAIP-2 `network` string. Only
@@ -56,8 +56,9 @@ shared by both apps.
   (creators, profiles, wallets, articles, revisions, sections). It is the writer
   of published content.
 - Rubicon owns the runtime buyer-agent API and writes runtime activity
-  (`stream_sessions`, `seller_agent_messages`, `word_deliveries`,
-  `word_payments`, `settlement_receipts`).
+  (`stream_sessions`, `seller_agent_messages`, `read_bundles`, optional bulk
+  `word_deliveries`, compatibility `word_payments`, `settlements`,
+  `settlement_bundle_links`, `analytics_outbox`).
 
 Rubicon never implements the creator dashboard API and never trusts
 buyer-supplied article price, creator wallet, creator identity, ownership, word
@@ -65,7 +66,7 @@ sequence, amount owed, or settlement recipient — all are loaded from storage.
 
 ## Public buyer-agent API: base URL and auth
 
-- **Base URL**: configure via `GATEWAY_BASE_URL` (server) and the SDK
+- **Base URL**: configure via the selected profile's `GATEWAY_BASE_URL` (server) and the SDK
   `RubiconClient({ baseUrl })`. Default `http://localhost:8787`.
 - **Buyer endpoints** under `/v1/*` are public and x402-gated — payment, not an
   API key, authorizes word delivery.
@@ -73,17 +74,19 @@ sequence, amount owed, or settlement recipient — all are loaded from storage.
   (sent as the `Authorization` header) for deployments that front the gateway
   with an additional gateway/edge auth layer. It is not required by the core
   protocol.
+- **Health**: `GET /health` and `GET /health/analytics` remain public and
+  include `appEnv` (`development`, `staging`, or `production`).
 
 ## Dashboard data
 
-The marketing dashboard reads earnings and read activity directly from the shared
-tables (`word_payments`, `word_deliveries`, `settlement_receipts`,
-`stream_sessions`) — for example via `LedgerRepository.earningsForCreator` /
-`earningsForArticle`, which sum the exact words delivered. Creators earn the full
-per-word subtotal; the Rubicon fee is always zero.
+`LedgerRepository.earningsForCreator` / `earningsForArticle` sum authoritative
+`read_bundles`. Creator dashboards should consume ClickHouse aggregate views for
+analytics and keep Postgres as the reconciliation source of truth. Creators earn
+the full per-word subtotal; the Rubicon fee is always zero.
 
-For granular audit views, `word_payments` and `settlement_receipts` include
+For granular audit views, `read_bundles` and evidence-only `settlements` include
 `network`, `pay_to`, `settlement_id`, `settlement_ids`, `transaction_hash`,
-`transaction_hashes`, and legacy `transfer_id`. Prefer settlement ids when the
+`transaction_hashes`, and `transfer_id`. Prefer settlement ids when the
 Circle Gateway path returns UUID-style transfer identifiers instead of visible
-on-chain hashes.
+on-chain hashes. `settlement_receipts` is retained only as legacy migration
+history and receives no new runtime rows.

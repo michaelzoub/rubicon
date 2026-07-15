@@ -1,19 +1,20 @@
 import { BatchFacilitatorClient, GatewayEvmScheme } from "@circle-fin/x402-batching/server";
 import { x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, SchemeNetworkServer } from "@x402/core/types";
-import { quotePerWord, type PaymentVerification, type SessionRecord } from "@rubicon-caliga/core";
-import type { PaymentRequiredInput, PaymentVerifier, PaymentVerifyInput } from "./types.js";
+import { quotePerWord, type SessionRecord } from "@rubicon-caliga/core";
+import type { PaymentRequiredInput, PaymentVerifier, PaymentVerifyInput, PaymentVerificationResult } from "./types.js";
 import { ACTIVE_X402_NETWORK, USDC_DECIMALS as ARC_USDC_DECIMALS } from "../chain.js";
 import { SettlementQueue } from "./settlement-queue.js";
 
 /**
- * Settlement outcome reported once a queued word-authorization clears (or fails)
- * behind the stream. The gateway uses it to backfill the persisted word-payment
- * receipt with Circle's transfer UUID.
+ * Settlement outcome reported once a queued bundle authorization clears (or
+ * fails) behind the stream. The gateway persists evidence and links it to the
+ * exact committed bundle range.
  */
 export interface SettlementOutcome {
   sessionId: string;
-  sequence: number;
+  startSequence: number;
+  endSequence: number;
   success: boolean;
   settlementId?: string;
   settlementIds?: string[];
@@ -56,14 +57,15 @@ export interface ResourceServerLike {
 }
 
 export interface CircleX402PaymentVerifierOptions {
+  appEnv?: "development" | "staging" | "production";
   facilitatorUrl?: string;
   networks?: string[];
   maxTimeoutSeconds?: number;
   arcPrivateMainnet?: boolean;
   gatewayBaseUrl?: string;
   /**
-   * Max verified word-authorizations to hold before flushing a settlement batch.
-   * Each word still streams the instant its authorization is verified; this only
+   * Max verified bundle authorizations to hold before flushing a settlement batch.
+   * Each bundle streams only after its authorization and ledger commit; this only
    * controls how many settlements are flushed together behind the stream.
    * Defaults to 25.
    */
@@ -183,7 +185,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     } as PaymentRequired;
   }
 
-  async verify(input: PaymentVerifyInput): Promise<PaymentVerification> {
+  async verify(input: PaymentVerifyInput): Promise<PaymentVerificationResult> {
     await this.ready;
     const paymentPayload = input.payment.paymentPayload as PaymentPayload | undefined;
     if (!paymentPayload) {
@@ -223,18 +225,6 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       return { accepted: false, reason: verification.invalidReason ?? "payment_verification_failed" };
     }
 
-    // `session.wordsDelivered` is the sequence of the word being paid for; the
-    // server increments it only after we accept. Queue the verified
-    // authorization for batched settlement keyed by that sequence.
-    const sequence = input.session.wordsDelivered;
-    this.settlementQueue.enqueue({
-      sessionId: input.session.id,
-      sequence,
-      words: wordsCoveredByAuthorization(input.wordPaymentAtomic, input.session.pricePerWordAtomic, input.session.gatewayFeeBps),
-      paymentPayload,
-      requirements,
-    });
-
     return {
       accepted: true,
       amountAtomic: requirements.amount as `${bigint}`,
@@ -242,6 +232,15 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       payTo: requirements.payTo as `0x${string}`,
       buyerWalletAddress: verification.payer as `0x${string}` | undefined,
       // settlementId/transferId are backfilled by onSettled once the batch clears.
+      afterCommit: ({ startSequence, words }) => {
+        this.settlementQueue.enqueue({
+          sessionId: input.session.id,
+          startSequence,
+          endSequence: startSequence + words - 1,
+          paymentPayload,
+          requirements,
+        });
+      },
     };
   }
 
@@ -260,7 +259,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     paymentPayload: PaymentPayload,
     requirements: PaymentRequirements,
     session: SessionRecord,
-  ): Promise<PaymentVerification> {
+  ): Promise<PaymentVerificationResult> {
     const settlement = await this.resourceServer.settlePayment(paymentPayload, requirements);
     if (!settlement.success) {
       logCircleSettlement("warn", {
@@ -268,7 +267,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
         session,
         requirements,
         settlement,
-      });
+      }, this.options.appEnv);
       return {
         accepted: false,
         reason:
@@ -282,7 +281,7 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
       session,
       requirements,
       settlement,
-    });
+    }, this.options.appEnv);
     return {
       accepted: true,
       amountAtomic: (settlement.amount ?? requirements.amount) as `${bigint}`,
@@ -309,8 +308,11 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
           sessionId: item.sessionId,
           requirements: item.requirements,
           settlement,
-        });
-        await this.reportSettlements(item, {
+        }, this.options.appEnv);
+        await this.reportSettlement({
+          sessionId: item.sessionId,
+          startSequence: item.startSequence,
+          endSequence: item.endSequence,
           success: false,
           reason:
             (settlement.errorReason as string) ??
@@ -324,8 +326,11 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
         sessionId: item.sessionId,
         requirements: item.requirements,
         settlement,
-      });
-      await this.reportSettlements(item, {
+      }, this.options.appEnv);
+      await this.reportSettlement({
+        sessionId: item.sessionId,
+        startSequence: item.startSequence,
+        endSequence: item.endSequence,
         success: true,
         amountAtomic: (settlement.amount ?? item.requirements.amount) as `${bigint}`,
         network: item.requirements.network,
@@ -333,25 +338,17 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
         settlementId: settlementId(settlement),
         settlementIds: settlementIds(settlement),
         transferId: transferIdFromSettlement(settlement),
-        transactionHash: typeof settlement.transaction === "string" ? settlement.transaction : undefined,
         buyerWalletAddress: settlement.payer as `0x${string}` | undefined,
       });
     } catch (error) {
       // A settle that throws (network/facilitator error) also halts the session.
       this.haltedSessions.add(item.sessionId);
-      await this.reportSettlements(item, {
-        success: false,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  private async reportSettlements(item: QueuedSettlement, outcome: Omit<SettlementOutcome, "sessionId" | "sequence">): Promise<void> {
-    for (let offset = 0; offset < item.words; offset += 1) {
       await this.reportSettlement({
         sessionId: item.sessionId,
-        sequence: item.sequence + offset,
-        ...outcome,
+        startSequence: item.startSequence,
+        endSequence: item.endSequence,
+        success: false,
+        reason: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -363,7 +360,12 @@ export class CircleX402PaymentVerifier implements PaymentVerifier {
     try {
       await this.options.onSettled(outcome);
     } catch (error) {
-      console.error("[rubicon:circle-x402] onSettled handler failed", error);
+      console.error(JSON.stringify({
+        level: "error",
+        event: "circle_x402_on_settled_handler_failed",
+        appEnv: this.options.appEnv ?? process.env.APP_ENV ?? "development",
+        error: error instanceof Error ? error.message : String(error),
+      }));
     }
   }
 
@@ -505,10 +507,12 @@ function logCircleSettlement(
     requirements: PaymentRequirements;
     settlement: unknown;
   },
+  appEnv: "development" | "staging" | "production" = "development",
 ): void {
   const settlement = input.settlement as Record<string, unknown>;
   const log = {
     event: input.message,
+    appEnv,
     sessionId: input.session?.id ?? input.sessionId,
     articleId: input.session?.articleId,
     creatorId: input.session?.creatorId,
@@ -518,14 +522,14 @@ function logCircleSettlement(
     maxTimeoutSeconds: input.requirements.maxTimeoutSeconds,
     settlement: pickSettlementFields(settlement),
   };
-  console[level]("[rubicon:circle-x402]", JSON.stringify(log));
+  console[level](JSON.stringify(log));
 }
 
-/** A verified word-authorization awaiting batched settlement behind the stream. */
+/** A verified committed-bundle authorization awaiting provider settlement. */
 interface QueuedSettlement {
   sessionId: string;
-  sequence: number;
-  words: number;
+  startSequence: number;
+  endSequence: number;
   paymentPayload: PaymentPayload;
   requirements: PaymentRequirements;
 }

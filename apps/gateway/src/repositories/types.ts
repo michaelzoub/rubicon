@@ -50,6 +50,8 @@ export interface PublishedArticleRepository {
   getPublishedArticle(articleId: string): Promise<ArticleRecord | null>;
   getArticleSections(articleId: string): Promise<ArticleSection[]>;
   getCreatorWallet(creatorId: string): Promise<CreatorWallet | null>;
+  /** Separate, verified Base-mainnet recipient for AgentCash whole-article x402. */
+  getCreatorBaseWallet(creatorId: string): Promise<CreatorWallet | null>;
   /**
    * Semantic top-k search over section embeddings. Absent or returning empty
    * signals the caller to fall back to lexical scoring. Implemented by the
@@ -57,28 +59,6 @@ export interface PublishedArticleRepository {
    * implement it so demo mode is lexical-only.
    */
   searchSections?(queryEmbedding: number[], matchCount: number): Promise<Array<{ articleId: string; sectionId: string; revision: number; similarity: number }>>;
-}
-
-export interface RecordWordDeliveryInput {
-  sessionId: string;
-  articleId: string;
-  creatorId: string;
-  sequence: number;
-  word: string;
-  priceAtomic: bigint;
-  creatorAmountAtomic: bigint;
-  rubiconFeeAtomic: bigint;
-  paymentId: string;
-  network?: string;
-  payTo?: `0x${string}`;
-  transactionHash?: string;
-  transactionHashes?: string[];
-  settlementId?: string;
-  settlementIds?: string[];
-  buyerWalletAddress?: `0x${string}`;
-  transferId?: string;
-  /** Ties this payment+delivery to one specific next word; retries are no-ops. */
-  idempotencyKey: string;
 }
 
 export interface RecordWordDeliveryResult {
@@ -89,18 +69,108 @@ export interface RecordWordDeliveryResult {
   payment?: PaymentActivity;
 }
 
-export interface RecordFreeWordDeliveryInput {
-  sessionId: string;
-  articleId: string;
+export type BundlePaymentStatus = "free" | "authorized" | "pending" | "confirmed" | "completed" | "failed";
+
+export interface BundleWordInput {
   sequence: number;
   word: string;
+}
+
+export interface RecordedBundle {
+  bundleId: string;
   idempotencyKey: string;
+  sessionId: string;
+  creatorId: string;
+  articleId: string;
+  accessMode: "paid" | "free";
+  sectionId?: string;
+  bundleSequence: number;
+  startSequence: number;
+  endSequence: number;
+  wordsCount: number;
+  pricePerWordAtomic: `${bigint}`;
+  grossAmountAtomic: `${bigint}`;
+  creatorAmountAtomic: `${bigint}`;
+  rubiconFeeAtomic: `${bigint}`;
+  paymentId?: string;
+  authorizationReference?: string;
+  buyerWalletAddress?: `0x${string}`;
+  network?: string;
+  payTo?: `0x${string}`;
+  paymentStatus: BundlePaymentStatus;
+  words: BundleWordInput[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RecordBundleBaseInput {
+  bundleId: string;
+  idempotencyKey: string;
+  sessionId: string;
+  creatorId: string;
+  articleId: string;
+  sectionId?: string;
+  bundleSequence: number;
+  startSequence: number;
+  words: BundleWordInput[];
+  pricePerWordAtomic: bigint;
+}
+
+export interface RecordPaidBundleInput extends RecordBundleBaseInput {
+  accessMode: "paid";
+  grossAmountAtomic: bigint;
+  creatorAmountAtomic: bigint;
+  rubiconFeeAtomic: bigint;
+  paymentId: string;
+  authorizationReference: string;
+  buyerWalletAddress?: `0x${string}`;
+  network?: string;
+  payTo?: `0x${string}`;
+  settlement?: SettlementEvidenceInput;
+}
+
+export interface RecordFreeBundleInput extends RecordBundleBaseInput {
+  accessMode: "free";
+  pricePerWordAtomic: 0n;
+}
+
+export interface RecordBundleResult {
+  duplicate: boolean;
+  bundle: RecordedBundle;
+  wordsDelivered: number;
+  wordsPaid: number;
+  paidAtomic: `${bigint}`;
+}
+
+export interface SettlementEvidenceInput {
+  provider: string;
+  status: Exclude<BundlePaymentStatus, "free" | "authorized">;
+  idempotencyKey: string;
+  bundleIds: string[];
+  network?: string;
+  payTo?: `0x${string}`;
+  buyerWalletAddress?: `0x${string}`;
+  transactionHash?: string;
+  transactionHashes?: string[];
+  settlementId?: string;
+  settlementIds?: string[];
+  transferId?: string;
+  initiatedAt?: string;
+  confirmedAt?: string;
+  failedAt?: string;
+}
+
+export interface RecordSettlementRangeInput extends Omit<SettlementEvidenceInput, "bundleIds"> {
+  sessionId: string;
+  startSequence: number;
+  endSequence: number;
 }
 
 /**
- * Persistent ledger for runtime sessions, conversations, word deliveries, and
- * word payments. Word delivery and payment operations are idempotent and
- * constraint-protected so a word is never delivered or charged twice.
+ * Persistent ledger for runtime sessions, conversations, authoritative read
+ * bundles, optional word audits, and evidence-based settlements. Bundle writes
+ * are idempotent and constraint-protected so a range is never delivered or
+ * charged twice.
  */
 export interface LedgerRepository {
   createSession(session: SessionRecord): Promise<void>;
@@ -120,38 +190,19 @@ export interface LedgerRepository {
   listMessages(conversationId: string): Promise<SellerAgentMessageRecord[]>;
 
   getDeliveryByIdempotencyKey(key: string): Promise<RecordWordDeliveryResult | null>;
+  getBundleByIdempotencyKey(key: string): Promise<RecordBundleResult | null>;
   /**
-   * Atomically record one accepted word payment and the single word it
-   * releases. Enforces unique (sessionId, sequence) and unique idempotencyKey.
+   * Commit one authorized paid bundle, its optional bulk word audit rows,
+   * durable session counters, and one sanitized outbox event atomically.
    */
-  recordWordDelivery(input: RecordWordDeliveryInput): Promise<RecordWordDeliveryResult>;
-  /** Atomically record usage for free content without creating any payment row. */
-  recordFreeWordDelivery(input: RecordFreeWordDeliveryInput): Promise<RecordWordDeliveryResult>;
-
+  recordPaidBundle(input: RecordPaidBundleInput): Promise<RecordBundleResult>;
+  /** Same transaction boundary as paid bundles, with exact zero amounts. */
+  recordFreeBundle(input: RecordFreeBundleInput): Promise<RecordBundleResult>;
   listDeliveries(sessionId: string): Promise<WordDeliveryRecord[]>;
   listPayments(sessionId: string): Promise<PaymentActivity[]>;
   earningsForArticle(articleId: string): Promise<EarningsSummary>;
   earningsForCreator(creatorId: string): Promise<EarningsSummary>;
 
-  /**
-   * Backfill a word payment's settlement identifiers once Circle's batched
-   * settlement clears behind the stream. The word is delivered (and its receipt
-   * persisted) the instant the authorization is verified, so the Circle transfer
-   * UUID lands slightly later — this fills it in, keyed by (sessionId, sequence).
-   *
-   * Optional: a ledger that does not implement it simply leaves the settlement
-   * IDs lagging, which the protocol already permits.
-   */
-  updatePaymentSettlement?(input: UpdatePaymentSettlementInput): Promise<void>;
-}
-
-export interface UpdatePaymentSettlementInput {
-  sessionId: string;
-  sequence: number;
-  settlementId?: string;
-  settlementIds?: string[];
-  transferId?: string;
-  transactionHash?: string;
-  transactionHashes?: string[];
-  buyerWalletAddress?: `0x${string}`;
+  /** Persist provider evidence and link it to every covered bundle atomically. */
+  recordSettlementRange?(input: RecordSettlementRangeInput): Promise<void>;
 }
