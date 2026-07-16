@@ -106,9 +106,20 @@ export class AnalyticsOutboxRepository {
   async appendBackfillEvent(event: AnalyticsEvent): Promise<boolean> {
     const result = await this.pool.query(
       `INSERT INTO analytics_outbox
-         (id, event_id, event_type, event_version, aggregate_key, payload, occurred_at)
+       (id, event_id, event_type, event_version, aggregate_key, payload, occurred_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (event_id) DO NOTHING`,
+       ON CONFLICT (event_id) DO UPDATE
+       SET event_type = EXCLUDED.event_type,
+           event_version = EXCLUDED.event_version,
+           aggregate_key = EXCLUDED.aggregate_key,
+           payload = EXCLUDED.payload,
+           occurred_at = EXCLUDED.occurred_at,
+           available_at = now(),
+           attempts = 0,
+           locked_at = NULL,
+           locked_by = NULL,
+           processed_at = NULL,
+           last_error = NULL`,
       [
         randomUUID(), event.eventId, event.eventType, event.eventVersion,
         event.eventType === "read_bundle_committed" ? event.bundleId : event.settlementRecordId,

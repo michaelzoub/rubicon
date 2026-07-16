@@ -33,7 +33,7 @@ pnpm smoke:hosted-buyer-flow
 APP_ENV=development DATABASE_URL=postgres://... pnpm --filter @rubicon-caliga/gateway migrate
 ```
 
-Gateway processes require `APP_ENV=development|staging|production`. Development article reads use unprefixed Supabase values in `.env` or `.env.local`; deployed profiles use only `STAGING_*` or `PRODUCTION_*` resource variables. For the local demo/no-money path, follow the exact gateway command in `AGENTS.md`.
+Gateway processes require `APP_ENV=development|staging|production`. All environments use the existing unprefixed resources and credentials; staging/production override only `STAGING_GATEWAY_BASE_URL` or `PRODUCTION_GATEWAY_BASE_URL`. For the local demo/no-money path, follow the exact gateway command in `AGENTS.md`.
 
 ## High-level structure
 
@@ -51,7 +51,7 @@ Gateway processes require `APP_ENV=development|staging|production`. Development 
 ## Main entrypoints
 
 - `apps/gateway/src/index.ts`: compose environment-selected repositories/payment engine and start Fastify.
-- `apps/gateway/src/config.ts`: select the `APP_ENV` profile and fail closed on missing, shared, cross-environment, or testnet/mainnet-mismatched resources before adapter startup.
+- `apps/gateway/src/config.ts`: select the `APP_ENV` gateway URL override and fail closed on missing or testnet/mainnet-mismatched deployment values before adapter startup.
 - `apps/gateway/src/server.ts`: HTTP routes, validation, response shapes, SSE, and structured payment logs.
 - `apps/gateway/src/migrate.ts`: apply `apps/gateway/migrations/*.sql`.
 - `packages/core/src/index.ts`: public shared exports; `contract.ts` and `protocol.ts` define cross-repo API shapes.
@@ -130,7 +130,7 @@ There is no browser UI or CSS in this repo. User-facing surfaces are CLI text/JS
 
 ## Recent architecture changes
 
-- 2026-07-15: Added `APP_ENV` profile selection for database, Supabase/API, ClickHouse, payment, webhook, credentials, and public URL configuration; staging/production now fail closed on missing, shared, cross-environment, or testnet/mainnet-mismatched resources, and expose `appEnv` in logs and health.
+- 2026-07-15: Added `APP_ENV` selection with staging/production gateway URL overrides while retaining shared unprefixed database, Supabase, payment, webhook, and credential configuration; deployment values still fail closed on missing or network-mismatched settings.
 - 2026-07-15: Replaced per-word persistence with transactionally committed `read_bundles`, bulk word audit rows, evidence-only many-to-many settlements, and a replay-safe Postgres outbox feeding optional ClickHouse analytics; added analytics health, backfill, and reconciliation commands.
 - 2026-07-10: Made `creator_wallets` network-keyed so each creator can retain an Arc payout row and a verified AgentCash Base (`eip155:8453`) row; the Base whole-article x402 lane resolves only the latter.
 - 2026-07-10: Added canonical, valid article-navigation sources to public article summaries and AgentCash-safe marketplace icon metadata to Base x402 challenges, emitted only for public HTTPS gateway origins.

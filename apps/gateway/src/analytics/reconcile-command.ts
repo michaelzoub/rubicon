@@ -60,19 +60,19 @@ try {
   );
   const config = analyticsConfigFromEnv(env);
   if (!config.clickhouseUrl) throw new Error("CLICKHOUSE_URL is required");
-  const creatorFilter = creator ? `AND creator_id = '${escapeSql(creator)}'` : "";
+  const creatorFilter = creator ? `AND m.creator_id = '${escapeSql(creator)}'` : "";
   const clickhouse = await new ClickHouseAnalyticsClient(config).queryJson<{ data: MetricRow[] }>(
-    `SELECT toString(day) AS day, creator_id,
-            toString(sum(bundle_count)) AS bundle_count,
-            toString(sum(delivered_words)) AS delivered_words,
-            toString(sum(paid_words)) AS paid_words,
-            toString(sum(agent_reads)) AS distinct_sessions,
-            toString(sum(gross_amount_atomic)) AS gross_amount_atomic,
-            toString(sum(creator_earnings_atomic)) AS creator_amount_atomic,
-            toString(sum(settled_creator_earnings_atomic)) AS settled_creator_amount_atomic
-     FROM ${quoteIdentifier(config.clickhouseDatabase)}.creator_daily_metrics
-     WHERE day >= toDate('${escapeSql(from)}') AND day < toDate('${escapeSql(to)}') ${creatorFilter}
-     GROUP BY day, creator_id ORDER BY day, creator_id`,
+    `SELECT toString(m.day) AS day, m.creator_id,
+            toString(sum(m.bundle_count)) AS bundle_count,
+            toString(sum(m.delivered_words)) AS delivered_words,
+            toString(sum(m.paid_words)) AS paid_words,
+            toString(sum(m.agent_reads)) AS distinct_sessions,
+            toString(sum(m.gross_amount_atomic)) AS gross_amount_atomic,
+            toString(sum(m.creator_earnings_atomic)) AS creator_amount_atomic,
+            toString(sum(m.settled_creator_earnings_atomic)) AS settled_creator_amount_atomic
+     FROM ${quoteIdentifier(config.clickhouseDatabase)}.creator_daily_metrics AS m
+     WHERE m.day >= toDate('${escapeSql(from)}') AND m.day < toDate('${escapeSql(to)}') ${creatorFilter}
+     GROUP BY m.day, m.creator_id ORDER BY m.day, m.creator_id`,
   );
   const left = new Map(postgres.rows.map((row) => [key(row), row]));
   const right = new Map(clickhouse.data.map((row) => [key(row), row]));
@@ -101,7 +101,9 @@ interface MetricRow {
   creator_amount_atomic: string;
   settled_creator_amount_atomic: string;
 }
-const key = (row: MetricRow) => `${row.day}:${row.creator_id}`;
+function key(row: MetricRow): string {
+  return `${row.day}:${row.creator_id}`;
+}
 
 function escapeSql(value: string): string {
   return value.replace(/'/g, "''");

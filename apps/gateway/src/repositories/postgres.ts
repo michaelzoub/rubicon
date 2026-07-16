@@ -730,7 +730,7 @@ export class PostgresLedgerRepository implements LedgerRepository {
       sessionId: totals.session_id,
       providerReference,
       status: input.status,
-      settledCreatorAmountAtomicDelta: input.status === "completed" ? totals.creator : "0",
+      settledCreatorAmountAtomicDelta: input.status === "confirmed" || input.status === "completed" ? totals.creator : "0",
     });
   }
 
