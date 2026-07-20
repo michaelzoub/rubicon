@@ -12,8 +12,6 @@ function sharedEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     CIRCLE_X402_NETWORKS: "eip155:5042002",
     CIRCLE_ARC_PRIVATE_MAINNET: "false",
     BASE_X402_NETWORK: "eip155:84532",
-    PAYMENT_WEBHOOK_URL: "https://api.rubiconpay.xyz/webhooks/payments",
-    PAYMENT_WEBHOOK_SECRET: "webhook-secret",
     RUBICON_AGENT_API_KEY: "agent-key",
     ...overrides,
   };
@@ -69,8 +67,7 @@ test("staging still rejects mainnet payment networks", () => {
   );
 });
 
-test("deployed profiles fail when a shared required value is absent", () => {
+test("deployed profiles do not require unused payment webhook configuration", () => {
   const env = sharedEnv({ APP_ENV: "staging", STAGING_GATEWAY_BASE_URL: "https://staging.api.rubiconpay.xyz" });
-  delete env.PAYMENT_WEBHOOK_SECRET;
-  assert.throws(() => loadGatewayEnvironment(env), /PAYMENT_WEBHOOK_SECRET/);
+  assert.equal(loadGatewayEnvironment(env).appEnv, "staging");
 });

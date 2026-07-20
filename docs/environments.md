@@ -28,7 +28,6 @@ staging and production.
 | Runtime database | `DATABASE_URL` | Full Postgres URL. Use a different database/project for each environment. |
 | Published content/API database | `SUPABASE_URL` and one of `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `SUPABASE_PUBLISHABLE_KEY`, or `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Staging and production projects and credentials must be distinct. |
 | Payments | `RUBICON_PAYMENTS=circle`, `CIRCLE_FACILITATOR_URL`, `CIRCLE_X402_NETWORKS`, `BASE_X402_NETWORK` | Staging accepts recognized testnets only and requires Base Sepolia (`eip155:84532`). Production rejects testnets and requires Base mainnet (`eip155:8453`). |
-| Payment webhooks | `PAYMENT_WEBHOOK_URL`, `PAYMENT_WEBHOOK_SECRET` | The callback URL must be HTTPS. The current payment adapters own callback registration; this configuration does not add a public webhook route. |
 | API credentials | `RUBICON_AGENT_API_KEY` | Must be unique per environment. `OPENAI_API_KEY`, `CDP_API_KEY_ID`, and `CDP_API_KEY_SECRET` are optional adapter credentials, but must also be environment-scoped when used. |
 | Public URL | `GATEWAY_BASE_URL` | HTTPS. A staging hostname must contain `staging`, `stage`, or `test`; production rejects staging/test markers. |
 
@@ -60,8 +59,6 @@ CIRCLE_FACILITATOR_URL=https://gateway-api-testnet.circle.com
 CIRCLE_X402_NETWORKS=eip155:5042002
 CIRCLE_ARC_PRIVATE_MAINNET=false
 BASE_X402_NETWORK=eip155:84532
-PAYMENT_WEBHOOK_URL=https://api.rubiconpay.xyz/webhooks/payments
-PAYMENT_WEBHOOK_SECRET=...
 RUBICON_AGENT_API_KEY=...
 STAGING_GATEWAY_BASE_URL=https://staging.api.example.com
 ANALYTICS_ENABLED=true

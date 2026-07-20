@@ -17,8 +17,6 @@ const REQUIRED_DEPLOYED_VARIABLES = [
   "CIRCLE_FACILITATOR_URL",
   "CIRCLE_X402_NETWORKS",
   "BASE_X402_NETWORK",
-  "PAYMENT_WEBHOOK_URL",
-  "PAYMENT_WEBHOOK_SECRET",
   "RUBICON_AGENT_API_KEY",
   "GATEWAY_BASE_URL",
 ];
@@ -31,8 +29,6 @@ export interface GatewayEnvironmentConfig {
   env: NodeJS.ProcessEnv;
   databaseUrl?: string;
   clickhouseUrl?: string;
-  paymentWebhookUrl?: string;
-  paymentWebhookSecret?: string;
   agentApiKey?: string;
   publicUrl: string;
 }
@@ -90,8 +86,6 @@ export function loadGatewayEnvironment(env: NodeJS.ProcessEnv = process.env): Ga
     env: runtime,
     databaseUrl: runtime.DATABASE_URL,
     clickhouseUrl: runtime.CLICKHOUSE_URL,
-    paymentWebhookUrl: runtime.PAYMENT_WEBHOOK_URL,
-    paymentWebhookSecret: runtime.PAYMENT_WEBHOOK_SECRET,
     agentApiKey: runtime.RUBICON_AGENT_API_KEY,
     publicUrl: runtime.GATEWAY_BASE_URL ?? `http://localhost:${runtime.GATEWAY_PORT ?? runtime.PORT ?? 8787}`,
   };
@@ -131,7 +125,6 @@ function validateDeployedResources(appEnv: Exclude<AppEnv, "development">, env: 
   }
   const databaseUrl = assertPostgresUrl(env.DATABASE_URL!);
   const publicUrl = assertHttpsUrl("GATEWAY_BASE_URL", env.GATEWAY_BASE_URL!);
-  const webhookUrl = assertHttpsUrl("PAYMENT_WEBHOOK_URL", env.PAYMENT_WEBHOOK_URL!);
   const supabaseUrl = assertHttpsUrl("SUPABASE_URL", env.SUPABASE_URL!);
   const facilitatorUrl = assertHttpsUrl("CIRCLE_FACILITATOR_URL", env.CIRCLE_FACILITATOR_URL!);
   const clickhouseUrl = env.CLICKHOUSE_URL ? assertHttpsUrl("CLICKHOUSE_URL", env.CLICKHOUSE_URL) : undefined;
@@ -141,7 +134,7 @@ function validateDeployedResources(appEnv: Exclude<AppEnv, "development">, env: 
   if (appEnv === "staging") {
     assertNoMarker("staging", "production", [
       resourceIdentity(databaseUrl), resourceIdentity(supabaseUrl), resourceIdentity(clickhouseUrl),
-      resourceIdentity(publicUrl), resourceIdentity(webhookUrl), resourceIdentity(facilitatorUrl),
+      resourceIdentity(publicUrl), resourceIdentity(facilitatorUrl),
     ]);
     if (!hasEnvironmentMarker(publicUrl.hostname, "staging")) {
       throw new Error("STAGING_GATEWAY_BASE_URL hostname must include a staging, stage, or test marker");
@@ -161,7 +154,7 @@ function validateDeployedResources(appEnv: Exclude<AppEnv, "development">, env: 
   } else {
     assertNoMarker("production", "staging", [
       resourceIdentity(databaseUrl), resourceIdentity(supabaseUrl), resourceIdentity(clickhouseUrl),
-      resourceIdentity(publicUrl), resourceIdentity(webhookUrl), resourceIdentity(facilitatorUrl),
+      resourceIdentity(publicUrl), resourceIdentity(facilitatorUrl),
     ]);
     if (networks.some((chainId) => TESTNET_CHAIN_IDS.has(chainId))) {
       throw new Error("production CIRCLE_X402_NETWORKS cannot contain testnet networks");

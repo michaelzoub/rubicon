@@ -130,7 +130,7 @@ There is no browser UI or CSS in this repo. User-facing surfaces are CLI text/JS
 
 ## Recent architecture changes
 
-- 2026-07-15: Added `APP_ENV` selection with staging/production gateway URL overrides while retaining shared unprefixed database, Supabase, payment, webhook, and credential configuration; deployment values still fail closed on missing or network-mismatched settings.
+- 2026-07-19: Deployed profiles no longer require unused payment-webhook environment variables; payment-provider callback registration remains provider-owned. `APP_ENV` selection retains staging/production gateway URL overrides and fails closed on missing credentials or network-mismatched resources.
 - 2026-07-15: Replaced per-word persistence with transactionally committed `read_bundles`, bulk word audit rows, evidence-only many-to-many settlements, and a replay-safe Postgres outbox feeding optional ClickHouse analytics; added analytics health, backfill, and reconciliation commands.
 - 2026-07-10: Made `creator_wallets` network-keyed so each creator can retain an Arc payout row and a verified AgentCash Base (`eip155:8453`) row; the Base whole-article x402 lane resolves only the latter.
 - 2026-07-10: Added canonical, valid article-navigation sources to public article summaries and AgentCash-safe marketplace icon metadata to Base x402 challenges, emitted only for public HTTPS gateway origins.
