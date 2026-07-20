@@ -23,8 +23,13 @@ export const RECEIVING_NETWORK = "arc-testnet" as const;
 /** Display label for the active receiving network. */
 export const RECEIVING_NETWORK_LABEL = "Arc Testnet" as const;
 
-/** Arc Testnet JSON-RPC endpoint. */
-export const ARC_TESTNET_RPC_URL = "https://rpc.testnet.arc-node.thecanteenapp.com/v1/swrm_8b207c9fd12afb52770c688a457711905d597a5f5c497b4324d962c6e101c24c" as const;
+/**
+ * Arc Testnet JSON-RPC endpoint. Per-user Arc Canteen URLs must stay in the
+ * environment (`CIRCLE_RPC_URL`, or the CLI's exported `RPC` variable), never
+ * in source control. The public endpoint is safe for local development.
+ */
+export const ARC_TESTNET_RPC_URL =
+  process.env.CIRCLE_RPC_URL ?? process.env.RPC ?? "https://rpc.testnet.arc.network";
 
 /** Circle Gateway facilitator (Arc Testnet). */
 export const GATEWAY_API_URL = "https://gateway-api-testnet.circle.com" as const;
