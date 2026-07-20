@@ -29,7 +29,7 @@ staging and production.
 | Published content/API database | `SUPABASE_URL` and one of `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `SUPABASE_PUBLISHABLE_KEY`, or `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Staging and production projects and credentials must be distinct. |
 | Payments | `RUBICON_PAYMENTS=circle`, `CIRCLE_FACILITATOR_URL`, `CIRCLE_X402_NETWORKS`, `BASE_X402_NETWORK` | Staging accepts recognized testnets only and requires Base Sepolia (`eip155:84532`). Production rejects testnets and requires Base mainnet (`eip155:8453`). |
 | API credentials | `RUBICON_AGENT_API_KEY` | Must be unique per environment. `OPENAI_API_KEY`, `CDP_API_KEY_ID`, and `CDP_API_KEY_SECRET` are optional adapter credentials, but must also be environment-scoped when used. |
-| Public URL | `GATEWAY_BASE_URL` | HTTPS. A staging hostname must contain `staging`, `stage`, or `test`; production rejects staging/test markers. |
+| Public URL | `GATEWAY_BASE_URL` | HTTPS. A staging hostname must contain `staging`, `stage`, or `test`; Railway's generated `*.up.railway.app` domains are also accepted because service names may include `production`. Production rejects staging/test markers. |
 
 ClickHouse is optional. To enable analytics, set
 `ANALYTICS_ENABLED=true`, `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`,

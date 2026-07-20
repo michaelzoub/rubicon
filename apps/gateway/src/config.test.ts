@@ -67,6 +67,14 @@ test("staging still rejects mainnet payment networks", () => {
   );
 });
 
+test("staging accepts a Railway-generated public domain even when its service name includes production", () => {
+  const staging = loadGatewayEnvironment(sharedEnv({
+    APP_ENV: "staging",
+    STAGING_GATEWAY_BASE_URL: "https://rubicon-caligagateway-production-56dd.up.railway.app",
+  }));
+  assert.equal(staging.publicUrl, "https://rubicon-caligagateway-production-56dd.up.railway.app");
+});
+
 test("deployed profiles do not require unused payment webhook configuration", () => {
   const env = sharedEnv({ APP_ENV: "staging", STAGING_GATEWAY_BASE_URL: "https://staging.api.rubiconpay.xyz" });
   assert.equal(loadGatewayEnvironment(env).appEnv, "staging");

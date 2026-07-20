@@ -134,10 +134,10 @@ function validateDeployedResources(appEnv: Exclude<AppEnv, "development">, env: 
   if (appEnv === "staging") {
     assertNoMarker("staging", "production", [
       resourceIdentity(databaseUrl), resourceIdentity(supabaseUrl), resourceIdentity(clickhouseUrl),
-      resourceIdentity(publicUrl), resourceIdentity(facilitatorUrl),
+      resourceIdentity(facilitatorUrl),
     ]);
-    if (!hasEnvironmentMarker(publicUrl.hostname, "staging")) {
-      throw new Error("STAGING_GATEWAY_BASE_URL hostname must include a staging, stage, or test marker");
+    if (!hasEnvironmentMarker(publicUrl.hostname, "staging") && !isRailwayPublicDomain(publicUrl.hostname)) {
+      throw new Error("STAGING_GATEWAY_BASE_URL hostname must include a staging, stage, or test marker (or use a Railway public domain)");
     }
     if (!hasEnvironmentMarker(facilitatorUrl.hostname, "staging")) {
       throw new Error("staging CIRCLE_FACILITATOR_URL must be a testnet/staging endpoint");
@@ -226,6 +226,11 @@ function hasEnvironmentMarker(value: string, environment: "staging" | "productio
   return environment === "staging"
     ? tokens.some((token) => token === "staging" || token === "stage" || token === "test" || token === "testnet")
     : tokens.some((token) => token === "production" || token === "prod" || token === "mainnet" || token === "live");
+}
+
+/** Railway assigns domains from the service name, which can include "production" for a staging service. */
+function isRailwayPublicDomain(hostname: string): boolean {
+  return hostname.toLowerCase().endsWith(".up.railway.app");
 }
 
 function resourceIdentity(url: URL | undefined): string | undefined {
