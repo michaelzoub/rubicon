@@ -86,6 +86,7 @@ export function summarizeArticle(article: ArticleRecord): ArticleSummary {
     title: article.title,
     author: article.author,
     state: article.state,
+    revision: article.revision,
     accessMode: article.accessMode,
     totalWords: article.totalWords,
     pricePerWordAtomic: `${article.pricePerWordAtomic}`,

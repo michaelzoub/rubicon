@@ -40,11 +40,10 @@ flowchart LR
     Outbox["analytics_outbox"]
   end
 
-  subgraph Seller["SellerAgent"]
-    SafeModel["navigate/respond\nsafe article context only"]
-    StreamModel["selectNextWord\none paid word at a time"]
-    OpenAI["Optional OpenAI Responses API\nwhen OPENAI_API_KEY is set"]
-    Deterministic["Deterministic local fallback\nwhen no model key is set"]
+  subgraph Seller["Constrained section router"]
+    SafeModel["validated IDs + trusted headings"]
+    Semantic["scoped embeddings\nIDs + confidence only"]
+    Deterministic["heading-overlap fallback"]
   end
 
   subgraph PaymentsSvc["PaymentVerifier"]
@@ -109,8 +108,7 @@ flowchart LR
   RuntimeLedger --> Outbox
 
   Seller --> SafeModel
-  Seller --> StreamModel
-  SafeModel --> OpenAI
+  SafeModel --> Semantic
   SafeModel --> Deterministic
 
   PaymentsSvc --> DevVerifier
@@ -150,13 +148,13 @@ flowchart LR
 | `GET /health` | Liveness check | none | none | none |
 | `GET /v1/endpoints` | Return static route index | static `ENDPOINTS` array | none | none |
 | `GET /v1/repository`, `GET /v1/articles` | List live articles with safe metadata and payment terms | Supabase articles, sections, creators, verified wallets | none | none |
-| `GET /v1/articles/:articleId/navigation` | Return article summary plus safe seller-agent navigation | Supabase article, sections, creator wallet | none | SellerAgent `navigate` |
-| `POST /v1/seller-agent/conversations` | Create a seller-agent conversation and optionally run the first turn | Supabase article and wallet | `seller_agent_conversations`, optional `seller_agent_messages` | SellerAgent `navigate` and optional `respond` |
-| `POST /v1/seller-agent/conversations/:conversationId/messages` | Continue an existing seller-agent conversation | Ledger conversation/messages, Supabase article | `seller_agent_messages` | SellerAgent `respond` |
-| `POST /v1/sessions` | Start a budgeted reading session and issue Circle / Arc authorization terms | Supabase article, sections, verified creator wallet, optional ledger conversation | `stream_sessions`, optional `seller_agent_conversations` | PaymentVerifier `createPaymentRequired`, SellerAgent `navigate`, InMemoryEventBus |
-| `POST /v1/sessions/:sessionId/stream` | Preferred target: stream words against a session-level authorization | `stream_sessions`, article stream state or repository fallback | one `read_bundles`, one compatibility `word_payments`, bulk `word_deliveries`, updated `stream_sessions`, one `analytics_outbox` event | PaymentVerifier session authorization, SellerAgent `selectNextWord`, InMemoryEventBus |
+| `GET /v1/articles/:articleId/navigation` | Return article summary plus safe section navigation | Supabase article, sections, scoped embedding index | none | Section router |
+| `POST /v1/seller-agent/conversations` | Create a navigation-only conversation and optionally run the first turn | Supabase article and scoped embedding index | `seller_agent_conversations`, optional `seller_agent_messages` | Section router + trusted renderer |
+| `POST /v1/seller-agent/conversations/:conversationId/messages` | Continue a navigation-only conversation | Ledger conversation/messages, Supabase article | `seller_agent_messages` | Section router + trusted renderer |
+| `POST /v1/sessions` | Start a budgeted reading session and issue Circle / Arc authorization terms | Supabase article, sections, verified creator wallet, optional ledger conversation | `stream_sessions`, optional `seller_agent_conversations` | PaymentVerifier `createPaymentRequired`, section router, InMemoryEventBus |
+| `POST /v1/sessions/:sessionId/stream` | Preferred target: stream words against a session-level authorization | `stream_sessions`, article stream state or repository fallback | one `read_bundles`, one compatibility `word_payments`, bulk `word_deliveries`, updated `stream_sessions`, one `analytics_outbox` event | PaymentVerifier session authorization, PaidReadingWorkflow, InMemoryEventBus |
 | `GET /v1/sessions/:sessionId/payments` | Inspect the current x402 payment challenge for a session | `stream_sessions` | may update session state to `expired` | Payment challenge response, InMemoryEventBus on expiry |
-| `POST /v1/sessions/:sessionId/payments` | Compatibility fallback: verify a chunk or legacy one-word authorization and record metered words | `stream_sessions`, bundle idempotency records, article stream state or repository fallback | one-word `read_bundles`, compatibility `word_payments`, `word_deliveries`, updated `stream_sessions`, `analytics_outbox` | PaymentVerifier `verify`, SellerAgent `selectNextWord`, InMemoryEventBus |
+| `POST /v1/sessions/:sessionId/payments` | Compatibility fallback: verify a chunk or legacy one-word authorization and record metered words | `stream_sessions`, bundle idempotency records, article stream state or repository fallback | one-word `read_bundles`, compatibility `word_payments`, `word_deliveries`, updated `stream_sessions`, `analytics_outbox` | PaymentVerifier `verify`, PaidReadingWorkflow, InMemoryEventBus |
 | `GET /v1/sessions/:sessionId/events` | Stream session events over SSE | `stream_sessions`, event history | none | InMemoryEventBus subscribe |
 | `POST /v1/sessions/:sessionId/abort` | Stop an active session | `stream_sessions` | updated `stream_sessions` | InMemoryEventBus |
 
@@ -193,7 +191,7 @@ sequenceDiagram
       L-->>G: existing delivery and payment
       G-->>B: same StreamPaymentResponse, no new charge
     else new authorization window
-      G->>S: selectNextWord(article slice, wordsDelivered)
+      G->>L: resolve authorized article slice
       G->>P: verify(session, amount, payment)
       alt Circle / Arc mode
         P->>C: verify authorization and settle actual usage
@@ -221,6 +219,11 @@ sequenceDiagram
 - Repository and navigation endpoints never expose article body text. They only
   return safe metadata: title, author, headings, section ranges, pricing, and
   seller-agent hints.
+- Seller navigation and conversation render deterministic metadata over scoped
+  section-routing results. The content-aware component emits section IDs and
+  confidence only after article/revision filtering; the gateway validates each
+  ID and joins trusted headings. Invalid or unavailable results use heading
+  overlap. Paid words remain reachable only through authorized session delivery.
 - `POST /v1/sessions/:sessionId/stream` and the `/payments` fallback decide the
   next word before settlement but only emit it after authorization verification
   succeeds.

@@ -38,10 +38,10 @@ import type {
   RecordBundleResult,
   SettlementEvidenceInput,
 } from "./repositories/types.js";
-import { DefaultSellerAgent, type SellerAgent } from "./seller-agent/seller-agent.js";
 import { DevelopmentPaymentVerifier, type PaymentVerifier, type PaymentVerificationResult } from "./payments/types.js";
 import { selectionFromRequest, wordsForSelection } from "./words.js";
 import { buildSearchResults } from "./search/search-service.js";
+import { routeArticleSections } from "./search/section-router.js";
 import { buildOpenApiDocument } from "./discovery/openapi.js";
 import { RUBICON_W_LOGO_SVG } from "./discovery/w-logo.js";
 import { resolveBaseX402Config, type BaseX402Config } from "./chain-base.js";
@@ -64,7 +64,6 @@ import type { AnalyticsHealth } from "./analytics/types.js";
 export interface GatewayOptions {
   articleRepository: PublishedArticleRepository;
   ledger: LedgerRepository;
-  sellerAgent?: SellerAgent;
   paymentVerifier?: PaymentVerifier;
   sessionTtlMs: number;
   /** Rubicon fee in basis points. Defaults to 0 — creators keep the full word price. */
@@ -258,7 +257,6 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     logger: options.logger === false ? false : { base: { appEnv } },
   });
   const events = new InMemoryEventBus();
-  const sellerAgent = options.sellerAgent ?? new DefaultSellerAgent();
   const paymentVerifier: PaymentVerifier = options.paymentVerifier ?? new DevelopmentPaymentVerifier();
   const ledger = options.ledger;
   const articles = options.articleRepository;
@@ -308,17 +306,42 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   });
 
   async function buildNavigation(article: ArticleRecord, goal?: string): Promise<ArticleNavigation> {
-    const navigation = await sellerAgent.navigate({ article, goal });
+    const route = await routeArticleSections({ article, query: goal ?? "", repo: articles, embedder: queryEmbedder });
+    const candidates = route.candidates;
+    const recommended = article.sections.find((section) => section.sectionId === candidates[0]?.sectionId)
+      ?? article.sections.find((section) => section.sectionId !== "full-article")
+      ?? article.sections[0];
+    const alternatives = candidates.slice(1)
+      .map((candidate) => candidate.sectionId)
+      .filter((sectionId) => article.sections.some((section) => section.sectionId === sectionId));
+    const confidence = candidates[0]?.confidence ?? 0;
     return {
       articleId: article.id,
       sections: summarizeArticle(article).sections,
       sellerAgent: {
-        recommendedSectionId: navigation.recommendedSectionId,
-        alternativeSectionIds: navigation.alternativeSectionIds,
-        sectionAssessments: navigation.sectionAssessments,
-        rationale: navigation.rationale,
-        safeHints: navigation.safeHints,
-        withheld: navigation.withheld,
+        recommendedSectionId: recommended?.sectionId ?? "full-article",
+        alternativeSectionIds: alternatives,
+        retrievalMode: route.mode,
+        confidence,
+        sectionAssessments: candidates.map((candidate) => {
+          const section = article.sections.find((item) => item.sectionId === candidate.sectionId)!;
+          return {
+            sectionId: section.sectionId,
+            expectedValue: candidate.confidence,
+            minimumUsefulWords: Math.min(section.wordCount, Math.max(1, Math.ceil(section.wordCount * 0.35))),
+            rationale: "Validated section-routing signal.",
+          };
+        }),
+        rationale: confidence < 0.35
+          ? "This is a low-confidence navigation match; consider the alternatives."
+          : "This is the closest validated section match.",
+        safeHints: recommended ? [
+          `The closest match is “${recommended.heading}” (${recommended.wordCount} words).`,
+          article.accessMode === "free"
+            ? "This article is free to read."
+            : `Price: ${article.pricePerWordAtomic} atomic USDC per word.`,
+        ] : ["No narrower section is available; use the full article reading path."],
+        withheld: ["section body text", "quotes", "summaries", "conclusions", "extracted facts"],
       },
       stopConditions: STOP_CONDITIONS,
     };
@@ -1570,17 +1593,18 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
     };
     await ledger.appendMessage(buyerMessage);
 
-    const history = (await ledger.listMessages(conversationId)).map((entry) => ({
-      role: entry.role,
-      content: entry.content,
-    }));
-    const result = await sellerAgent.respond({
-      article,
-      conversationId,
-      goal,
-      history,
-      message,
-    });
+    const navigation = await buildNavigation(article, [goal, message].filter(Boolean).join(" "));
+    const recommendedSectionId = navigation.sellerAgent.recommendedSectionId;
+    const recommended = navigation.sections.find((section) => section.sectionId === recommendedSectionId);
+    const alternatives = navigation.sellerAgent.alternativeSectionIds
+      .map((sectionId) => navigation.sections.find((section) => section.sectionId === sectionId)?.heading)
+      .filter((heading): heading is string => Boolean(heading));
+    const result = {
+      recommendedSectionId,
+      reply: recommended
+        ? `The closest match is “${recommended.heading}”.${alternatives.length ? ` Alternatives: ${alternatives.map((heading) => `“${heading}”`).join(", ")}.` : ""}`
+        : "No narrower section match is available; use the full article reading path.",
+    };
     const sellerMessage: SellerAgentMessageRecord = {
       id: randomUUID(),
       conversationId,

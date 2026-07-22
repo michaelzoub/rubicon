@@ -74,3 +74,7 @@ The gateway tolerates lag and absence:
   OpenAI and always uses lexical scoring.
 - The search RPC (`search_article_sections`) joins on `articles.state = 'live'`
   so embeddings for draft/paused/deleted articles never surface.
+- Navigation supplies the selected article ID and its live revision to the RPC,
+  which applies both constraints before ranking. The gateway validates returned
+  IDs against the live section list and loads headings only from public metadata.
+  The retrieval boundary returns IDs and similarity signals, never body text.

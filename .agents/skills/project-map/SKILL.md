@@ -63,7 +63,7 @@ Gateway processes require `APP_ENV=development|staging|production`. All environm
 
 ### Gateway API and paid-reading workflow
 
-`apps/gateway/src/server.ts` owns `/health`, endpoint/repository discovery, article navigation, seller conversations, session creation, preferred session streaming, legacy chunk payments, SSE events, and abort/receipt routes. Keep HTTP concerns here; metering, transitions, settlement flushes, budget calculations, and receipt construction belong in `apps/gateway/src/workflows/paid-reading.ts`. `seller-agent/seller-agent.ts` guides navigation and conversation but does not release paid words.
+`apps/gateway/src/server.ts` owns `/health`, endpoint/repository discovery, article navigation, constrained seller conversations, session creation, preferred session streaming, legacy chunk payments, SSE events, and abort/receipt routes. `search/section-router.ts` requests article-and-revision-scoped embedding hits, emits IDs/confidence only, validates them against live sections, and falls back to heading overlap. The server renders trusted headings/pricing only; paid words remain exclusive to `workflows/paid-reading.ts`.
 
 ### Content repositories
 
@@ -130,6 +130,7 @@ There is no browser UI or CSS in this repo. User-facing surfaces are CLI text/JS
 
 ## Recent architecture changes
 
+- 2026-07-21: Constrained seller navigation to validated section routing with article/revision-scoped semantic retrieval, IDs-only ranking output, deterministic conversations, and heading fallback.
 - 2026-07-20: Deployed profiles no longer require unused payment-webhook environment variables; payment-provider callback registration remains provider-owned. Staging accepts Railway-generated public domains even when their service name contains `production`, while retaining credential and network safety checks.
 - 2026-07-15: Replaced per-word persistence with transactionally committed `read_bundles`, bulk word audit rows, evidence-only many-to-many settlements, and a replay-safe Postgres outbox feeding optional ClickHouse analytics; added analytics health, backfill, and reconciliation commands.
 - 2026-07-10: Made `creator_wallets` network-keyed so each creator can retain an Arc payout row and a verified AgentCash Base (`eip155:8453`) row; the Base whole-article x402 lane resolves only the latter.
@@ -140,7 +141,6 @@ There is no browser UI or CSS in this repo. User-facing surfaces are CLI text/JS
 - 2026-07-03: Updated published package integrations and buyer-facing package versions.
 - 2026-07-02: Reduced agent setup friction across CLI, SDK, and hosted setup guidance.
 - 2026-06-26: Moved paid-word release responsibility out of the seller agent and into the server-owned session workflow.
-- 2026-06-23: Aligned CLI code and the published server-side agent runbook.
 
 ## Update rules
 

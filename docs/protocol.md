@@ -56,9 +56,12 @@ returns the same list.
 
 `GET /v1/articles/:articleId/navigation?goal=<goal>`
 
-Returns safe article metadata and a seller-agent navigation recommendation:
-the recommended starting section, alternatives, a rationale, and safe hints. It
-never returns body text, quotes, conclusions, summaries, or unpaid facts.
+Returns safe article metadata and a constrained section-routing recommendation:
+the recommended section, optional alternatives, retrieval mode/confidence, and
+safe word-count/pricing hints. Embedding retrieval is scoped to this article and
+its live revision; returned IDs are validated and headings are loaded from
+trusted metadata. It never returns body text, quotes, conclusions, summaries,
+explanations derived from content, or unpaid facts.
 
 ## Seller-Agent Conversations
 
@@ -70,8 +73,8 @@ never returns body text, quotes, conclusions, summaries, or unpaid facts.
 
 Opens a conversation with the article's seller agent. Returns a
 `conversationId`, the article summary, navigation, and any seller reply. The
-seller agent helps the buyer choose a starting section without leaking unpaid
-content.
+seller endpoint interprets every turn as navigation and renders only validated
+section headings and safe metadata; it does not answer the underlying question.
 
 `POST /v1/seller-agent/conversations/:conversationId/messages`
 

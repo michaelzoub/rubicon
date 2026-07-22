@@ -236,10 +236,15 @@ export class SupabasePublishedArticleRepository implements PublishedArticleRepos
     };
   }
 
-  async searchSections(queryEmbedding: number[], matchCount: number): Promise<Array<{ articleId: string; sectionId: string; revision: number; similarity: number }>> {
+  async searchSections(input: { queryEmbedding: number[]; articleId: string; revision: number; matchCount: number }): Promise<Array<{ articleId: string; sectionId: string; revision: number; similarity: number }>> {
     const { data, error } = await this.supabase.rpc<Array<{ article_id: string; section_id: string; revision: number; similarity: number }>>(
       "search_article_sections",
-      { query_embedding: `[${queryEmbedding.join(",")}]`, match_count: matchCount },
+      {
+        query_embedding: `[${input.queryEmbedding.join(",")}]`,
+        target_article_id: input.articleId,
+        target_revision: input.revision,
+        match_count: input.matchCount,
+      },
     );
     if (error) {
       throw new SupabaseRepositoryError("Supabase semantic search RPC failed", error);

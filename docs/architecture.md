@@ -33,7 +33,7 @@ sequenceDiagram
   loop while useful and authorized
     G->>C: Verify remaining authorization
     C-->>W: Creator receives the full word price
-    G->>S: selectNextWord
+    G->>D: Select the next authorized article slice
     G->>D: Commit one read_bundle + bulk word audit + outbox event
     G-->>B: article.word + article.usage
     G-->>C: Queue settlement after commit
@@ -104,12 +104,14 @@ smoothly, and the gateway enforces the authorized budget before every reveal.
 
 ## Seller agent
 
-The seller agent is a first-class component with `navigate`, `respond`, and
-`selectNextWord`. It uses a pluggable model/provider abstraction. A deterministic
-development fallback ships for local runs with no model key — it is explicitly
-development behavior, not the full production seller agent. The seller agent may
-inspect private article content internally, but its unpaid outputs only ever
-reveal safe navigation information.
+Seller interaction is a constrained section router split into three trust
+domains. Safe seller endpoints return only validated section IDs, trusted public
+headings, confidence/mode, word counts, and pricing. Content-derived retrieval
+searches embeddings with mandatory selected-article and live-revision filters
+and emits IDs plus similarity signals only; the gateway rejects invalid hits and
+falls back to public-heading overlap. Paid word delivery remains exclusively in
+the authorized reading-session workflow. Conversation replies use the same
+deterministic metadata renderer, never free-form model output.
 
 ## Fee policy
 

@@ -58,7 +58,12 @@ export interface PublishedArticleRepository {
    * Supabase adapter (pgvector RPC); the in-memory demo adapter does not
    * implement it so demo mode is lexical-only.
    */
-  searchSections?(queryEmbedding: number[], matchCount: number): Promise<Array<{ articleId: string; sectionId: string; revision: number; similarity: number }>>;
+  searchSections?(input: {
+    queryEmbedding: number[];
+    articleId: string;
+    revision: number;
+    matchCount: number;
+  }): Promise<Array<{ articleId: string; sectionId: string; revision: number; similarity: number }>>;
 }
 
 export interface RecordWordDeliveryResult {
