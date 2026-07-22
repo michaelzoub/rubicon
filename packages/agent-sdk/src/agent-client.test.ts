@@ -21,6 +21,39 @@ const chunkPaymentEngine: AgentPaymentEngine = {
   },
 };
 
+test("verification runs before session creation and the detector key is isolated to that request", async () => {
+  const calls: string[] = [];
+  const fetcher = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const url = String(input); calls.push(url);
+    const headers = new Headers(init?.headers);
+    if (url.endsWith("/v1/authorship/analyze")) {
+      assert.equal(headers.get("x-rubicon-pangram-api-key"), "pangram-secret");
+      return jsonResponse({ articleId: "article_1", provider: "pangram", metrics: { humanWritten: 0.1, aiGenerated: 0.9, aiAssisted: 0, humanSegments: 1, aiGeneratedSegments: 9, aiAssistedSegments: 0 } });
+    }
+    assert.equal(headers.has("x-rubicon-pangram-api-key"), false);
+    throw new Error("session must not be created after rejection");
+  }) as typeof fetch;
+  const client = new RubiconClient({
+    baseUrl: "http://rubicon.test", fetch: fetcher, pangramApiKey: "pangram-secret",
+    authorshipVerification: { mode: "always", provider: "pangram", decision: { mode: "threshold", minimumHumanWritten: 0.8 }, onUnavailable: "block", onError: "block" },
+  });
+  await assert.rejects(client.run({ articleId: "article_1", maxSpendAtomic: "10" }), /rejected the article/);
+  assert.deepEqual(calls, ["http://rubicon.test/v1/authorship/analyze"]);
+});
+
+test("configured key causes no detector request when verification defaults to never", async () => {
+  let detectorCalled = false;
+  const client = new RubiconClient({
+    baseUrl: "http://rubicon.test", pangramApiKey: "configured-only",
+    fetch: (async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+      if (String(input).includes("authorship")) detectorCalled = true;
+      throw new Error("stop after proving the first call is the session");
+    }) as unknown as typeof fetch,
+  });
+  await assert.rejects(client.run({ articleId: "article_1", maxSpendAtomic: "10" }));
+  assert.equal(detectorCalled, false);
+});
+
 test("run receipt preserves Gateway settlement receipt fields", async () => {
   const fetcher = (async (input: Parameters<typeof fetch>[0]) => {
     const url = String(input);

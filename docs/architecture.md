@@ -20,11 +20,18 @@ sequenceDiagram
   participant S as Seller agent
   participant D as Shared Postgres
   participant C as Circle / Arc
+  participant P as Pangram (optional)
   participant W as Creator wallet
 
   B->>G: Open seller conversation (goal)
   G->>S: navigate / respond (safe metadata only)
   S-->>B: Recommended section, no unpaid content
+  opt Buyer policy requests authorship verification
+    B->>G: Analyze candidate + buyer Pangram key
+    G->>P: Private body (fixed provider endpoint)
+    P-->>G: Provider response
+    G-->>B: Sanitized aggregate metrics only
+  end
   B->>G: Start session (budget)
   G->>D: Load live article, price/word, verified wallet
   G-->>B: Session + max-spend authorization terms
@@ -48,7 +55,10 @@ sequenceDiagram
   primitives, and the shared API contract used by rubicon-marketing.
 - **apps/gateway** — the Fastify public agent API, seller agent, persistence
   adapters, and payment verifiers.
-- **packages/agent-sdk** — the buyer-agent SDK (`RubiconClient.read()`).
+- **packages/agent-sdk** — the buyer-agent SDK (`RubiconClient.read()`). It owns
+  optional verification policy and approval/rejection orchestration.
+- **apps/gateway/src/authorship** — fixed provider registry and Pangram adapter;
+  this is the only layer that combines private article text with detector calls.
 
 ## Persistence
 

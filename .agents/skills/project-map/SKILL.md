@@ -63,7 +63,7 @@ Gateway processes require `APP_ENV=development|staging|production`. All environm
 
 ### Gateway API and paid-reading workflow
 
-`apps/gateway/src/server.ts` owns `/health`, endpoint/repository discovery, article navigation, constrained seller conversations, session creation, preferred session streaming, legacy chunk payments, SSE events, and abort/receipt routes. `search/section-router.ts` requests article-and-revision-scoped embedding hits, emits IDs/confidence only, validates them against live sections, and falls back to heading overlap. The server renders trusted headings/pricing only; paid words remain exclusive to `workflows/paid-reading.ts`.
+`apps/gateway/src/server.ts` owns `/health`, endpoint/repository discovery, article navigation, constrained seller conversations, optional pre-session authorship analysis, session creation, preferred session streaming, legacy chunk payments, SSE events, and abort/receipt routes. `apps/gateway/src/authorship/` owns the fixed detector allowlist and Pangram adapter; only this boundary combines private bodies with ephemeral buyer detector credentials and it emits sanitized aggregate metrics only. `search/section-router.ts` requests article-and-revision-scoped embedding hits, emits IDs/confidence only, validates them against live sections, and falls back to heading overlap. The server renders trusted headings/pricing only; paid words remain exclusive to `workflows/paid-reading.ts`.
 
 ### Content repositories
 
@@ -79,7 +79,7 @@ Gateway processes require `APP_ENV=development|staging|production`. All environm
 
 ### Buyer SDK
 
-`packages/agent-sdk/src/agent-client.ts` owns discovery/conversation, session authorization, streamed delivery, stop conditions, aborts, and final receipts. `payment-engine.ts`, `circle-agent-wallet.ts`, and `circle-cli-gateway-payment.ts` implement authorization strategies. When protocol fields change, update core first, rebuild it, then update SDK consumers and exports.
+`packages/agent-sdk/src/agent-client.ts` owns discovery/conversation, optional authorship verification policy and pre-session approval, session authorization, streamed delivery, stop conditions, aborts, and final receipts. `payment-engine.ts`, `circle-agent-wallet.ts`, and `circle-cli-gateway-payment.ts` implement authorization strategies. When protocol fields change, update core first, rebuild it, then update SDK consumers and exports.
 
 ### CLI
 
@@ -130,6 +130,7 @@ There is no browser UI or CSS in this repo. User-facing surfaces are CLI text/JS
 
 ## Recent architecture changes
 
+- 2026-07-21: Added optional SDK-orchestrated, pre-purchase authorship verification through a fixed Pangram gateway adapter; buyer keys are request-scoped and only sanitized aggregate metrics leave the gateway.
 - 2026-07-21: Constrained seller navigation to validated section routing with article/revision-scoped semantic retrieval, IDs-only ranking output, deterministic conversations, and heading fallback.
 - 2026-07-20: Deployed profiles no longer require unused payment-webhook environment variables; payment-provider callback registration remains provider-owned. Staging accepts Railway-generated public domains even when their service name contains `production`, while retaining credential and network safety checks.
 - 2026-07-15: Replaced per-word persistence with transactionally committed `read_bundles`, bulk word audit rows, evidence-only many-to-many settlements, and a replay-safe Postgres outbox feeding optional ClickHouse analytics; added analytics health, backfill, and reconciliation commands.

@@ -11,6 +11,8 @@ import {
   usageForWords,
   lexicalSearch,
   type ArticleNavigation,
+  type AnalyzeAuthorshipRequest,
+  type AnalyzeAuthorshipResponse,
   type ArticleSummary,
   type ConversationMessage,
   type GatewayEvent,
@@ -60,6 +62,8 @@ import {
   PaidReadingWorkflow,
 } from "./workflows/paid-reading.js";
 import type { AnalyticsHealth } from "./analytics/types.js";
+import { createAuthorshipProviderRegistry } from "./authorship/registry.js";
+import { AuthorshipProviderError, type AuthorshipProvider } from "./authorship/types.js";
 
 export interface GatewayOptions {
   articleRepository: PublishedArticleRepository;
@@ -88,6 +92,8 @@ export interface GatewayOptions {
   baseX402Verifier?: BaseX402Verifier;
   /** Read-only outbox/worker health. Analytics availability never gates reads. */
   analyticsHealth?: () => Promise<AnalyticsHealth>;
+  /** Test seam for the fixed authorship-provider allowlist. */
+  authorshipProviders?: ReadonlyMap<string, AuthorshipProvider>;
 }
 
 const STOP_CONDITIONS: StreamStopCondition[] = [
@@ -238,6 +244,7 @@ const ENDPOINTS = [
   { method: "GET", path: "/v1/articles/:articleId/navigation", description: "Safe seller-agent navigation; no unpaid body text." },
   { method: "POST", path: "/v1/seller-agent/conversations", description: "Opens a conversation with an article's seller agent." },
   { method: "POST", path: "/v1/seller-agent/conversations/:conversationId/messages", description: "Sends a message to the seller agent." },
+  { method: "POST", path: "/v1/authorship/analyze", description: "Optionally analyzes a private article before a paid session is created." },
   { method: "POST", path: "/v1/x402/articles/:articleId", description: "AgentCash lane: buy a whole article in one x402 USDC payment on Base. Unpaid requests return the x402 402 challenge." },
   { method: "POST", path: "/v1/sessions", description: "Opens a budgeted reading session and returns Circle / Arc authorization terms." },
   { method: "POST", path: "/v1/sessions/:sessionId/stream", description: "Preferred path: streams words against a session-level authorization." },
@@ -254,7 +261,10 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       : "development"
   );
   const app = Fastify({
-    logger: options.logger === false ? false : { base: { appEnv } },
+    logger: options.logger === false ? false : {
+      base: { appEnv },
+      redact: ["req.headers.x-rubicon-pangram-api-key", "headers.x-rubicon-pangram-api-key"],
+    },
   });
   const events = new InMemoryEventBus();
   const paymentVerifier: PaymentVerifier = options.paymentVerifier ?? new DevelopmentPaymentVerifier();
@@ -264,6 +274,7 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
   const gatewayBaseUrl = options.gatewayBaseUrl ?? `http://localhost:${runtimeEnv.GATEWAY_PORT ?? runtimeEnv.PORT ?? 8787}`;
   const agentApiKey = runtimeEnv.RUBICON_AGENT_API_KEY;
   const queryEmbedder = options.queryEmbedder ?? null;
+  const authorshipProviders = options.authorshipProviders ?? createAuthorshipProviderRegistry();
   // AgentCash x402 (Base) purchase lane. Config is env-driven and isolated from
   // the Circle/Arc path; a bad config disables the lane rather than crashing boot.
   let baseX402Config: BaseX402Config | undefined;
@@ -622,6 +633,36 @@ export function createGateway(options: GatewayOptions): FastifyInstance {
       };
     },
   );
+
+  app.post<{ Body: AnalyzeAuthorshipRequest }>("/v1/authorship/analyze", async (request, reply) => {
+    const body = request.body;
+    if (!body || body.provider !== "pangram" || typeof body.articleId !== "string") {
+      return reply.code(400).send({ error: "invalid_authorship_request" });
+    }
+    const apiKeyHeader = request.headers["x-rubicon-pangram-api-key"];
+    const apiKey = Array.isArray(apiKeyHeader) ? undefined : apiKeyHeader;
+    if (!apiKey || apiKey.length > 512) {
+      return reply.code(503).send({ error: "authorship_unavailable" });
+    }
+    const article = await articles.getPublishedArticle(body.articleId);
+    if (!article) return reply.code(404).send({ error: "article_not_available" });
+    const provider = authorshipProviders.get(body.provider);
+    if (!provider) return reply.code(400).send({ error: "unsupported_authorship_provider" });
+    try {
+      const response: AnalyzeAuthorshipResponse = {
+        articleId: article.id,
+        provider: provider.name,
+        metrics: await provider.analyze({ text: article.body, apiKey }),
+      };
+      return reply.send(response);
+    } catch (error) {
+      const kind = error instanceof AuthorshipProviderError ? error.kind : "error";
+      // Deliberately omit the provider exception and response from logs and output.
+      return reply.code(kind === "unavailable" ? 503 : 502).send({
+        error: kind === "unavailable" ? "authorship_unavailable" : "authorship_error",
+      });
+    }
+  });
 
   app.post<{ Body: StartConversationRequest }>("/v1/seller-agent/conversations", async (request, reply) => {
     const article = await articles.getPublishedArticle(request.body.articleId);

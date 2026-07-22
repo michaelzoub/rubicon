@@ -1,6 +1,7 @@
 import { EventSource } from "eventsource";
 import type {
   ArticleSummary,
+  AnalyzeAuthorshipResponse,
   Budget,
   GatewayEvent,
   SearchResponse,
@@ -30,6 +31,20 @@ export interface RubiconClientOptions {
    * hanging the process indefinitely. Set to 0 to disable. Defaults to 60s.
    */
   requestTimeoutMs?: number;
+  /** Pangram credential forwarded only on /v1/authorship/analyze requests. */
+  pangramApiKey?: string;
+  /** Defaults to mode "never", even when pangramApiKey is configured. */
+  authorshipVerification?: AuthorshipVerificationConfig;
+}
+
+export interface AuthorshipVerificationConfig {
+  mode: "never" | "always" | "agent_decides";
+  provider: "pangram";
+  decision:
+    | { mode: "threshold"; minimumHumanWritten?: number; maximumAiGenerated?: number }
+    | { mode: "agent_decides" };
+  onUnavailable: "continue" | "block";
+  onError: "continue" | "block";
 }
 
 /** Default per-request gateway timeout. */
@@ -69,6 +84,7 @@ export interface ReadReceipt {
 export type ReadGranularity = number | "section" | "article";
 
 export type RubiconReadEvent =
+  | { type: "authorship.analyzed"; result: AnalyzeAuthorshipResponse; approved: boolean }
   | { type: "session.started"; session: StartSessionResponse }
   | { type: "seller.message"; content: string; recommendedSectionId?: string }
   | {
@@ -137,6 +153,10 @@ export interface ReadOptions {
     amountPaid: bigint;
   }) => boolean | Promise<boolean>;
   metadata?: Record<string, unknown>;
+  /** For client mode agent_decides, explicitly opt this candidate into a scan. */
+  verifyAuthorship?: boolean;
+  /** Required when the configured decision mode is agent_decides. */
+  decideAuthorship?: (result: AnalyzeAuthorshipResponse) => boolean | Promise<boolean>;
 }
 
 export interface RunOptions extends ReadOptions {
@@ -200,6 +220,26 @@ export class RubiconClient {
       url.searchParams.set("limit", String(options.limit));
     }
     return this.readJson(await this.fetcher(url.toString(), this.timeoutInit({ headers: this.headers() })));
+  }
+
+  /** Analyze a candidate without opening a paid session. */
+  async analyzeAuthorship(articleId: string): Promise<AnalyzeAuthorshipResponse> {
+    const config = this.options.authorshipVerification;
+    const provider = config?.provider ?? "pangram";
+    const apiKey = this.options.pangramApiKey;
+    if (!apiKey) throw new AuthorshipRequestError("unavailable");
+    const response = await this.fetcher(`${this.baseUrl}/v1/authorship/analyze`, this.timeoutInit({
+      method: "POST",
+      headers: this.headers({
+        "content-type": "application/json",
+        "x-rubicon-pangram-api-key": apiKey,
+      }),
+      body: JSON.stringify({ articleId, provider }),
+    }));
+    if (!response.ok) {
+      throw new AuthorshipRequestError(response.status === 503 ? "unavailable" : "error");
+    }
+    return response.json() as Promise<AnalyzeAuthorshipResponse>;
   }
 
   async startConversation(input: {
@@ -363,6 +403,29 @@ export class RubiconClient {
     }
     if (options.granularity === "section" && !sectionId) {
       throw new Error("section granularity requires sectionId or a goal that selects a section");
+    }
+
+    // Verification is intentionally before startSession: a rejected article
+    // creates no paid session and no authorization/payment work.
+    const verification = this.options.authorshipVerification;
+    const shouldVerify = verification?.mode === "always"
+      || (verification?.mode === "agent_decides" && options.verifyAuthorship === true);
+    if (shouldVerify && verification) {
+      let result: AnalyzeAuthorshipResponse | undefined;
+      try {
+        result = await this.analyzeAuthorship(options.articleId);
+      } catch (error) {
+        const kind = error instanceof AuthorshipRequestError ? error.kind : "error";
+        const policy = kind === "unavailable" ? verification.onUnavailable : verification.onError;
+        if (policy === "block") throw error;
+      }
+      if (result) {
+        const approved = verification.decision.mode === "threshold"
+          ? passesThreshold(result, verification.decision)
+          : await requireAgentDecision(options, result);
+        yield { type: "authorship.analyzed", result, approved };
+        if (!approved) throw new AuthorshipVerificationRejectedError(result);
+      }
     }
 
     // Explicit selection (multi-section union or a word range) takes precedence
@@ -605,6 +668,42 @@ export class RubiconClient {
     }
     return response.json() as Promise<T>;
   }
+}
+
+class AuthorshipRequestError extends Error {
+  constructor(readonly kind: "unavailable" | "error") {
+    super(`Authorship verification ${kind}`);
+    this.name = "AuthorshipRequestError";
+  }
+}
+
+export class AuthorshipVerificationRejectedError extends Error {
+  constructor(readonly result: AnalyzeAuthorshipResponse) {
+    super("Authorship verification rejected the article before purchase");
+    this.name = "AuthorshipVerificationRejectedError";
+  }
+}
+
+function passesThreshold(
+  result: AnalyzeAuthorshipResponse,
+  decision: { minimumHumanWritten?: number; maximumAiGenerated?: number },
+): boolean {
+  const minimum = decision.minimumHumanWritten;
+  const maximum = decision.maximumAiGenerated;
+  if (minimum !== undefined && (!validThreshold(minimum) || result.metrics.humanWritten < minimum)) return false;
+  if (maximum !== undefined && (!validThreshold(maximum) || result.metrics.aiGenerated > maximum)) return false;
+  return true;
+}
+
+function validThreshold(value: number): boolean {
+  return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+async function requireAgentDecision(options: ReadOptions, result: AnalyzeAuthorshipResponse): Promise<boolean> {
+  if (!options.decideAuthorship) {
+    throw new Error("Authorship decision mode agent_decides requires decideAuthorship");
+  }
+  return options.decideAuthorship(result);
 }
 
 /** Backwards-compatible alias. */

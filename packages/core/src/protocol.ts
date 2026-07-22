@@ -84,6 +84,33 @@ export interface SearchResponse {
   results: SearchResultSummary[];
 }
 
+// ---------------------------------------------------------------------------
+// Optional pre-purchase authorship verification
+// ---------------------------------------------------------------------------
+
+export type AuthorshipProviderName = "pangram";
+
+export interface AnalyzeAuthorshipRequest {
+  articleId: string;
+  provider: AuthorshipProviderName;
+}
+
+/** Strictly allowlisted detector output. Never contains article text or provider links. */
+export interface AuthorshipMetrics {
+  humanWritten: number;
+  aiGenerated: number;
+  aiAssisted: number;
+  humanSegments: number;
+  aiGeneratedSegments: number;
+  aiAssistedSegments: number;
+}
+
+export interface AnalyzeAuthorshipResponse {
+  articleId: string;
+  provider: AuthorshipProviderName;
+  metrics: AuthorshipMetrics;
+}
+
 export interface ArticleNavigation {
   articleId: string;
   sections: ArticleSectionSummary[];

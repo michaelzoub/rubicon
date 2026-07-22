@@ -13,6 +13,7 @@ import { assertRailwayCompatibleDatabaseUrl, describeDatabaseUrl, resolvePgPoolC
 import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
 import type { PaymentVerifier } from "./payments/types.js";
 import type { RecordBundleResult, RecordPaidBundleInput } from "./repositories/types.js";
+import type { AuthorshipProvider } from "./authorship/types.js";
 
 const PRICE = 5n; // atomic USDC per word
 const PLAIN_BODY = Array.from({ length: 200 }, (_, index) => `w${index + 1}`).join(" ");
@@ -38,6 +39,7 @@ function setup(input?: {
   gatewayFeeBps?: number;
   paymentVerifier?: PaymentVerifier;
   ledger?: InMemoryLedgerRepository;
+  authorshipProviders?: ReadonlyMap<string, AuthorshipProvider>;
 }): {
   app: FastifyInstance;
   published: InMemoryPublishedArticleRepository;
@@ -64,9 +66,43 @@ function setup(input?: {
     gatewayBaseUrl: "http://test",
     paymentVerifier: input?.paymentVerifier,
     logger: false,
+    authorshipProviders: input?.authorshipProviders,
   });
   return { app, published, ledger };
 }
+
+test("authorship route uses private text and returns sanitized metrics without creating a session", async () => {
+  let received: { text: string; apiKey: string } | undefined;
+  const provider: AuthorshipProvider = {
+    name: "pangram",
+    async analyze(input) {
+      received = input;
+      return { humanWritten: 0.8, aiGenerated: 0.1, aiAssisted: 0.1, humanSegments: 8, aiGeneratedSegments: 1, aiAssistedSegments: 1 };
+    },
+  };
+  const { app, ledger } = setup({ authorshipProviders: new Map([["pangram", provider]]) });
+  const response = await app.inject({
+    method: "POST", url: "/v1/authorship/analyze",
+    headers: { "x-rubicon-pangram-api-key": "buyer-secret" },
+    payload: { articleId: "art-plain", provider: "pangram" },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(received, { text: PLAIN_BODY, apiKey: "buyer-secret" });
+  assert.equal(response.body.includes("buyer-secret"), false);
+  assert.equal(response.body.includes("w1"), false);
+  assert.equal(await ledger.getSession("anything"), null);
+});
+
+test("authorship route rejects missing keys and buyer-supplied provider URLs", async () => {
+  const { app } = setup();
+  const missing = await app.inject({ method: "POST", url: "/v1/authorship/analyze", payload: { articleId: "art-plain", provider: "pangram" } });
+  assert.equal(missing.statusCode, 503);
+  const url = await app.inject({
+    method: "POST", url: "/v1/authorship/analyze", headers: { "x-rubicon-pangram-api-key": "key" },
+    payload: { articleId: "art-plain", provider: "https://attacker.example" },
+  });
+  assert.equal(url.statusCode, 400);
+});
 
 async function startSession(app: FastifyInstance, articleId = "art-plain", maxAmountAtomic = "1000000"): Promise<StartSessionResponse> {
   const res = await app.inject({
