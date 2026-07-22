@@ -28,7 +28,7 @@ staging and production.
 | Runtime database | `DATABASE_URL` | Full Postgres URL. Use a different database/project for each environment. |
 | Published content/API database | `SUPABASE_URL` and one of `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `SUPABASE_PUBLISHABLE_KEY`, or `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Staging and production projects and credentials must be distinct. |
 | Payments | `RUBICON_PAYMENTS=circle`, `CIRCLE_FACILITATOR_URL`, `CIRCLE_X402_NETWORKS`, `BASE_X402_NETWORK` | Staging accepts recognized testnets only and requires Base Sepolia (`eip155:84532`). Production rejects testnets and requires Base mainnet (`eip155:8453`). |
-| API credentials | `RUBICON_AGENT_API_KEY` | Must be unique per environment. `OPENAI_API_KEY`, `CDP_API_KEY_ID`, and `CDP_API_KEY_SECRET` are optional adapter credentials, but must also be environment-scoped when used. |
+| Optional API perimeter | `RUBICON_AGENT_API_KEY` | When set, requires its bearer token for normal `/v1/*` routes. Leave unset for the public agent purchase API. `OPENAI_API_KEY`, `CDP_API_KEY_ID`, and `CDP_API_KEY_SECRET` are optional adapter credentials. |
 | Public URL | `GATEWAY_BASE_URL` | HTTPS. A staging hostname must contain `staging`, `stage`, or `test`; Railway's generated `*.up.railway.app` domains are also accepted because service names may include `production`. Production rejects staging/test markers. |
 
 ClickHouse is optional. To enable analytics, set
@@ -59,7 +59,8 @@ CIRCLE_FACILITATOR_URL=https://gateway-api-testnet.circle.com
 CIRCLE_X402_NETWORKS=eip155:5042002
 CIRCLE_ARC_PRIVATE_MAINNET=false
 BASE_X402_NETWORK=eip155:84532
-RUBICON_AGENT_API_KEY=...
+# Optional: set only to make normal /v1/* routes private.
+# RUBICON_AGENT_API_KEY=...
 STAGING_GATEWAY_BASE_URL=https://staging.api.example.com
 ANALYTICS_ENABLED=true
 CLICKHOUSE_URL=https://clickhouse.example.com

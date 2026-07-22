@@ -12,7 +12,6 @@ function sharedEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     CIRCLE_X402_NETWORKS: "eip155:5042002",
     CIRCLE_ARC_PRIVATE_MAINNET: "false",
     BASE_X402_NETWORK: "eip155:84532",
-    RUBICON_AGENT_API_KEY: "agent-key",
     ...overrides,
   };
 }
@@ -78,4 +77,12 @@ test("staging accepts a Railway-generated public domain even when its service na
 test("deployed profiles do not require unused payment webhook configuration", () => {
   const env = sharedEnv({ APP_ENV: "staging", STAGING_GATEWAY_BASE_URL: "https://staging.api.rubiconpay.xyz" });
   assert.equal(loadGatewayEnvironment(env).appEnv, "staging");
+});
+
+test("deployed profiles allow public agent routes when no API key is configured", () => {
+  const config = loadGatewayEnvironment(sharedEnv({
+    APP_ENV: "staging",
+    STAGING_GATEWAY_BASE_URL: "https://staging.api.rubiconpay.xyz",
+  }));
+  assert.equal(config.agentApiKey, undefined);
 });
