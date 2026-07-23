@@ -1,5 +1,8 @@
--- Replace global section search with an article-and-revision-scoped RPC.
-drop function if exists search_article_sections(vector, integer);
+-- Add an article-and-revision-scoped overload alongside the legacy global RPC.
+-- The legacy function remains available so older gateway instances and shared
+-- staging/production deployments can roll forward without a breaking schema
+-- change. The gateway prefers this scoped overload and has a temporary
+-- compatibility fallback for databases whose schema cache has not refreshed.
 
 create or replace function search_article_sections(
   query_embedding vector(1536),

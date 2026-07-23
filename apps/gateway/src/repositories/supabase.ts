@@ -237,7 +237,7 @@ export class SupabasePublishedArticleRepository implements PublishedArticleRepos
   }
 
   async searchSections(input: { queryEmbedding: number[]; articleId: string; revision: number; matchCount: number }): Promise<Array<{ articleId: string; sectionId: string; revision: number; similarity: number }>> {
-    const { data, error } = await this.supabase.rpc<Array<{ article_id: string; section_id: string; revision: number; similarity: number }>>(
+    const scoped = await this.supabase.rpc<Array<{ article_id: string; section_id: string; revision: number; similarity: number }>>(
       "search_article_sections",
       {
         query_embedding: `[${input.queryEmbedding.join(",")}]`,
@@ -246,6 +246,21 @@ export class SupabasePublishedArticleRepository implements PublishedArticleRepos
         match_count: input.matchCount,
       },
     );
+    let data = scoped.data;
+    let error = scoped.error;
+
+    // Migration 0012 adds article/revision scope. During a rolling deploy (or
+    // before Supabase refreshes its schema cache), the old global RPC can still
+    // be the only callable signature. Preserve semantic routing in that window
+    // and apply the scope in the gateway until the new function is available.
+    if (error?.code === "PGRST202") {
+      const legacy = await this.supabase.rpc<Array<{ article_id: string; section_id: string; revision: number; similarity: number }>>(
+        "search_article_sections",
+        { query_embedding: `[${input.queryEmbedding.join(",")}]`, match_count: input.matchCount * 10 },
+      );
+      data = legacy.data?.filter((row) => row.article_id === input.articleId && row.revision === input.revision).slice(0, input.matchCount) ?? null;
+      error = legacy.error;
+    }
     if (error) {
       throw new SupabaseRepositoryError("Supabase semantic search RPC failed", error);
     }

@@ -194,13 +194,18 @@ class FakeSupabase implements SupabaseReader {
     { creator_id: "creator-db", address: "0x0000000000000000000000000000000000000db0", network: "arc-testnet", verified: true },
   ];
   error: { message: string; details?: string } | null = null;
+  semanticRows: Array<{ article_id: string; section_id: string; revision: number; similarity: number }> = [];
+  scopedRpcUnavailable = false;
 
   from<T = unknown>(table: string) {
     return new FakeSupabaseQuery<T>(this, table);
   }
 
-  rpc<T = unknown>(_fn: string, _args: Record<string, unknown>): Promise<{ data: T | null; error: { message: string; details?: string } | null }> {
-    return Promise.resolve({ data: null, error: null });
+  rpc<T = unknown>(_fn: string, args: Record<string, unknown>): Promise<{ data: T | null; error: { code?: string; message: string; details?: string } | null }> {
+    if (this.scopedRpcUnavailable && "target_article_id" in args) {
+      return Promise.resolve({ data: null, error: { code: "PGRST202", message: "scoped RPC is not in the schema cache" } });
+    }
+    return Promise.resolve({ data: this.semanticRows as T, error: null });
   }
 
   rowsFor(table: string): unknown[] {
@@ -865,6 +870,40 @@ test("repository endpoint returns live article records from Supabase", async () 
       },
     ],
   });
+  await app.close();
+});
+
+test("seller-agent conversation preserves semantic routing while the scoped RPC is not in schema cache", async () => {
+  const supabase = new FakeSupabase();
+  supabase.sections = [
+    { id: "sec-method", article_id: "art-db", section_id: "methodology", heading: "How the study was conducted", level: 1, word_start: 0, word_count: 3, ordinal: 1 },
+    { id: "sec-results", article_id: "art-db", section_id: "results", heading: "What happened", level: 1, word_start: 3, word_count: 3, ordinal: 2 },
+  ];
+  supabase.semanticRows = [{ article_id: "art-db", section_id: "methodology", revision: 1, similarity: 0.91 }];
+  supabase.scopedRpcUnavailable = true;
+  const app = createGateway({
+    articleRepository: new SupabasePublishedArticleRepository(supabase),
+    ledger: new InMemoryLedgerRepository(),
+    sessionTtlMs: 60_000,
+    gatewayBaseUrl: "http://test",
+    logger: false,
+    queryEmbedder: async () => [0.25],
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/seller-agent/conversations",
+    payload: {
+      articleId: "art-db",
+      goal: "understand the research design",
+      message: "Which section explains how the study was conducted?",
+    },
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  const body = response.json() as { navigation: { sellerAgent: { retrievalMode: string; recommendedSectionId: string } }; messages: Array<{ role: string; recommendedSectionId?: string }> };
+  assert.equal(body.navigation.sellerAgent.retrievalMode, "semantic");
+  assert.equal(body.navigation.sellerAgent.recommendedSectionId, "methodology");
+  assert.equal(body.messages.find((message) => message.role === "seller")?.recommendedSectionId, "methodology");
   await app.close();
 });
 
