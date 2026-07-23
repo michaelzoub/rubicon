@@ -1,6 +1,6 @@
 /**
- * Query embedding helper for semantic search. Reuses the same OPENAI_API_KEY
- * pattern as createSellerAgent (index.ts). When the key is unset (demo /
+ * Query embedding helper for semantic search. Uses OpenRouter's OpenAI-compatible
+ * embeddings API. When the key is unset (demo /
  * in-memory mode), returns null so the search service falls back to lexical
  * scoring without ever blocking the request.
  *
@@ -8,13 +8,13 @@
  * match the pgvector column. See docs/embeddings-contract.md.
  */
 
-const EMBEDDING_MODEL = "text-embedding-3-small";
+const EMBEDDING_MODEL = "openai/text-embedding-3-small";
 const EMBEDDING_DIMENSIONS = 1536;
 const CACHE_CAP = 200;
 
-/** Returns a function that embeds a query string into a 1536-dim vector, or null when OpenAI is not configured. */
+/** Returns a function that embeds a query string into a 1536-dim vector, or null when OpenRouter is not configured. */
 export function createQueryEmbedder(env: NodeJS.ProcessEnv = process.env): ((q: string) => Promise<number[] | null>) | null {
-  const apiKey = env.OPENAI_API_KEY;
+  const apiKey = env.OPENROUTER_API_KEY;
   if (!apiKey) return null;
 
   // In-process LRU-ish cache: cap at CACHE_CAP entries, evict oldest on overflow.
@@ -26,11 +26,13 @@ export function createQueryEmbedder(env: NodeJS.ProcessEnv = process.env): ((q: 
 
     let embedding: number[];
     try {
-      const response = await fetch("https://api.openai.com/v1/embeddings", {
+      const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
         method: "POST",
         headers: {
           authorization: `Bearer ${apiKey}`,
           "content-type": "application/json",
+          "HTTP-Referer": env.OPENROUTER_SITE_URL ?? "https://rubicon.caliga.ai",
+          "X-Title": env.OPENROUTER_APP_NAME ?? "Rubicon",
         },
         body: JSON.stringify({ model: EMBEDDING_MODEL, input: query }),
       });

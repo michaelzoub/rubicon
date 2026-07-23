@@ -142,7 +142,7 @@ in [docs/environments.md](docs/environments.md).
 | Articles | Supabase public/live articles | `RUBICON_ARTICLES=demo` in-memory article |
 | Runtime data | `DATABASE_URL` Postgres ledger | In-memory ledger |
 | Payments | `RUBICON_PAYMENTS=circle` Circle x402 / Arc verifier | Development verifier |
-| Seller model | `OPENAI_API_KEY` OpenAI Responses API | Deterministic fallback seller agent |
+| Semantic search embeddings | `OPENROUTER_API_KEY` OpenRouter embeddings API | Lexical fallback search |
 | API auth | `RUBICON_AGENT_API_KEY` bearer auth on `/v1/*` | unset for public local API |
 
 Production analytics uses the transactional Postgres outbox and an optional

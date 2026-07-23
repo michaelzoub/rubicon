@@ -18,17 +18,17 @@ import {
  *   pnpm --filter @rubicon-caliga/gateway backfill:embeddings -- --dry-run
  *
  * Requires SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (RLS grants anon SELECT only,
- * so writes need the service role), and OPENAI_API_KEY.
+ * so writes need the service role), and OPENROUTER_API_KEY.
  *
  * Idempotent: each section's embedded input is hashed (sha256) into
- * `content_hash`; unchanged sections skip the OpenAI call entirely. Sections
+ * `content_hash`; unchanged sections skip the OpenRouter call entirely. Sections
  * that no longer exist on a live article have their embedding rows deleted so
  * stale hits never surface.
  */
 
-const EMBEDDING_MODEL = "text-embedding-3-small";
+const EMBEDDING_MODEL = "openai/text-embedding-3-small";
 const EMBEDDING_DIMENSIONS = 1536;
-/** OpenAI accepts array input; keep batches modest to stay within token limits. */
+/** OpenRouter accepts array input; keep batches modest to stay within token limits. */
 const EMBED_BATCH_SIZE = 64;
 
 const DRY_RUN = process.argv.includes("--dry-run");
@@ -44,14 +44,19 @@ function hashInput(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
-/** Raised when OpenAI rejects an input for exceeding the 8192-token limit. */
+/** Raised when OpenRouter rejects an input for exceeding the 8192-token limit. */
 class InputTooLongError extends Error {}
 
 /** One raw call to the embeddings API for a batch of strings, in order. */
 async function callEmbeddings(apiKey: string, inputs: string[]): Promise<number[][]> {
-  const response = await fetch("https://api.openai.com/v1/embeddings", {
+  const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
     method: "POST",
-    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+      "HTTP-Referer": process.env.OPENROUTER_SITE_URL ?? "https://rubicon.caliga.ai",
+      "X-Title": process.env.OPENROUTER_APP_NAME ?? "Rubicon",
+    },
     body: JSON.stringify({ model: EMBEDDING_MODEL, input: inputs }),
   });
   if (!response.ok) {
@@ -59,12 +64,12 @@ async function callEmbeddings(apiKey: string, inputs: string[]): Promise<number[
     if (response.status === 400 && /maximum input length/i.test(text)) {
       throw new InputTooLongError(text);
     }
-    throw new Error(`OpenAI embeddings failed: ${response.status} ${text}`);
+    throw new Error(`OpenRouter embeddings failed: ${response.status} ${text}`);
   }
   const body = (await response.json()) as { data?: Array<{ embedding?: number[]; index?: number }> };
   const data = body.data ?? [];
   if (data.length !== inputs.length) {
-    throw new Error(`OpenAI returned ${data.length} embeddings for ${inputs.length} inputs`);
+    throw new Error(`OpenRouter returned ${data.length} embeddings for ${inputs.length} inputs`);
   }
   // Reorder defensively by `index` — the API returns in-order, but do not assume.
   const ordered = [...data].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
@@ -123,9 +128,9 @@ function toVectorLiteral(embedding: number[]): string {
 
 async function main(): Promise<void> {
   const { env } = loadGatewayEnvironment();
-  const apiKey = env.OPENAI_API_KEY;
+  const apiKey = env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not set — cannot compute embeddings.");
+    throw new Error("OPENROUTER_API_KEY is not set — cannot compute embeddings.");
   }
 
   const { url } = resolveSupabaseConfigFromEnv(env);
@@ -158,7 +163,7 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Existing hashes so unchanged sections skip the OpenAI call.
+    // Existing hashes so unchanged sections skip the OpenRouter call.
     const { data: existingRows, error: existingError } = await db
       .from("article_section_embeddings")
       .select("section_id, content_hash")

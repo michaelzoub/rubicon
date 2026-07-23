@@ -28,7 +28,7 @@ staging and production.
 | Runtime database | `DATABASE_URL` | Full Postgres URL. Use a different database/project for each environment. |
 | Published content/API database | `SUPABASE_URL` and one of `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `SUPABASE_PUBLISHABLE_KEY`, or `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Staging and production projects and credentials must be distinct. |
 | Payments | `RUBICON_PAYMENTS=circle`, `CIRCLE_FACILITATOR_URL`, `CIRCLE_X402_NETWORKS`, `BASE_X402_NETWORK` | Staging accepts recognized testnets only and requires Base Sepolia (`eip155:84532`). Production rejects testnets and requires Base mainnet (`eip155:8453`). |
-| Optional API perimeter | `RUBICON_AGENT_API_KEY` | When set, requires its bearer token for normal `/v1/*` routes. Leave unset for the public agent purchase API. `OPENAI_API_KEY`, `CDP_API_KEY_ID`, and `CDP_API_KEY_SECRET` are optional adapter credentials. |
+| Optional API perimeter | `RUBICON_AGENT_API_KEY` | When set, requires its bearer token for normal `/v1/*` routes. Leave unset for the public agent purchase API. `OPENROUTER_API_KEY`, `CDP_API_KEY_ID`, and `CDP_API_KEY_SECRET` are optional adapter credentials. |
 | Public URL | `GATEWAY_BASE_URL` | HTTPS. A staging hostname must contain `staging`, `stage`, or `test`; Railway's generated `*.up.railway.app` domains are also accepted because service names may include `production`. Production rejects staging/test markers. |
 
 ClickHouse is optional. To enable analytics, set
@@ -43,7 +43,7 @@ Other payment settings are
 `CIRCLE_SYNCHRONOUS_SETTLEMENT`, `CIRCLE_SETTLEMENT_BATCH_SIZE`,
 `CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS`, `BASE_X402_USDC`,
 `BASE_X402_MAX_ARTICLE_PRICE_ATOMIC`, and `BASE_X402_MAX_TIMEOUT_SECONDS`.
-`RUN_MIGRATIONS`, `RUBICON_CONTACT_EMAIL`, `OPENAI_MODEL`, and
+`RUN_MIGRATIONS`, `RUBICON_CONTACT_EMAIL`, and
 `RUBICON_ARTICLES` remain unprefixed. Deployed environments reject
 `RUBICON_ARTICLES=demo`.
 

@@ -74,7 +74,9 @@ explanations derived from content, or unpaid facts.
 Opens a conversation with the article's seller agent. Returns a
 `conversationId`, the article summary, navigation, and any seller reply. The
 seller endpoint interprets every turn as navigation and renders only validated
-section headings and safe metadata; it does not answer the underlying question.
+section headings and safe metadata; it does not answer the underlying question
+or return article body text. Paid article words are released only through the
+session streaming/payment routes after authorization.
 
 `POST /v1/seller-agent/conversations/:conversationId/messages`
 

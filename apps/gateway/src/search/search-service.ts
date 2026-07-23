@@ -66,14 +66,24 @@ export async function buildSearchResults(input: BuildSearchResultsInput): Promis
         const revisionedSummaries = summaries.filter(
           (summary): summary is typeof summary & { revision: number } => Number.isInteger(summary.revision),
         );
-        const rows = (await Promise.all(revisionedSummaries.map((summary) =>
+        // Search each article independently. A single vector query failure
+        // must not discard successful semantic results for other articles.
+        const settledRows = await Promise.allSettled(revisionedSummaries.map((summary) =>
           input.repo.searchSections!({
             queryEmbedding: embedding,
             articleId: summary.articleId,
             revision: summary.revision,
             matchCount: SEMANTIC_MATCH_COUNT,
           })
-        ))).flat();
+        ));
+        const rows = settledRows.flatMap((result, index) => {
+          if (result.status === "fulfilled") return result.value;
+          console.error(
+            `[gateway] semantic search failed for article ${revisionedSummaries[index]?.articleId ?? "unknown"}, falling back to lexical`,
+            result.reason,
+          );
+          return [];
+        });
         if (rows.length > 0) {
           semanticHits = new Map();
           for (const row of rows) {

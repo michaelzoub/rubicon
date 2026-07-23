@@ -42,3 +42,18 @@ test("stale, cross-article, and hallucinated IDs are rejected with heading fallb
   assert.equal(route.mode, "lexical");
   assert.equal(route.candidates[0]?.sectionId, methods.sectionId);
 });
+
+test("embedding or vector-search failures fall back without rejecting navigation", async () => {
+  const repo = repository() as PublishedArticleRepository;
+  const article = (await repo.getPublishedArticle("selected"))!;
+  const route = await routeArticleSections({
+    article,
+    query: "methods",
+    repo,
+    embedder: async () => {
+      throw new Error("OpenRouter unavailable");
+    },
+  });
+  assert.equal(route.mode, "lexical");
+  assert.equal(route.candidates[0]?.sectionId, article.sections.find((section) => section.heading === "Methods")?.sectionId);
+});

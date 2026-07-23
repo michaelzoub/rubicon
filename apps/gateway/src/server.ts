@@ -78,7 +78,7 @@ export interface GatewayOptions {
   appEnv?: "development" | "staging" | "production";
   /** Selected environment profile. Defaults to process.env for direct test construction. */
   env?: NodeJS.ProcessEnv;
-  /** Query embedder for semantic search. Null when OPENAI_API_KEY is unset (lexical fallback). */
+  /** Query embedder for semantic search. Null when OPENROUTER_API_KEY is unset (lexical fallback). */
   queryEmbedder?: ((q: string) => Promise<number[] | null>) | null;
   /** Version advertised in the /openapi.json discovery document. */
   version?: string;

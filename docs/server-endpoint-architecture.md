@@ -135,8 +135,11 @@ flowchart LR
   Only development may omit it and fall back to `InMemoryLedgerRepository`.
 - Payments use `CircleX402PaymentVerifier` when `RUBICON_PAYMENTS=circle`.
   Otherwise they use `DevelopmentPaymentVerifier`.
-- The seller agent uses OpenAI through `TextCompletionSellerModelProvider` when
-  `OPENAI_API_KEY` is set. Otherwise it uses the deterministic local provider.
+- Section routing uses OpenRouter embeddings through `OPENROUTER_API_KEY` when
+  configured, querying the scoped PG vector index. If embedding or vector
+  retrieval fails, the request remains available through lexical heading
+  fallback. Seller conversations are deterministic navigation turns; they do
+  not return article body text.
 - All `/v1/*` routes require `Authorization: Bearer <RUBICON_AGENT_API_KEY>` when
   the selected profile configures it. Both health routes remain public and
   return the selected `appEnv`.
