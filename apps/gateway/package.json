@@ -15,7 +15,7 @@
     "reconcile:analytics": "tsx --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local src/analytics/reconcile-command.ts",
     "lint": "eslint src",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/config.test.js dist/gateway.test.js dist/search.test.js dist/search/*.test.js dist/discovery.test.js dist/authorship/*.test.js dist/payments/*.test.js dist/repositories/*.test.js dist/analytics/*.test.js"
+    "test": "node --test dist/config.test.js dist/gateway.test.js dist/search.test.js dist/search/*.test.js dist/discovery.test.js dist/authorship/*.test.js dist/payments/*.test.js dist/repositories/*.test.js dist/analytics/*.test.js dist/openrouter-agent-policy.test.js"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.1.2",

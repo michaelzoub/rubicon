@@ -24,16 +24,15 @@ export function meaningfulTerms(query: string): string[] {
 
 /**
  * Normalized 0..1 lexical confidence: fraction of meaningful query terms that
- * appear (as substrings) in the article's safe metadata (title + section
- * headings). Returns 0 when the query has no meaningful terms.
+ * appear as whole tokens in the article's safe metadata (title + section
+ * headings). Whole-token matching avoids false positives such as `agi` in
+ * `strategies`. Returns 0 when the query has no meaningful terms.
  */
 export function lexicalConfidence(article: ArticleSummary, query: string): number {
   const terms = meaningfulTerms(query);
   if (terms.length === 0) return 0;
-  const text = [article.title, ...article.sections.map((section) => section.heading)]
-    .join(" ")
-    .toLowerCase();
-  const matched = terms.filter((term) => text.includes(term)).length;
+  const metadataTerms = new Set(meaningfulTerms([article.title, ...article.sections.map((section) => section.heading)].join(" ")));
+  const matched = terms.filter((term) => metadataTerms.has(term)).length;
   return matched / terms.length;
 }
 
@@ -48,8 +47,8 @@ export function lexicalSectionConfidence(
 ): number {
   const terms = meaningfulTerms(query);
   if (terms.length === 0) return 0;
-  const text = [article.title, section.heading].join(" ").toLowerCase();
-  const matched = terms.filter((term) => text.includes(term)).length;
+  const metadataTerms = new Set(meaningfulTerms([article.title, section.heading].join(" ")));
+  const matched = terms.filter((term) => metadataTerms.has(term)).length;
   return matched / terms.length;
 }
 

@@ -74,6 +74,29 @@ test("search returns empty results for an unmatched query", async () => {
   await app.close();
 });
 
+test("search ranks the AGI article above unrelated Polymarket content", async () => {
+  const { app } = setup([
+    meteredArticle({
+      id: "article_34fb8367-850f-4ad9-93c3-b22014c5c32e",
+      title: "Strategies and Tools to make money on Polymarket.",
+      body: "# Strategies and Tools to make money on Polymarket.\n## Trading strategies\nMarket tactics.",
+    }),
+    meteredArticle({
+      id: "article-agi",
+      title: "The biggest hurdle to achieving AGI",
+      body: "# The biggest hurdle to achieving AGI\n## AGI research\nThe central challenge.",
+    }),
+  ]);
+  const res = await app.inject({ method: "GET", url: "/v1/search?q=Find+an+article+about+AGI" });
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as SearchResponse;
+  assert.equal(body.mode, "lexical");
+  assert.equal(body.results[0]?.article.articleId, "article-agi");
+  assert.equal(body.results[0]?.score, 1);
+  assert.equal(body.results.find((result) => result.article.articleId === "article_34fb8367-850f-4ad9-93c3-b22014c5c32e"), undefined);
+  await app.close();
+});
+
 test("search respects limit parameter", async () => {
   const { app } = setup([
     meteredArticle({ id: "art-1" }),
