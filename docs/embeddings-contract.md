@@ -3,7 +3,7 @@
 This document specifies what the **rubicon-marketing** repository MUST do to
 maintain the `article_section_embeddings` table. The Rubicon gateway (this repo)
 is **read-only** on the index and falls back to lexical scoring when embeddings
-are missing, stale, or when `OPENAI_API_KEY` is unset.
+are missing, stale, or when `OPENROUTER_API_KEY` is unset.
 
 ## Schema
 
@@ -58,7 +58,7 @@ For each section, embed the concatenation:
 
 - Keyed on `(article_id, section_id)`.
 - Compute `content_hash` = sha256 of the embedded input text.
-- If the stored `content_hash` matches the new one, **skip the OpenAI call** (the
+- If the stored `content_hash` matches the new one, **skip the OpenRouter call** (the
   content has not changed) and leave the row as-is.
 - Otherwise, call the embeddings API and upsert the row with the new embedding,
   `revision`, `content_hash`, `model`, and `updated_at = now()`.
@@ -70,7 +70,13 @@ The gateway tolerates lag and absence:
 - Any live article whose `revision` has no matching embedding rows (or a stale
   `revision`) is scored **lexically** by the gateway and reported as
   `mode: "lexical"`.
-- When `OPENAI_API_KEY` is unset (demo/in-memory mode), the gateway never calls
-  OpenAI and always uses lexical scoring.
+- When `OPENROUTER_API_KEY` is unset (demo/in-memory mode), the gateway never calls
+  OpenRouter and uses lexical scoring. If OpenRouter fails for a query, the
+  request remains successful and uses the safe lexical fallback because a query
+  embedding is required before PG vector similarity can run.
 - The search RPC (`search_article_sections`) joins on `articles.state = 'live'`
   so embeddings for draft/paused/deleted articles never surface.
+- Navigation supplies the selected article ID and its live revision to the RPC,
+  which applies both constraints before ranking. The gateway validates returned
+  IDs against the live section list and loads headings only from public metadata.
+  The retrieval boundary returns IDs and similarity signals, never body text.

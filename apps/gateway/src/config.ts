@@ -1,83 +1,22 @@
 export type AppEnv = "development" | "staging" | "production";
 
 /**
- * Resource-bearing variables are selected from an explicit environment profile.
- * Development keeps the existing unprefixed names for local ergonomics;
- * staging and production never fall back to unscoped values.
+ * The deployment uses the existing shared resources and credentials. Only the
+ * public gateway URL has an environment-specific override.
  */
 export const ENVIRONMENT_SCOPED_VARIABLES = [
-  "DATABASE_URL",
-  "RUN_MIGRATIONS",
-  "SUPABASE_URL",
-  "SUPABASE_SERVICE_ROLE_KEY",
-  "SUPABASE_ANON_KEY",
-  "SUPABASE_PUBLISHABLE_KEY",
-  "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-  "ANALYTICS_ENABLED",
-  "CLICKHOUSE_URL",
-  "CLICKHOUSE_USERNAME",
-  "CLICKHOUSE_PASSWORD",
-  "CLICKHOUSE_DATABASE",
-  "RUBICON_PAYMENTS",
-  "CIRCLE_FACILITATOR_URL",
-  "CIRCLE_X402_NETWORKS",
-  "CIRCLE_ARC_PRIVATE_MAINNET",
-  "CIRCLE_X402_MAX_TIMEOUT_SECONDS",
-  "CIRCLE_SYNCHRONOUS_SETTLEMENT",
-  "CIRCLE_SETTLEMENT_BATCH_SIZE",
-  "CIRCLE_SETTLEMENT_BATCH_INTERVAL_MS",
-  "BASE_X402_NETWORK",
-  "BASE_X402_USDC",
-  "BASE_X402_MAX_ARTICLE_PRICE_ATOMIC",
-  "BASE_X402_MAX_TIMEOUT_SECONDS",
-  "CDP_API_KEY_ID",
-  "CDP_API_KEY_SECRET",
-  "PAYMENT_WEBHOOK_URL",
-  "PAYMENT_WEBHOOK_SECRET",
-  "RUBICON_AGENT_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENAI_MODEL",
   "GATEWAY_BASE_URL",
-  "RUBICON_CONTACT_EMAIL",
-  "RUBICON_ARTICLES",
 ] as const;
 
 type EnvironmentScopedVariable = (typeof ENVIRONMENT_SCOPED_VARIABLES)[number];
 
-const REQUIRED_DEPLOYED_VARIABLES: EnvironmentScopedVariable[] = [
+const REQUIRED_DEPLOYED_VARIABLES = [
   "DATABASE_URL",
   "SUPABASE_URL",
   "RUBICON_PAYMENTS",
   "CIRCLE_FACILITATOR_URL",
   "CIRCLE_X402_NETWORKS",
   "BASE_X402_NETWORK",
-  "PAYMENT_WEBHOOK_URL",
-  "PAYMENT_WEBHOOK_SECRET",
-  "RUBICON_AGENT_API_KEY",
-  "GATEWAY_BASE_URL",
-];
-
-const ISOLATED_RESOURCE_VARIABLES: EnvironmentScopedVariable[] = [
-  "DATABASE_URL",
-  "SUPABASE_URL",
-  "SUPABASE_SERVICE_ROLE_KEY",
-  "SUPABASE_ANON_KEY",
-  "SUPABASE_PUBLISHABLE_KEY",
-  "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-  "CLICKHOUSE_URL",
-  "CLICKHOUSE_USERNAME",
-  "CLICKHOUSE_PASSWORD",
-  "CLICKHOUSE_DATABASE",
-  "CIRCLE_FACILITATOR_URL",
-  "CIRCLE_X402_NETWORKS",
-  "BASE_X402_NETWORK",
-  "BASE_X402_USDC",
-  "CDP_API_KEY_ID",
-  "CDP_API_KEY_SECRET",
-  "PAYMENT_WEBHOOK_URL",
-  "PAYMENT_WEBHOOK_SECRET",
-  "RUBICON_AGENT_API_KEY",
-  "OPENAI_API_KEY",
   "GATEWAY_BASE_URL",
 ];
 
@@ -89,8 +28,6 @@ export interface GatewayEnvironmentConfig {
   env: NodeJS.ProcessEnv;
   databaseUrl?: string;
   clickhouseUrl?: string;
-  paymentWebhookUrl?: string;
-  paymentWebhookSecret?: string;
   agentApiKey?: string;
   publicUrl: string;
 }
@@ -140,7 +77,6 @@ export function loadGatewayEnvironment(env: NodeJS.ProcessEnv = process.env): Ga
   const runtime = selected.env;
   if (selected.appEnv !== "development") {
     validateRequiredDeployedVariables(selected.appEnv, runtime);
-    validateProfileIsolation(env);
     validateDeployedResources(selected.appEnv, runtime);
   }
 
@@ -149,8 +85,6 @@ export function loadGatewayEnvironment(env: NodeJS.ProcessEnv = process.env): Ga
     env: runtime,
     databaseUrl: runtime.DATABASE_URL,
     clickhouseUrl: runtime.CLICKHOUSE_URL,
-    paymentWebhookUrl: runtime.PAYMENT_WEBHOOK_URL,
-    paymentWebhookSecret: runtime.PAYMENT_WEBHOOK_SECRET,
     agentApiKey: runtime.RUBICON_AGENT_API_KEY,
     publicUrl: runtime.GATEWAY_BASE_URL ?? `http://localhost:${runtime.GATEWAY_PORT ?? runtime.PORT ?? 8787}`,
   };
@@ -172,24 +106,12 @@ export function activateEnvironmentVariables(selected: NodeJS.ProcessEnv): void 
 
 function validateRequiredDeployedVariables(appEnv: Exclude<AppEnv, "development">, env: NodeJS.ProcessEnv): void {
   const missing = REQUIRED_DEPLOYED_VARIABLES.filter((name) => !env[name]?.trim())
-    .map((name) => profileVariableName(appEnv, name));
+    .map((name) => name === "GATEWAY_BASE_URL" ? profileVariableName(appEnv, name) : name);
   if (!supabaseKey(env)) {
-    missing.push(`${appEnv.toUpperCase()}_SUPABASE_SERVICE_ROLE_KEY (or another supported Supabase key)`);
+    missing.push("SUPABASE_SERVICE_ROLE_KEY (or another supported Supabase key)");
   }
   if (missing.length > 0) {
     throw new Error(`Missing required ${appEnv} configuration: ${missing.join(", ")}`);
-  }
-}
-
-function validateProfileIsolation(env: NodeJS.ProcessEnv): void {
-  const shared: string[] = [];
-  for (const name of ISOLATED_RESOURCE_VARIABLES) {
-    const staging = env[`STAGING_${name}`]?.trim();
-    const production = env[`PRODUCTION_${name}`]?.trim();
-    if (staging && production && staging === production) shared.push(name);
-  }
-  if (shared.length > 0) {
-    throw new Error(`Staging and production must not share resources or credentials: ${shared.join(", ")}`);
   }
 }
 
@@ -202,24 +124,19 @@ function validateDeployedResources(appEnv: Exclude<AppEnv, "development">, env: 
   }
   const databaseUrl = assertPostgresUrl(env.DATABASE_URL!);
   const publicUrl = assertHttpsUrl("GATEWAY_BASE_URL", env.GATEWAY_BASE_URL!);
-  const webhookUrl = assertHttpsUrl("PAYMENT_WEBHOOK_URL", env.PAYMENT_WEBHOOK_URL!);
   const supabaseUrl = assertHttpsUrl("SUPABASE_URL", env.SUPABASE_URL!);
   const facilitatorUrl = assertHttpsUrl("CIRCLE_FACILITATOR_URL", env.CIRCLE_FACILITATOR_URL!);
   const clickhouseUrl = env.CLICKHOUSE_URL ? assertHttpsUrl("CLICKHOUSE_URL", env.CLICKHOUSE_URL) : undefined;
-
-  if (publicUrl.origin !== webhookUrl.origin) {
-    throw new Error("PAYMENT_WEBHOOK_URL must use the same origin as GATEWAY_BASE_URL");
-  }
 
   const networks = parseNetworks(env.CIRCLE_X402_NETWORKS!);
   const baseChainId = parseEip155ChainId("BASE_X402_NETWORK", env.BASE_X402_NETWORK!);
   if (appEnv === "staging") {
     assertNoMarker("staging", "production", [
       resourceIdentity(databaseUrl), resourceIdentity(supabaseUrl), resourceIdentity(clickhouseUrl),
-      resourceIdentity(publicUrl), resourceIdentity(webhookUrl), resourceIdentity(facilitatorUrl),
+      resourceIdentity(facilitatorUrl),
     ]);
-    if (!hasEnvironmentMarker(publicUrl.hostname, "staging")) {
-      throw new Error("STAGING_GATEWAY_BASE_URL hostname must include a staging, stage, or test marker");
+    if (!hasEnvironmentMarker(publicUrl.hostname, "staging") && !isRailwayPublicDomain(publicUrl.hostname)) {
+      throw new Error("STAGING_GATEWAY_BASE_URL hostname must include a staging, stage, or test marker (or use a Railway public domain)");
     }
     if (!hasEnvironmentMarker(facilitatorUrl.hostname, "staging")) {
       throw new Error("staging CIRCLE_FACILITATOR_URL must be a testnet/staging endpoint");
@@ -236,7 +153,7 @@ function validateDeployedResources(appEnv: Exclude<AppEnv, "development">, env: 
   } else {
     assertNoMarker("production", "staging", [
       resourceIdentity(databaseUrl), resourceIdentity(supabaseUrl), resourceIdentity(clickhouseUrl),
-      resourceIdentity(publicUrl), resourceIdentity(webhookUrl), resourceIdentity(facilitatorUrl),
+      resourceIdentity(publicUrl), resourceIdentity(facilitatorUrl),
     ]);
     if (networks.some((chainId) => TESTNET_CHAIN_IDS.has(chainId))) {
       throw new Error("production CIRCLE_X402_NETWORKS cannot contain testnet networks");
@@ -308,6 +225,11 @@ function hasEnvironmentMarker(value: string, environment: "staging" | "productio
   return environment === "staging"
     ? tokens.some((token) => token === "staging" || token === "stage" || token === "test" || token === "testnet")
     : tokens.some((token) => token === "production" || token === "prod" || token === "mainnet" || token === "live");
+}
+
+/** Railway assigns domains from the service name, which can include "production" for a staging service. */
+function isRailwayPublicDomain(hostname: string): boolean {
+  return hostname.toLowerCase().endsWith(".up.railway.app");
 }
 
 function resourceIdentity(url: URL | undefined): string | undefined {

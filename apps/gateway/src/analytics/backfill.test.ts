@@ -3,7 +3,7 @@ import test from "node:test";
 import type { Pool } from "pg";
 import { readBundleCommittedEvent } from "../repositories/postgres.js";
 import type { AnalyticsOutboxRepository } from "./outbox-repository.js";
-import { backfillBundleAnalytics, toBundleEvent } from "./backfill.js";
+import { backfillBundleAnalytics, toBundleEvent, toSettlementEvent } from "./backfill.js";
 import type { AnalyticsEvent } from "./types.js";
 
 test("bundle backfill emits the same deterministic event as live ingestion", () => {
@@ -82,6 +82,23 @@ test("backfill covers bundles and settlement evidence with resumable determinist
   const cursor = JSON.parse(Buffer.from(result.lastCursor!, "base64url").toString("utf8")) as Record<string, unknown>;
   assert.equal(cursor.phase, "settlements");
   assert.equal(cursor.id, "settlement-1");
+});
+
+test("backfill recognizes confirmed settlement earnings", () => {
+  const event = toSettlementEvent({
+    id: "settlement-confirmed",
+    idempotency_key: "settlement-attempt-confirmed",
+    provider_reference: "transfer-confirmed",
+    status: "confirmed",
+    created_at: "2026-07-15T00:01:00.000Z",
+    bundle_ids: ["bundle-1"],
+    creator_id: "creator-1",
+    article_id: "article-1",
+    session_id: "session-1",
+    creator_amount_atomic: "36",
+  });
+
+  assert.equal(event.settledCreatorAmountAtomicDelta, "36");
 });
 
 function bundleRow() {

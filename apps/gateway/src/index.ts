@@ -5,8 +5,6 @@ import { DevelopmentPaymentVerifier, type PaymentVerifier } from "./payments/typ
 import { InMemoryLedgerRepository, InMemoryPublishedArticleRepository } from "./repositories/in-memory.js";
 import { createSupabaseClientFromEnv, SupabasePublishedArticleRepository } from "./repositories/supabase.js";
 import type { LedgerRepository, PublishedArticleRepository } from "./repositories/types.js";
-import { DefaultSellerAgent } from "./seller-agent/seller-agent.js";
-import { TextCompletionSellerModelProvider } from "./seller-agent/model-provider.js";
 import { createQueryEmbedder } from "./search/embed-query.js";
 import { installKeepAliveDispatcher } from "./http-agent.js";
 import { analyticsConfigFromEnv } from "./analytics/config.js";
@@ -143,7 +141,6 @@ const paymentVerifier: PaymentVerifier =
 const gateway = createGateway({
   articleRepository,
   ledger,
-  sellerAgent: createSellerAgent(env),
   paymentVerifier,
   sessionTtlMs,
   gatewayFeeBps,
@@ -196,47 +193,6 @@ function createDemoArticleRepository(runtimeEnv: NodeJS.ProcessEnv): InMemoryPub
       },
     ],
   });
-}
-
-function createSellerAgent(runtimeEnv: NodeJS.ProcessEnv): DefaultSellerAgent {
-  const apiKey = runtimeEnv.OPENAI_API_KEY;
-  if (!apiKey) {
-    return new DefaultSellerAgent();
-  }
-  const model = runtimeEnv.OPENAI_MODEL ?? "gpt-5.4-mini";
-  return new DefaultSellerAgent(
-    new TextCompletionSellerModelProvider(`openai:${model}`, async ({ system, prompt }) => {
-      const response = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          instructions: system,
-          input: prompt,
-          max_output_tokens: 600,
-          store: false,
-        }),
-      });
-      if (!response.ok) {
-        throw new Error(`OpenAI seller model failed: ${response.status} ${await response.text()}`);
-      }
-      const body = (await response.json()) as {
-        output_text?: string;
-        output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
-      };
-      return (
-        body.output_text ??
-        body.output
-          ?.flatMap((item) => item.content ?? [])
-          .find((content) => content.type === "output_text" && typeof content.text === "string")
-          ?.text ??
-        ""
-      );
-    }),
-  );
 }
 
 function startupLog(

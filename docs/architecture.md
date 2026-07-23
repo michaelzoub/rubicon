@@ -20,11 +20,18 @@ sequenceDiagram
   participant S as Seller agent
   participant D as Shared Postgres
   participant C as Circle / Arc
+  participant P as Pangram (optional)
   participant W as Creator wallet
 
   B->>G: Open seller conversation (goal)
   G->>S: navigate / respond (safe metadata only)
   S-->>B: Recommended section, no unpaid content
+  opt Buyer policy requests authorship verification
+    B->>G: Analyze candidate + buyer Pangram key
+    G->>P: Private body (fixed provider endpoint)
+    P-->>G: Provider response
+    G-->>B: Sanitized aggregate metrics only
+  end
   B->>G: Start session (budget)
   G->>D: Load live article, price/word, verified wallet
   G-->>B: Session + max-spend authorization terms
@@ -33,7 +40,7 @@ sequenceDiagram
   loop while useful and authorized
     G->>C: Verify remaining authorization
     C-->>W: Creator receives the full word price
-    G->>S: selectNextWord
+    G->>D: Select the next authorized article slice
     G->>D: Commit one read_bundle + bulk word audit + outbox event
     G-->>B: article.word + article.usage
     G-->>C: Queue settlement after commit
@@ -48,7 +55,10 @@ sequenceDiagram
   primitives, and the shared API contract used by rubicon-marketing.
 - **apps/gateway** — the Fastify public agent API, seller agent, persistence
   adapters, and payment verifiers.
-- **packages/agent-sdk** — the buyer-agent SDK (`RubiconClient.read()`).
+- **packages/agent-sdk** — the buyer-agent SDK (`RubiconClient.read()`). It owns
+  optional verification policy and approval/rejection orchestration.
+- **apps/gateway/src/authorship** — fixed provider registry and Pangram adapter;
+  this is the only layer that combines private article text with detector calls.
 
 ## Persistence
 
@@ -104,12 +114,14 @@ smoothly, and the gateway enforces the authorized budget before every reveal.
 
 ## Seller agent
 
-The seller agent is a first-class component with `navigate`, `respond`, and
-`selectNextWord`. It uses a pluggable model/provider abstraction. A deterministic
-development fallback ships for local runs with no model key — it is explicitly
-development behavior, not the full production seller agent. The seller agent may
-inspect private article content internally, but its unpaid outputs only ever
-reveal safe navigation information.
+Seller interaction is a constrained section router split into three trust
+domains. Safe seller endpoints return only validated section IDs, trusted public
+headings, confidence/mode, word counts, and pricing. Content-derived retrieval
+searches embeddings with mandatory selected-article and live-revision filters
+and emits IDs plus similarity signals only; the gateway rejects invalid hits and
+falls back to public-heading overlap. Paid word delivery remains exclusively in
+the authorized reading-session workflow. Conversation replies use the same
+deterministic metadata renderer, never free-form model output.
 
 ## Fee policy
 

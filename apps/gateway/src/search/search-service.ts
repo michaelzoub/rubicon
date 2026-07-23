@@ -60,13 +60,35 @@ export async function buildSearchResults(input: BuildSearchResultsInput): Promis
     const embedding = await input.embedder(input.query);
     if (embedding) {
       try {
-        const rows = await input.repo.searchSections(embedding, SEMANTIC_MATCH_COUNT);
+        // Repository search is deliberately article-scoped. Discovery iterates
+        // the live summaries so an embedding from another article or revision
+        // can never be joined into this result.
+        const revisionedSummaries = summaries.filter(
+          (summary): summary is typeof summary & { revision: number } => Number.isInteger(summary.revision),
+        );
+        // Search each article independently. A single vector query failure
+        // must not discard successful semantic results for other articles.
+        const settledRows = await Promise.allSettled(revisionedSummaries.map((summary) =>
+          input.repo.searchSections!({
+            queryEmbedding: embedding,
+            articleId: summary.articleId,
+            revision: summary.revision,
+            matchCount: SEMANTIC_MATCH_COUNT,
+          })
+        ));
+        const rows = settledRows.flatMap((result, index) => {
+          if (result.status === "fulfilled") return result.value;
+          console.error(
+            `[gateway] semantic search failed for article ${revisionedSummaries[index]?.articleId ?? "unknown"}, falling back to lexical`,
+            result.reason,
+          );
+          return [];
+        });
         if (rows.length > 0) {
           semanticHits = new Map();
           for (const row of rows) {
-            // TODO(v1): skip per-article revision check; the RPC already filters
-            // to live articles. Add a revision match once marketing writes are
-            // proven to be consistent.
+            const summary = summaries.find((candidate) => candidate.articleId === row.articleId);
+            if (!summary || summary.revision === undefined || row.revision !== summary.revision) continue;
             const list = semanticHits.get(row.articleId) ?? [];
             list.push({
               articleId: row.articleId,

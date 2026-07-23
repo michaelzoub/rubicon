@@ -162,8 +162,15 @@ export function toSettlementEvent(row: SettlementBackfillRow): SettlementChanged
     sessionId: row.session_id,
     providerReference: row.provider_reference,
     status: row.status,
-    settledCreatorAmountAtomicDelta: row.status === "completed" ? row.creator_amount_atomic : "0",
+    // Provider-confirmed settlements are economically final for the creator.
+    // Keep the lifecycle status for UI/audit purposes, but recognize both
+    // confirmed and completed amounts in the analytics aggregate.
+    settledCreatorAmountAtomicDelta: isRecognizedSettlement(row.status) ? row.creator_amount_atomic : "0",
   };
+}
+
+function isRecognizedSettlement(status: SettlementBackfillRow["status"]): boolean {
+  return status === "confirmed" || status === "completed";
 }
 
 interface BackfillCursor {

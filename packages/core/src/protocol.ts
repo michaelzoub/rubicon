@@ -19,6 +19,8 @@ export interface ArticleSummary {
   title: string;
   author: string;
   state: ArticleState;
+  /** Live content revision used to reject stale section-index rows. */
+  revision?: number;
   /** Explicit access policy. Absent only on responses from pre-free-support gateways; treat as paid. */
   accessMode?: ArticleAccessMode;
   totalWords: number;
@@ -82,6 +84,33 @@ export interface SearchResponse {
   results: SearchResultSummary[];
 }
 
+// ---------------------------------------------------------------------------
+// Optional pre-purchase authorship verification
+// ---------------------------------------------------------------------------
+
+export type AuthorshipProviderName = "pangram";
+
+export interface AnalyzeAuthorshipRequest {
+  articleId: string;
+  provider: AuthorshipProviderName;
+}
+
+/** Strictly allowlisted detector output. Never contains article text or provider links. */
+export interface AuthorshipMetrics {
+  humanWritten: number;
+  aiGenerated: number;
+  aiAssisted: number;
+  humanSegments: number;
+  aiGeneratedSegments: number;
+  aiAssistedSegments: number;
+}
+
+export interface AnalyzeAuthorshipResponse {
+  articleId: string;
+  provider: AuthorshipProviderName;
+  metrics: AuthorshipMetrics;
+}
+
 export interface ArticleNavigation {
   articleId: string;
   sections: ArticleSectionSummary[];
@@ -93,6 +122,10 @@ export interface ArticleNavigation {
 export interface SellerNavigationSummary {
   recommendedSectionId: string;
   alternativeSectionIds: string[];
+  /** Retrieval boundary used to rank the validated section IDs. */
+  retrievalMode?: "semantic" | "lexical";
+  /** Confidence for the recommended section; low values imply alternatives should be considered. */
+  confidence?: number;
   /** Seller estimate derived from safe metadata, never unpaid article text. */
   sectionAssessments?: SellerSectionAssessment[];
   rationale: string;

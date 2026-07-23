@@ -70,11 +70,13 @@ you want live progress.
 ## `read(options)`
 
 Yields `session.started`, `seller.message`, `article.bundle`, `article.usage`,
-`article.completed` (with a final receipt), and `article.error` by default.
+`article.completed` (with a final receipt), and `article.error` by default. When
+enabled it yields `authorship.analyzed` before `session.started`.
 Use `streamMode: "word"` for legacy `article.word` events and one-word
 authorization/delivery. It handles:
 
 - seller-agent conversation and starting-section selection
+- optional pre-purchase Pangram authorship verification
 - bundled authorization, with one-word fallback for older gateways or explicit
   word mode
 - bundled receipt metadata and running usage
@@ -85,9 +87,20 @@ authorization/delivery. It handles:
 
 ## Lower-level methods
 
-`getRepository`, `getNavigation`, `startConversation`, `sendConversationMessage`,
+`getRepository`, `getNavigation`, `analyzeAuthorship`, `startConversation`, `sendConversationMessage`,
 `startSession`, `payForWord`, `abort`, and `streamEvents` (raw SSE) are available
 for custom flows.
+
+## Optional authorship verification
+
+Pass the buyer-owned Pangram key as `pangramApiKey` and configure
+`authorshipVerification`. The default mode is `never`; a key alone never makes
+a detector request or incurs detector charges. `always` scans every selected
+candidate, while `agent_decides` scans only reads with `verifyAuthorship: true`.
+Threshold decisions accept 0–1 fractions. An `agent_decides` decision requires
+the read's `decideAuthorship(result)` callback. The key is attached only to the
+verification request and the SDK receives aggregate metrics, never article text,
+Pangram windows, raw responses, or dashboard links.
 
 ## Payment engines
 

@@ -77,6 +77,17 @@ sequence, amount owed, or settlement recipient — all are loaded from storage.
 - **Health**: `GET /health` and `GET /health/analytics` remain public and
   include `appEnv` (`development`, `staging`, or `production`).
 
+### Optional authorship analysis
+
+`POST /v1/authorship/analyze` accepts `{ articleId, provider: "pangram" }` and
+the buyer's Pangram credential in `x-rubicon-pangram-api-key`. It runs before
+`POST /v1/sessions`; it never creates a session or changes payment, settlement,
+or metering state. The gateway loads the private body, calls the fixed allowlisted
+Pangram v3 URL with a 15-second timeout and 75,000-character ceiling, and returns
+only aggregate fractions and segment counts. Provider URLs are not buyer input.
+Credentials, raw responses, excerpts, windows, and dashboard links are neither
+returned nor logged or persisted.
+
 ## Dashboard data
 
 `LedgerRepository.earningsForCreator` / `earningsForArticle` sum authoritative

@@ -46,6 +46,18 @@ test("lexicalConfidence returns matched/total normalized 0..1", () => {
   assert.equal(lexicalConfidence(article(), "the and for"), 0);
 });
 
+test("lexical search does not treat AGI as a substring of strategies", () => {
+  const polymarket = article({
+    articleId: "article_34fb8367-850f-4ad9-93c3-b22014c5c32e",
+    title: "Strategies and Tools to make money on Polymarket.",
+    sections: [{ sectionId: "intro", heading: "Trading strategies", level: 1, wordStart: 0, wordCount: 100 }],
+  });
+  const agi = article({ articleId: "agi", title: "The biggest hurdle to achieving AGI" });
+  const results = lexicalSearch([polymarket, agi], "Find an article about AGI", 10);
+  assert.equal(results[0]?.article.articleId, "agi");
+  assert.equal(results.find((result) => result.article.articleId === polymarket.articleId), undefined);
+});
+
 test("lexicalSectionConfidence scores per section heading + title", () => {
   const art = article();
   const sessions = art.sections.find((s) => s.sectionId === "sessions")!;

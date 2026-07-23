@@ -13,6 +13,7 @@ import { assertRailwayCompatibleDatabaseUrl, describeDatabaseUrl, resolvePgPoolC
 import type { StartSessionResponse, StreamPaymentResponse } from "@rubicon-caliga/core";
 import type { PaymentVerifier } from "./payments/types.js";
 import type { RecordBundleResult, RecordPaidBundleInput } from "./repositories/types.js";
+import type { AuthorshipProvider } from "./authorship/types.js";
 
 const PRICE = 5n; // atomic USDC per word
 const PLAIN_BODY = Array.from({ length: 200 }, (_, index) => `w${index + 1}`).join(" ");
@@ -38,6 +39,7 @@ function setup(input?: {
   gatewayFeeBps?: number;
   paymentVerifier?: PaymentVerifier;
   ledger?: InMemoryLedgerRepository;
+  authorshipProviders?: ReadonlyMap<string, AuthorshipProvider>;
 }): {
   app: FastifyInstance;
   published: InMemoryPublishedArticleRepository;
@@ -64,9 +66,43 @@ function setup(input?: {
     gatewayBaseUrl: "http://test",
     paymentVerifier: input?.paymentVerifier,
     logger: false,
+    authorshipProviders: input?.authorshipProviders,
   });
   return { app, published, ledger };
 }
+
+test("authorship route uses private text and returns sanitized metrics without creating a session", async () => {
+  let received: { text: string; apiKey: string } | undefined;
+  const provider: AuthorshipProvider = {
+    name: "pangram",
+    async analyze(input) {
+      received = input;
+      return { humanWritten: 0.8, aiGenerated: 0.1, aiAssisted: 0.1, humanSegments: 8, aiGeneratedSegments: 1, aiAssistedSegments: 1 };
+    },
+  };
+  const { app, ledger } = setup({ authorshipProviders: new Map([["pangram", provider]]) });
+  const response = await app.inject({
+    method: "POST", url: "/v1/authorship/analyze",
+    headers: { "x-rubicon-pangram-api-key": "buyer-secret" },
+    payload: { articleId: "art-plain", provider: "pangram" },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(received, { text: PLAIN_BODY, apiKey: "buyer-secret" });
+  assert.equal(response.body.includes("buyer-secret"), false);
+  assert.equal(response.body.includes("w1"), false);
+  assert.equal(await ledger.getSession("anything"), null);
+});
+
+test("authorship route rejects missing keys and buyer-supplied provider URLs", async () => {
+  const { app } = setup();
+  const missing = await app.inject({ method: "POST", url: "/v1/authorship/analyze", payload: { articleId: "art-plain", provider: "pangram" } });
+  assert.equal(missing.statusCode, 503);
+  const url = await app.inject({
+    method: "POST", url: "/v1/authorship/analyze", headers: { "x-rubicon-pangram-api-key": "key" },
+    payload: { articleId: "art-plain", provider: "https://attacker.example" },
+  });
+  assert.equal(url.statusCode, 400);
+});
 
 async function startSession(app: FastifyInstance, articleId = "art-plain", maxAmountAtomic = "1000000"): Promise<StartSessionResponse> {
   const res = await app.inject({
@@ -158,13 +194,18 @@ class FakeSupabase implements SupabaseReader {
     { creator_id: "creator-db", address: "0x0000000000000000000000000000000000000db0", network: "arc-testnet", verified: true },
   ];
   error: { message: string; details?: string } | null = null;
+  semanticRows: Array<{ article_id: string; section_id: string; revision: number; similarity: number }> = [];
+  scopedRpcUnavailable = false;
 
   from<T = unknown>(table: string) {
     return new FakeSupabaseQuery<T>(this, table);
   }
 
-  rpc<T = unknown>(_fn: string, _args: Record<string, unknown>): Promise<{ data: T | null; error: { message: string; details?: string } | null }> {
-    return Promise.resolve({ data: null, error: null });
+  rpc<T = unknown>(_fn: string, args: Record<string, unknown>): Promise<{ data: T | null; error: { code?: string; message: string; details?: string } | null }> {
+    if (this.scopedRpcUnavailable && "target_article_id" in args) {
+      return Promise.resolve({ data: null, error: { code: "PGRST202", message: "scoped RPC is not in the schema cache" } });
+    }
+    return Promise.resolve({ data: this.semanticRows as T, error: null });
   }
 
   rowsFor(table: string): unknown[] {
@@ -829,6 +870,40 @@ test("repository endpoint returns live article records from Supabase", async () 
       },
     ],
   });
+  await app.close();
+});
+
+test("seller-agent conversation preserves semantic routing while the scoped RPC is not in schema cache", async () => {
+  const supabase = new FakeSupabase();
+  supabase.sections = [
+    { id: "sec-method", article_id: "art-db", section_id: "methodology", heading: "How the study was conducted", level: 1, word_start: 0, word_count: 3, ordinal: 1 },
+    { id: "sec-results", article_id: "art-db", section_id: "results", heading: "What happened", level: 1, word_start: 3, word_count: 3, ordinal: 2 },
+  ];
+  supabase.semanticRows = [{ article_id: "art-db", section_id: "methodology", revision: 1, similarity: 0.91 }];
+  supabase.scopedRpcUnavailable = true;
+  const app = createGateway({
+    articleRepository: new SupabasePublishedArticleRepository(supabase),
+    ledger: new InMemoryLedgerRepository(),
+    sessionTtlMs: 60_000,
+    gatewayBaseUrl: "http://test",
+    logger: false,
+    queryEmbedder: async () => [0.25],
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/seller-agent/conversations",
+    payload: {
+      articleId: "art-db",
+      goal: "understand the research design",
+      message: "Which section explains how the study was conducted?",
+    },
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  const body = response.json() as { navigation: { sellerAgent: { retrievalMode: string; recommendedSectionId: string } }; messages: Array<{ role: string; recommendedSectionId?: string }> };
+  assert.equal(body.navigation.sellerAgent.retrievalMode, "semantic");
+  assert.equal(body.navigation.sellerAgent.recommendedSectionId, "methodology");
+  assert.equal(body.messages.find((message) => message.role === "seller")?.recommendedSectionId, "methodology");
   await app.close();
 });
 
